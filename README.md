@@ -28,9 +28,13 @@ Set `data_dir` in `local-config.toml` to a directory writable only by your user;
 
 The gateway includes HTTPS certificate bootstrapping, systemd socket activation, PAM authentication, in-memory sessions, CSRF/origin protections, capability discovery, an embedded responsive SPA, and bounded live metrics over SSE.
 
-Dashboard, metrics, journal logs, systemd services, processes, users, mounted storage, network interfaces, and PackageKit readiness expose real host snapshots. Production PAM sessions receive a short-lived opaque bridge grant and can open a binary WebSocket PTY running under the authenticated UNIX UID/GID. Development mode deliberately disables terminals.
+Dashboard, metrics, journal logs, systemd services, processes, users, mounted storage, network interfaces, and PackageKit readiness expose real host snapshots. Metrics retain a configurable 24-hour in-memory window and adapt collection to active browser intervals. Production PAM sessions receive a short-lived opaque bridge grant and can open a binary WebSocket PTY running under the authenticated UNIX UID/GID. Development mode deliberately disables terminals.
 
-Destructive administration actions remain adapter boundaries: Tako does not perform service, process, account, package, storage, or network mutations from the unprivileged gateway. Those actions must be added to the per-user bridge with Polkit/systemd authorization and distribution VM tests.
+The Services page inventories service, target, socket, timer, and path units, exposes unit relationships and journal entries, and supports allowlisted lifecycle actions after time-bounded Administrative access. System actions are audited by the local privileged session service; the HTTPS gateway remains unprivileged. Current elevation uses password-backed PAM. Sudo `NOPASSWD`, interactive MFA, and fully functional user-manager actions remain follow-up compatibility work.
+
+Ubuntu LTS and current Fedora are the primary integration targets. Network metadata auto-detects NetworkManager and systemd-networkd. Per-process network byte accounting is represented as an optional eBPF capability; hosts without the helper retain CPU, memory, threads, command, and disk-I/O process data.
+
+Other destructive administration actions remain adapter boundaries: Tako does not perform process, account, package, storage, or network mutations from the unprivileged gateway. Those actions must be added through narrow authenticated bridge methods with distribution VM tests.
 
 ## Production layout
 
