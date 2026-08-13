@@ -15,6 +15,7 @@ import {
   UsersIcon,
   SettingsIcon,
   ListChecksIcon,
+  ClipboardListIcon,
 } from "lucide-react"
 
 import type { User } from "@/lib/api"
@@ -63,6 +64,7 @@ const groups = [
       { title: "Users", to: "/users", icon: UsersIcon },
       { title: "Updates", to: "/updates", icon: PackageCheckIcon },
       { title: "Operations", to: "/operations", icon: ListChecksIcon },
+      { title: "Jobs", to: "/jobs", icon: ClipboardListIcon },
     ],
   },
   {

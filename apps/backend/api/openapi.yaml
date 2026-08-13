@@ -223,6 +223,91 @@ paths:
                     items: { $ref: '#/components/schemas/OperationReceipt' }
         '400': { $ref: '#/components/responses/Problem' }
         '500': { $ref: '#/components/responses/Problem' }
+  /jobs:
+    get:
+      operationId: listDiagnosticJobs
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Durable diagnostic jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/DiagnosticJob' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+  /jobs/host-inventory:
+    post:
+      operationId: startHostInventoryJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '202':
+          description: Host inventory job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: '#/components/schemas/DiagnosticJob' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /jobs/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 64 }
+    get:
+      operationId: getDiagnosticJob
+      responses:
+        '200':
+          description: Durable diagnostic job state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: '#/components/schemas/DiagnosticJob' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /jobs/{id}/cancel:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 64 }
+    post:
+      operationId: cancelDiagnosticJob
+      summary: Cancel a pending or running diagnostic job
+      responses:
+        '200':
+          description: Canceled diagnostic job
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: '#/components/schemas/DiagnosticJob' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /storage:
     get:
       operationId: listStorage
@@ -298,6 +383,23 @@ components:
         result: { type: string, enum: [succeeded, failed] }
         error: { type: string }
         administrative: { type: boolean }
+    DiagnosticJob:
+      type: object
+      required: [id, kind, actor, state, progress, message, createdAt, cancelRequested, dangerous]
+      properties:
+        id: { type: string, maxLength: 64 }
+        kind: { type: string, enum: [host-inventory] }
+        actor: { type: string, maxLength: 256 }
+        state: { type: string, enum: [pending, running, succeeded, failed, canceled, interrupted] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string, maxLength: 256 }
+        result: { type: object, additionalProperties: true }
+        error: { type: string, maxLength: 1024 }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        cancelRequested: { type: boolean }
+        dangerous: { type: boolean }
     LoginRequest:
       oneOf:
         - type: object

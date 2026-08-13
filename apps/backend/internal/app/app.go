@@ -45,6 +45,7 @@ type Server struct {
 	authenticator      auth.Authenticator
 	metrics            *metrics.Sampler
 	preferences        *preferences.Store
+	jobs               *diagnosticJobManager
 	loginAttempts      *loginLimiter
 	logger             *zap.Logger
 	cancel             context.CancelFunc
@@ -70,6 +71,11 @@ func New(cfg config.Config) (*Server, error) {
 		cancel()
 		return nil, err
 	}
+	if err := preferenceStore.RecoverJobs(context.Background()); err != nil {
+		_ = preferenceStore.Close()
+		cancel()
+		return nil, err
+	}
 	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
 	go sampler.Run(ctx, cfg.MonitoringInterval)
 	server := &Server{
@@ -85,6 +91,7 @@ func New(cfg config.Config) (*Server, error) {
 		pruneDone:          make(chan struct{}),
 		detectCapabilities: platform.Detect,
 	}
+	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
 	_, sessionController := authenticator.(auth.SessionController)
 	_, administrativeController := authenticator.(auth.AdministrativeController)
@@ -222,8 +229,9 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		shutdownErr = errors.Join(shutdownErr, ctx.Err())
 	}
+	jobErr := server.jobs.Close(ctx)
 	closeErr := server.preferences.Close()
-	return errors.Join(shutdownErr, closeErr)
+	return errors.Join(shutdownErr, closeErr, jobErr)
 }
 
 func (server *Server) routes() http.Handler {
@@ -252,6 +260,10 @@ func (server *Server) routes() http.Handler {
 			router.Get("/logs", server.logs)
 			router.Get("/logs/stream", server.logStream)
 			router.Get("/operations", server.operationReceipts)
+			router.Get("/jobs", server.jobsList)
+			router.With(server.requireCSRF).Post("/jobs/host-inventory", server.startHostInventoryJob)
+			router.Get("/jobs/{id}", server.jobDetail)
+			router.With(server.requireCSRF).Post("/jobs/{id}/cancel", server.cancelJob)
 			router.Get("/users", server.users)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)

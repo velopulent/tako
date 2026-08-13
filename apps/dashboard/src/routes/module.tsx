@@ -56,6 +56,7 @@ import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import { usePreference } from "@/hooks/use-preference"
 import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
 import { SettingsPage } from "@/routes/settings"
+import { JobsPage } from "@/routes/jobs"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -144,6 +145,7 @@ export function ModulePage({ module }: { module: string }) {
   if (module === "users") return <UsersPage />
   if (module === "updates") return <UpdatesPage />
   if (module === "operations") return <OperationsPage />
+  if (module === "jobs") return <JobsPage />
   return <TerminalPage />
 }
 

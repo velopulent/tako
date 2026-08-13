@@ -61,6 +61,7 @@ const moduleNames = [
   "users",
   "updates",
   "operations",
+  "jobs",
   "terminal",
   "metrics",
   "services",

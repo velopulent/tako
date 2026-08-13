@@ -85,6 +85,28 @@ export type OperationReceipt = {
   administrative: boolean
 }
 
+export type DiagnosticJobState =
+  "pending" | "running" | "succeeded" | "failed" | "canceled" | "interrupted"
+
+export type DiagnosticJob = {
+  id: string
+  kind: "host-inventory"
+  actor: string
+  state: DiagnosticJobState
+  progress: number
+  message: string
+  result?: {
+    host: HostInfo
+    capabilities: Capability[]
+  }
+  error?: string
+  createdAt: string
+  startedAt?: string
+  completedAt?: string
+  cancelRequested: boolean
+  dangerous: boolean
+}
+
 export type ProcessInfo = {
   pid: number
   ppid: number

@@ -3,6 +3,7 @@ package preferences
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,8 +36,8 @@ func TestOpenMigratesAndSecuresDatabase(t *testing.T) {
 	if err := store.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("database version is %d, want 2", version)
+	if version != 3 {
+		t.Fatalf("database version is %d, want 3", version)
 	}
 }
 
@@ -92,8 +93,70 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := second.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("database version is %d, want 2", version)
+	if version != 3 {
+		t.Fatalf("database version is %d, want 3", version)
+	}
+}
+
+func TestDiagnosticJobsAreDurableAndRecoverWithoutRetry(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.CreateJob(context.Background(), "host-inventory", "operator", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartJob(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateJobProgress(context.Background(), job.ID, 50, "Collecting capabilities"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.RecoverJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.GetJob(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != JobInterrupted || recovered.Message != "Interrupted by service restart" {
+		t.Fatalf("job was not marked interrupted: %#v", recovered)
+	}
+	if err := store.CompleteJob(context.Background(), job.ID, json.RawMessage(`{"unsafe":true}`)); err != ErrJobTerminal {
+		t.Fatalf("interrupted job was allowed to complete: %v", err)
+	}
+}
+
+func TestDiagnosticJobCancellationIsExplicit(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	job, err := store.CreateJob(context.Background(), "host-inventory", "operator", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, err := store.CancelJob(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceled.State != JobCanceled || !canceled.CancelRequested || canceled.CompletedAt.IsZero() {
+		t.Fatalf("unexpected canceled job: %#v", canceled)
+	}
+	if _, err := store.CancelJob(context.Background(), job.ID); err != ErrJobTerminal {
+		t.Fatalf("second cancellation error is %v, want %v", err, ErrJobTerminal)
 	}
 }
 
