@@ -330,6 +330,47 @@ func TestServiceRoutesRejectUnsafeTargetsAndMissingAuthority(t *testing.T) {
 	}
 }
 
+func TestServicePreviewAndConfigurationUseControlledReadSeams(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	server.readUnitDetails = func(context.Context, string, string) (platform.UnitDetail, error) {
+		return platform.UnitDetail{
+			Unit:     platform.Unit{Name: "demo.service", Scope: "user", ActiveState: "active", SubState: "running"},
+			Requires: []string{"database.service"},
+			Wants:    []string{"cache.service"},
+		}, nil
+	}
+	server.readUnitConfiguration = func(context.Context, string, string) (platform.UnitConfiguration, error) {
+		return platform.UnitConfiguration{Path: "/home/octopus/.config/systemd/user/demo.service", Content: "[Service]\nExecStart=/usr/bin/demo\n"}, nil
+	}
+	created, err := server.sessions.Create(auth.Identity{Username: "octopus", BridgeToken: "bridge-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
+
+	preview := httptest.NewRequest(http.MethodPost, "/api/v1/services/user/demo.service/actions/preview", bytes.NewBufferString(`{"action":"restart"}`))
+	preview.AddCookie(cookie)
+	preview.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, preview)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"database.service"`)) {
+		t.Fatalf("preview returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	configuration := httptest.NewRequest(http.MethodGet, "/api/v1/services/user/demo.service/configuration", nil)
+	configuration.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, configuration)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte("ExecStart=/usr/bin/demo")) {
+		t.Fatalf("configuration returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

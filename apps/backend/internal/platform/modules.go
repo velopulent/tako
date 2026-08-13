@@ -381,8 +381,20 @@ func UnitDetails(ctx context.Context, scope, name string) (UnitDetail, error) {
 		if err != nil {
 			return []string{}
 		}
-		result, _ := value.Value().([]string)
-		return result
+		switch result := value.Value().(type) {
+		case []string:
+			return result
+		case []dbus.ObjectPath:
+			items := make([]string, 0, len(result))
+			for _, path := range result {
+				if name := unitNameFromObjectPath(path); name != "" {
+					items = append(items, name)
+				}
+			}
+			return items
+		default:
+			return []string{}
+		}
 	}
 	getUint32 := func(property string) uint32 {
 		value, err := object.GetProperty(property)
@@ -402,6 +414,27 @@ func UnitDetails(ctx context.Context, scope, name string) (UnitDetail, error) {
 	}
 	unit := Unit{Name: name, Description: getString("org.freedesktop.systemd1.Unit.Description"), LoadState: getString("org.freedesktop.systemd1.Unit.LoadState"), ActiveState: getString("org.freedesktop.systemd1.Unit.ActiveState"), SubState: getString("org.freedesktop.systemd1.Unit.SubState"), Scope: scope, Type: strings.TrimPrefix(filepath.Ext(name), ".")}
 	return UnitDetail{Unit: unit, Path: getString("org.freedesktop.systemd1.Unit.FragmentPath"), MainPID: getUint32("org.freedesktop.systemd1.Service.MainPID"), MemoryCurrent: getUint64("org.freedesktop.systemd1.Unit.MemoryCurrent"), TasksCurrent: getUint64("org.freedesktop.systemd1.Unit.TasksCurrent"), ActiveEnterTimestamp: getUint64("org.freedesktop.systemd1.Unit.ActiveEnterTimestamp"), Requires: getStrings("org.freedesktop.systemd1.Unit.Requires"), Wants: getStrings("org.freedesktop.systemd1.Unit.Wants"), WantedBy: getStrings("org.freedesktop.systemd1.Unit.WantedBy"), Conflicts: getStrings("org.freedesktop.systemd1.Unit.Conflicts"), Before: getStrings("org.freedesktop.systemd1.Unit.Before"), After: getStrings("org.freedesktop.systemd1.Unit.After")}, nil
+}
+
+func unitNameFromObjectPath(path dbus.ObjectPath) string {
+	segment := filepath.Base(string(path))
+	if segment == "." || segment == "/" || segment == "" {
+		return ""
+	}
+	var decoded strings.Builder
+	decoded.Grow(len(segment))
+	for index := 0; index < len(segment); index++ {
+		if segment[index] == '_' && index+2 < len(segment) {
+			value, err := strconv.ParseUint(segment[index+1:index+3], 16, 8)
+			if err == nil {
+				decoded.WriteByte(byte(value))
+				index += 2
+				continue
+			}
+		}
+		decoded.WriteByte(segment[index])
+	}
+	return decoded.String()
 }
 
 type LogEntry struct {

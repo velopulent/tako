@@ -155,6 +155,16 @@ paths:
         '200': { description: Unit status, runtime properties, and relationships }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /services/{scope}/{unit}/configuration:
+    parameters:
+      - { in: path, name: scope, required: true, schema: { type: string, enum: [system, user] } }
+      - { in: path, name: unit, required: true, schema: { type: string } }
+    get:
+      operationId: getServiceConfiguration
+      responses:
+        '200': { description: Bounded raw unit configuration derived from systemd metadata }
+        '400': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /services/{scope}/{unit}/actions:
     parameters:
       - { in: path, name: scope, required: true, schema: { type: string, enum: [system, user] } }
@@ -167,11 +177,33 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [action]
               properties:
                 action: { type: string, enum: [start, stop, restart, reload, enable, disable, mask, unmask] }
       responses:
         '200': { description: Refreshed unit state }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /services/{scope}/{unit}/actions/preview:
+    parameters:
+      - { in: path, name: scope, required: true, schema: { type: string, enum: [system, user] } }
+      - { in: path, name: unit, required: true, schema: { type: string } }
+    post:
+      operationId: previewServiceAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action]
+              properties:
+                action: { type: string, enum: [start, stop, restart, reload, enable, disable, mask, unmask] }
+      responses:
+        '200': { description: Current service state and bounded affected relationships }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
@@ -505,6 +537,35 @@ components:
         timezone: { type: string, maxLength: 128 }
         ntpEnabled: { type: boolean }
         fingerprint: { type: string, minLength: 64, maxLength: 64 }
+    ServiceImpact:
+      type: object
+      required: [scope, unit, action, currentState, currentSubState, affected, warnings]
+      properties:
+        scope: { type: string, enum: [system, user] }
+        unit: { type: string, maxLength: 256 }
+        action: { type: string, enum: [start, stop, restart, reload, enable, disable, mask, unmask] }
+        currentState: { type: string }
+        currentSubState: { type: string }
+        affected:
+          type: array
+          maxItems: 128
+          items:
+            type: object
+            required: [name, relationship]
+            properties:
+              name: { type: string, maxLength: 256 }
+              relationship: { type: string }
+        warnings:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 512 }
+    UnitConfiguration:
+      type: object
+      required: [path, content, truncated]
+      properties:
+        path: { type: string, maxLength: 4096 }
+        content: { type: string, maxLength: 1048576 }
+        truncated: { type: boolean }
     HostConfigurationUpdate:
       type: object
       required: [hostname, timezone, ntpEnabled, expectedFingerprint]

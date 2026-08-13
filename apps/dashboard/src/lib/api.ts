@@ -237,6 +237,24 @@ export type ServiceDetail = ServiceInfo & {
   before: string[]
   after: string[]
 }
+export type ServiceImpactRelation = {
+  name: string
+  relationship: string
+}
+export type ServiceImpact = {
+  scope: string
+  unit: string
+  action: string
+  currentState: string
+  currentSubState: string
+  affected: ServiceImpactRelation[]
+  warnings: string[]
+}
+export type UnitConfiguration = {
+  path: string
+  content: string
+  truncated: boolean
+}
 export type LogEntry = {
   timestamp: string
   priority: string

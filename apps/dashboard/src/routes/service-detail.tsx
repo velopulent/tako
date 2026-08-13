@@ -18,6 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { DataTable } from "@/components/data-table"
+import { ServiceConfiguration } from "@/components/service-configuration"
 import { ServiceActions } from "@/components/service-actions"
 import type { ServiceActionName } from "@/lib/service-actions"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -137,6 +138,7 @@ export function ServiceDetailPage() {
           <ServiceActions
             scope={scope}
             unit={unit}
+            csrfToken={session.data?.csrfToken ?? ""}
             administrative={session.data?.administrative === true}
             pending={action.isPending}
             onAction={(name) => action.mutate(name)}
@@ -172,6 +174,7 @@ export function ServiceDetailPage() {
           </dl>
         </CardContent>
       </Card>
+      <ServiceConfiguration scope={scope} unit={unit} />
       <Card>
         <CardHeader>
           <CardTitle>Service logs</CardTitle>

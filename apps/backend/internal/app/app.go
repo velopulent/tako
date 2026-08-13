@@ -59,6 +59,8 @@ type Server struct {
 	hostSnapshotAt        time.Time
 	readHostConfiguration func(context.Context) (platform.HostConfiguration, error)
 	readPowerStatusFn     func(context.Context) (platform.PowerStatus, error)
+	readUnitDetails       func(context.Context, string, string) (platform.UnitDetail, error)
+	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -97,6 +99,8 @@ func New(cfg config.Config) (*Server, error) {
 		detectCapabilities:    platform.Detect,
 		readHostConfiguration: platform.ReadHostConfiguration,
 		readPowerStatusFn:     platform.ReadPowerStatus,
+		readUnitDetails:       platform.UnitDetails,
+		readUnitConfiguration: platform.ReadUnitConfiguration,
 	}
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
@@ -281,6 +285,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)
+			router.Get("/services/{scope}/{unit}/configuration", server.serviceConfiguration)
+			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/actions/preview", server.serviceActionPreview)
 			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/actions", server.serviceAction)
 			router.Get("/storage", server.storage)
 			router.Get("/network", server.network)
@@ -708,42 +714,87 @@ func (server *Server) serviceDetail(writer http.ResponseWriter, request *http.Re
 		problem(writer, http.StatusBadRequest, "invalid-service-operation", "Unsupported service scope or unit")
 		return
 	}
-	item, err := platform.UnitDetails(request.Context(), scope, unit)
+	item, err := server.readUnitDetails(request.Context(), scope, unit)
 	if err != nil {
 		server.writeModule(writer, "services", nil, err)
 		return
 	}
 	writeJSON(writer, 200, item)
 }
-func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
+
+func (server *Server) serviceConfiguration(writer http.ResponseWriter, request *http.Request) {
 	scope := chi.URLParam(request, "scope")
 	unit := chi.URLParam(request, "unit")
-	startedAt := time.Now().UTC()
-	target := scope + "/" + unit
+	if err := platform.ValidateServiceTarget(scope, unit); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-service-operation", "Unsupported service scope or unit")
+		return
+	}
+	item, err := server.readUnitConfiguration(request.Context(), scope, unit)
+	if err != nil {
+		problem(writer, http.StatusServiceUnavailable, "service-configuration-unavailable", "Unit configuration is unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, item)
+}
+
+func decodeServiceOperation(writer http.ResponseWriter, request *http.Request) (platform.ServiceOperation, bool) {
 	var body struct {
 		Action string `json:"action"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		problem(writer, 400, "invalid-request", "Action is required")
-		return
+		problem(writer, http.StatusBadRequest, "invalid-request", "Action is required")
+		return platform.ServiceOperation{}, false
 	}
-	operation, operationErr := platform.ParseServiceOperation(scope, unit, body.Action)
-	if operationErr != nil {
+	operation, err := platform.ParseServiceOperation(chi.URLParam(request, "scope"), chi.URLParam(request, "unit"), body.Action)
+	if err != nil {
 		problem(writer, http.StatusBadRequest, "invalid-service-operation", "Unsupported service scope, unit, or action")
-		return
+		return platform.ServiceOperation{}, false
 	}
+	return operation, true
+}
+
+func serviceAuthority(current session.Session, operation platform.ServiceOperation) (int, string, string, bool) {
 	if operation.Scope == "system" && (current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) || current.Identity.BridgeToken == "") {
-		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access first")
-		return
+		return http.StatusForbidden, "administrative-access-required", "Gain Administrative access first", false
 	}
 	if operation.Scope == "user" && current.Identity.BridgeToken == "" {
-		problem(writer, http.StatusForbidden, "user-session-required", "An authenticated UNIX session is required")
+		return http.StatusForbidden, "user-session-required", "An authenticated UNIX session is required", false
+	}
+	return 0, "", "", true
+}
+
+func (server *Server) serviceActionPreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	operation, ok := decodeServiceOperation(writer, request)
+	if !ok {
 		return
 	}
-	target = operation.Scope + "/" + operation.Unit + "/" + operation.Action
+	if status, code, message, authorized := serviceAuthority(current, operation); !authorized {
+		problem(writer, status, code, message)
+		return
+	}
+	detail, err := server.readUnitDetails(request.Context(), operation.Scope, operation.Unit)
+	if err != nil {
+		problem(writer, http.StatusBadGateway, "service-preview-unavailable", "Could not inspect service impact")
+		return
+	}
+	writeJSON(writer, http.StatusOK, platform.ServiceImpactForAction(detail, operation.Action))
+}
+
+func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	startedAt := time.Now().UTC()
+	operation, ok := decodeServiceOperation(writer, request)
+	if !ok {
+		return
+	}
+	if status, code, message, authorized := serviceAuthority(current, operation); !authorized {
+		problem(writer, status, code, message)
+		return
+	}
+	target := operation.Scope + "/" + operation.Unit + "/" + operation.Action
 	var actionErr error
 	if operation.Scope == "system" {
 		actionErr = auth.ServiceActionAsAdmin(request.Context(), server.config.SessionSocket, current.Identity.AdminToken, operation.Scope, operation.Unit, operation.Action)
@@ -756,7 +807,7 @@ func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", operation.Scope == "system")
-	item, err := platform.UnitDetails(request.Context(), operation.Scope, operation.Unit)
+	item, err := server.readUnitDetails(request.Context(), operation.Scope, operation.Unit)
 	if err != nil {
 		problem(writer, 502, "service-refresh-failed", err.Error())
 		return

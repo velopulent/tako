@@ -45,3 +45,47 @@ func TestUnitDetailsRejectsNonInventoryTargetsBeforeDBus(t *testing.T) {
 		t.Fatalf("invalid unit error = %v", err)
 	}
 }
+
+func TestServiceImpactIsBoundedAndExplainsRelationships(t *testing.T) {
+	detail := UnitDetail{
+		Unit:      Unit{Name: "demo.service", Scope: "system", ActiveState: "active", SubState: "running"},
+		Requires:  []string{"database.service", "database.service"},
+		Wants:     []string{"cache.service"},
+		Conflicts: []string{"old.service"},
+		Before:    []string{"web.service"},
+		After:     []string{"network.target"},
+	}
+	impact := ServiceImpactForAction(detail, "restart")
+	if impact.CurrentState != "active" || impact.CurrentSubState != "running" || len(impact.Affected) != 5 {
+		t.Fatalf("unexpected impact: %#v", impact)
+	}
+	if len(impact.Warnings) == 0 {
+		t.Fatal("disruptive action lacks warning")
+	}
+
+	detail.Requires = make([]string, 256)
+	for index := range detail.Requires {
+		detail.Requires[index] = "unit-" + string(rune('a'+index%26)) + ".service"
+	}
+	if impact := ServiceImpactForAction(detail, "stop"); len(impact.Affected) > 128 {
+		t.Fatalf("impact exceeded bound: %d", len(impact.Affected))
+	}
+}
+
+func TestTrustedUnitFilePathRejectsCallerControlledFiles(t *testing.T) {
+	for _, path := range []string{"/etc/passwd", "/etc/systemd/system/../passwd", "relative.service"} {
+		if _, err := trustedUnitFilePath("system", path, "demo.service"); !errors.Is(err, errUnitConfigurationPath) {
+			t.Fatalf("path %q was accepted: %v", path, err)
+		}
+	}
+	if _, err := trustedUnitFilePath("user", "/home/octopus/.config/systemd/user/demo.service", "other.service"); !errors.Is(err, errUnitConfigurationPath) {
+		t.Fatalf("mismatched unit basename was accepted: %v", err)
+	}
+}
+
+func TestReadBoundedUnitConfiguration(t *testing.T) {
+	content, truncated, err := readBoundedUnitConfiguration(strings.NewReader(strings.Repeat("x", maxUnitConfigurationBytes+1)))
+	if err != nil || !truncated || len(content) != maxUnitConfigurationBytes {
+		t.Fatalf("bounded read = len %d truncated %v err %v", len(content), truncated, err)
+	}
+}
