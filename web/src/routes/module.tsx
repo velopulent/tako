@@ -1,6 +1,8 @@
 import * as React from "react"
+import { useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { CircleAlertIcon, RefreshCwIcon, SearchIcon, TerminalIcon } from "lucide-react"
+import type { ColumnDef } from "@tanstack/react-table"
+import { PauseIcon, PlayIcon, RefreshCwIcon, TerminalIcon } from "lucide-react"
 
 import {
   api,
@@ -17,132 +19,807 @@ import {
 } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
-import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { DataTable } from "@/components/data-table"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty"
+import { MetricsCharts } from "@/components/metrics-chart"
 import { Progress } from "@/components/ui/progress"
+import { RefreshSelect } from "@/components/refresh-select"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  usePreference,
+  type RefreshInterval,
+  refreshIntervals,
+} from "@/hooks/use-preference"
 
-const MetricsChart = React.lazy(() =>
-  import("@/components/metrics-chart").then((value) => ({ default: value.MetricsChart }))
-)
-const SystemTerminal = React.lazy(() =>
-  import("@/components/system-terminal").then((value) => ({ default: value.SystemTerminal }))
-)
-
-function bytes(value: number) {
+const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
-  let amount = value
-  let unit = 0
-  while (amount >= 1024 && unit < units.length - 1) {
+  let amount = value,
+    index = 0
+  while (amount >= 1024 && index < units.length - 1) {
     amount /= 1024
-    unit++
+    index++
   }
-  return `${amount.toFixed(unit > 2 ? 1 : 0)} ${units[unit]}`
+  return `${amount.toFixed(index ? 1 : 0)} ${units[index]}`
+}
+const intervalMs = (value: RefreshInterval): number | false => {
+  const result = refreshIntervals.find(
+    (item) => item.value === value
+  )?.milliseconds
+  return typeof result === "number" ? result : false
 }
 
-function ModuleShell({ title, description, children, capability }: { title: string; description: string; children: React.ReactNode; capability?: Capability }) {
+function usePageInterval(page: string) {
+  const [defaultValue] = usePreference<RefreshInterval>(
+    "current",
+    "interval:default",
+    "1m"
+  )
+  const [value, setValue] = usePreference<RefreshInterval>(
+    "current",
+    `interval:${page}`,
+    defaultValue
+  )
+  return { value, setValue, milliseconds: intervalMs(value) }
+}
+function Page({
+  title,
+  description,
+  interval,
+  children,
+}: {
+  title: string
+  description: string
+  interval?: ReturnType<typeof usePageInterval>
+  children: React.ReactNode
+}) {
   return (
-    <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
-      {capability && !capability.available && (
-        <Alert><CircleAlertIcon /><AlertTitle>Optional integration unavailable</AlertTitle><AlertDescription>{capability.reason}</AlertDescription></Alert>
-      )}
-      <Card>
-        <CardHeader><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader>
-        <CardContent>{children}</CardContent>
-      </Card>
+    <main className="@container/main flex flex-1 flex-col gap-6 p-4 lg:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
+          <p className="text-sm text-muted-foreground">{description}</p>
+        </div>
+        {interval && (
+          <RefreshSelect value={interval.value} onChange={interval.setValue} />
+        )}
+      </div>
+      {children}
     </main>
   )
 }
-
-function DataState({ pending, error, empty, children }: { pending: boolean; error: boolean; empty: boolean; children: React.ReactNode }) {
-  if (pending) return <Skeleton className="h-72" />
-  if (error) return <Alert variant="destructive"><AlertTitle>Could not load data</AlertTitle><AlertDescription>System adapter returned an error.</AlertDescription></Alert>
-  if (empty) return <Empty><EmptyHeader><EmptyTitle>No results</EmptyTitle><EmptyDescription>No matching system resources were found.</EmptyDescription></EmptyHeader></Empty>
+function State({
+  query,
+  empty,
+  children,
+}: {
+  query: { isPending: boolean; isError: boolean }
+  empty: boolean
+  children: React.ReactNode
+}) {
+  if (query.isPending) return <Skeleton className="h-72" />
+  if (query.isError)
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Could not load data</AlertTitle>
+        <AlertDescription>System adapter returned an error.</AlertDescription>
+      </Alert>
+    )
+  if (empty)
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyTitle>No results</EmptyTitle>
+          <EmptyDescription>No matching resources found.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
   return children
 }
 
 export function ModulePage({ module }: { module: string }) {
-  const capabilities = useQuery({ queryKey: ["capabilities"], queryFn: () => api<{ capabilities: Capability[] }>("/capabilities") })
-  const capability = capabilities.data?.capabilities.find((item) => item.id === module)
   if (module === "metrics") return <MetricsPage />
-  if (module === "logs") return <LogsPage capability={capability} />
-  if (module === "processes") return <ProcessesPage capability={capability} />
-  if (module === "users") return <UsersPage capability={capability} />
-  if (module === "services") return <ServicesPage capability={capability} />
-  if (module === "storage") return <StoragePage capability={capability} />
-  if (module === "network") return <NetworkPage capability={capability} />
-  if (module === "updates") return <UpdatesPage capability={capability} />
-  return <TerminalPage capability={capability} />
+  if (module === "processes") return <ProcessesPage />
+  if (module === "services") return <ServicesPage />
+  if (module === "storage") return <StoragePage />
+  if (module === "network") return <NetworkPage />
+  if (module === "logs") return <LogsPage />
+  if (module === "settings") return <SettingsPage />
+  if (module === "users") return <UsersPage />
+  if (module === "updates") return <UpdatesPage />
+  return <TerminalPage />
 }
 
 function MetricsPage() {
-  const query = useQuery({ queryKey: ["metrics"], queryFn: () => api<{ samples: MetricSample[] }>("/metrics") })
-  return <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6"><React.Suspense fallback={<Skeleton className="h-80" />}><MetricsChart initialSamples={query.data?.samples ?? []} /></React.Suspense></main>
+  const interval = usePageInterval("metrics")
+  const [range, setRange] = React.useState("1h")
+  const query = useQuery({
+    queryKey: ["metrics", range],
+    queryFn: () => api<{ samples: MetricSample[] }>(`/metrics?range=${range}`),
+  })
+  return (
+    <Page
+      title="Metrics"
+      description="Live CPU, memory, storage, network, and process telemetry."
+      interval={interval}
+    >
+      <Tabs value={range} onValueChange={setRange}>
+        <TabsList>
+          {["15m", "1h", "6h", "24h"].map((value) => (
+            <TabsTrigger key={value} value={value}>
+              {value}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      <MetricsCharts
+        initialSamples={query.data?.samples ?? []}
+        interval={interval.value}
+      />
+      <ProcessesTable interval={interval} />
+    </Page>
+  )
 }
 
-function LogsPage({ capability }: { capability?: Capability }) {
-  const [search, setSearch] = React.useState("")
+const processColumns: ColumnDef<ProcessInfo>[] = [
+  { accessorKey: "pid", header: "PID" },
+  { accessorKey: "program", header: "Program" },
+  { accessorKey: "user", header: "User" },
+  {
+    accessorKey: "state",
+    header: "State",
+    cell: ({ row }) => <Badge variant="outline">{row.original.state}</Badge>,
+  },
+  { accessorKey: "threads", header: "Threads" },
+  {
+    accessorKey: "cpuPercent",
+    header: "CPU",
+    cell: ({ row }) => `${(row.original.cpuPercent ?? 0).toFixed(1)}%`,
+  },
+  {
+    accessorKey: "cpuTime",
+    header: "CPU time",
+    cell: ({ row }) => `${row.original.cpuTime.toFixed(1)}s`,
+  },
+  {
+    accessorKey: "memory",
+    header: "Memory",
+    cell: ({ row }) => bytes(row.original.memory),
+  },
+  {
+    accessorKey: "virtualMemory",
+    header: "Virtual",
+    cell: ({ row }) => bytes(row.original.virtualMemory),
+  },
+  {
+    accessorKey: "diskRead",
+    header: "Disk read",
+    cell: ({ row }) => bytes(row.original.diskRead),
+  },
+  {
+    accessorKey: "diskWrite",
+    header: "Disk write",
+    cell: ({ row }) => bytes(row.original.diskWrite),
+  },
+  {
+    accessorKey: "diskReadRate",
+    header: "Read/s",
+    cell: ({ row }) => bytes(row.original.diskReadRate ?? 0),
+  },
+  {
+    accessorKey: "diskWriteRate",
+    header: "Write/s",
+    cell: ({ row }) => bytes(row.original.diskWriteRate ?? 0),
+  },
+  {
+    accessorKey: "command",
+    header: "Command",
+    cell: ({ row }) => (
+      <span
+        className="block max-w-xl truncate font-mono text-xs"
+        title={row.original.command}
+      >
+        {row.original.command}
+      </span>
+    ),
+  },
+]
+function ProcessesTable({
+  interval,
+}: {
+  interval: ReturnType<typeof usePageInterval>
+}) {
+  const previous = React.useRef<{
+    at: number
+    items: Map<string, ProcessInfo>
+  } | null>(null)
+  const query = useQuery({
+    queryKey: ["processes"],
+    queryFn: async () => {
+      const response = await api<{ items: ProcessInfo[] }>("/processes")
+      const now = performance.now()
+      const before = previous.current
+      const seconds = before ? Math.max(0.001, (now - before.at) / 1000) : 1
+      const items = response.items.map((item) => {
+        const old = before?.items.get(`${item.pid}:${item.started}`)
+        return {
+          ...item,
+          cpuPercent: old
+            ? (Math.max(0, item.cpuTime - old.cpuTime) / seconds) * 100
+            : 0,
+          diskReadRate: old
+            ? Math.max(0, item.diskRead - old.diskRead) / seconds
+            : 0,
+          diskWriteRate: old
+            ? Math.max(0, item.diskWrite - old.diskWrite) / seconds
+            : 0,
+        }
+      })
+      previous.current = {
+        at: now,
+        items: new Map(
+          response.items.map((item) => [`${item.pid}:${item.started}`, item])
+        ),
+      }
+      return { items }
+    },
+    refetchInterval: interval.milliseconds,
+  })
+  const items = query.data?.items ?? []
+  return (
+    <State query={query} empty={!items.length}>
+      <Card>
+        <CardHeader>
+          <CardTitle>Processes</CardTitle>
+          <CardDescription>
+            {items.length} processes · per-process network requires optional
+            eBPF collector
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            data={items}
+            columns={processColumns}
+            searchPlaceholder="Search PID, program, command, or user"
+            initialVisibility={{
+              virtualMemory: false,
+              diskRead: false,
+              diskWrite: false,
+              diskReadRate: false,
+              diskWriteRate: false,
+            }}
+          />
+        </CardContent>
+      </Card>
+    </State>
+  )
+}
+function ProcessesPage() {
+  const interval = usePageInterval("processes")
+  return (
+    <Page
+      title="Processes"
+      description="Sortable, filterable live process inventory."
+      interval={interval}
+    >
+      <ProcessesTable interval={interval} />
+    </Page>
+  )
+}
+
+function ServicesPage() {
+  const interval = usePageInterval("services")
+  const [scope, setScope] = React.useState("system")
+  const [type, setType] = React.useState("service")
+  const [activeState, setActiveState] = React.useState("all")
+  const [fileState, setFileState] = React.useState("all")
+  const navigate = useNavigate()
+  const query = useQuery({
+    queryKey: ["services", scope, type],
+    queryFn: () =>
+      api<{ items: ServiceInfo[] }>(`/services?scope=${scope}&type=${type}`),
+    refetchInterval: interval.milliseconds,
+  })
+  const columns: ColumnDef<ServiceInfo>[] = [
+    { accessorKey: "name", header: "Unit" },
+    { accessorKey: "description", header: "Description" },
+    {
+      accessorKey: "activeState",
+      header: "Active",
+      cell: ({ row }) => (
+        <Badge
+          variant={
+            row.original.activeState === "active" ? "secondary" : "outline"
+          }
+        >
+          {row.original.activeState}
+        </Badge>
+      ),
+    },
+    { accessorKey: "subState", header: "Detail" },
+    { accessorKey: "loadState", header: "Load" },
+    { accessorKey: "fileState", header: "File state" },
+  ]
+  const items = (query.data?.items ?? []).filter(
+    (item) =>
+      (activeState === "all" || item.activeState === activeState) &&
+      (fileState === "all" || item.fileState === fileState)
+  )
+  return (
+    <Page
+      title="Services"
+      description="systemd units, state, relationships, logs, and lifecycle controls."
+      interval={interval}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Tabs value={type} onValueChange={setType}>
+          <TabsList>
+            {["service", "target", "socket", "timer", "path"].map((value) => (
+              <TabsTrigger key={value} value={value}>
+                {value[0].toUpperCase() + value.slice(1)}s
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <Tabs value={scope} onValueChange={setScope}>
+          <TabsList>
+            <TabsTrigger value="system">System</TabsTrigger>
+            <TabsTrigger value="user">User</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      <State query={query} empty={!items.length}>
+        <DataTable
+          data={items}
+          columns={columns}
+          searchPlaceholder="Search units and descriptions"
+          toolbar={
+            <>
+              <FilterSelect
+                label="Active state"
+                value={activeState}
+                values={["all", "active", "inactive", "failed"]}
+                onChange={setActiveState}
+              />
+              <FilterSelect
+                label="File state"
+                value={fileState}
+                values={["all", "enabled", "disabled", "static", "masked"]}
+                onChange={setFileState}
+              />
+            </>
+          }
+          onRowClick={(unit) =>
+            navigate({
+              to: "/services/$scope/$unit",
+              params: { scope: unit.scope, unit: unit.name },
+            })
+          }
+        />
+      </State>
+    </Page>
+  )
+}
+
+function FilterSelect({
+  label,
+  value,
+  values,
+  onChange,
+}: {
+  label: string
+  value: string
+  values: string[]
+  onChange: (value: string) => void
+}) {
+  return (
+    <Select value={value} onValueChange={(next) => onChange(String(next))}>
+      <SelectTrigger size="sm" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          {values.map((item) => (
+            <SelectItem key={item} value={item}>
+              {item === "all" ? `All ${label.toLowerCase()}s` : item}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  )
+}
+
+function StoragePage() {
+  const interval = usePageInterval("storage")
+  const metrics = useQuery({
+    queryKey: ["storage-metrics"],
+    queryFn: () => api<{ samples: MetricSample[] }>("/metrics?range=1h"),
+  })
+  const query = useQuery({
+    queryKey: ["storage"],
+    queryFn: () => api<{ items: MountInfo[] }>("/storage"),
+    refetchInterval: interval.milliseconds,
+  })
+  const items = query.data?.items ?? []
+  const columns: ColumnDef<MountInfo>[] = [
+    { accessorKey: "target", header: "Mount" },
+    { accessorKey: "source", header: "Device" },
+    { accessorKey: "filesystem", header: "Filesystem" },
+    {
+      accessorKey: "used",
+      header: "Used",
+      cell: ({ row }) => bytes(row.original.used),
+    },
+    {
+      accessorKey: "available",
+      header: "Available",
+      cell: ({ row }) => bytes(row.original.available),
+    },
+    {
+      accessorKey: "percent",
+      header: "Usage",
+      cell: ({ row }) => (
+        <div className="min-w-32">
+          <Progress value={row.original.percent} />
+          <span className="text-xs text-muted-foreground">
+            {row.original.percent.toFixed(1)}%
+          </span>
+        </div>
+      ),
+    },
+  ]
+  return (
+    <Page
+      title="Storage"
+      description="Filesystem capacity and block-device activity."
+      interval={interval}
+    >
+      <MetricsCharts
+        initialSamples={metrics.data?.samples ?? []}
+        interval={interval.value}
+        compact
+      />
+      <State query={query} empty={!items.length}>
+        <DataTable
+          data={items}
+          columns={columns}
+          searchPlaceholder="Search mounts, devices, and filesystems"
+          height="45vh"
+        />
+      </State>
+    </Page>
+  )
+}
+
+function NetworkPage() {
+  const interval = usePageInterval("network")
+  const metrics = useQuery({
+    queryKey: ["network-metrics"],
+    queryFn: () => api<{ samples: MetricSample[] }>("/metrics?range=1h"),
+  })
+  const query = useQuery({
+    queryKey: ["network"],
+    queryFn: () => api<{ items: InterfaceInfo[] }>("/network"),
+    refetchInterval: interval.milliseconds,
+  })
+  const logs = useQuery({
+    queryKey: ["logs", "network"],
+    queryFn: () => api<{ items: LogEntry[] }>("/logs?limit=300"),
+    refetchInterval: interval.milliseconds,
+  })
+  const items = query.data?.items ?? []
+  const columns: ColumnDef<InterfaceInfo>[] = [
+    { accessorKey: "name", header: "Device" },
+    {
+      accessorKey: "up",
+      header: "State",
+      cell: ({ row }) => (
+        <Badge variant={row.original.up ? "secondary" : "outline"}>
+          {row.original.up ? "Up" : "Down"}
+        </Badge>
+      ),
+    },
+    {
+      accessorKey: "addresses",
+      header: "Addresses",
+      cell: ({ row }) => row.original.addresses.join(", ") || "—",
+    },
+    { accessorKey: "hardware", header: "MAC" },
+    { accessorKey: "mtu", header: "MTU" },
+    { accessorKey: "manager", header: "Manager" },
+    {
+      accessorKey: "rx",
+      header: "Received",
+      cell: ({ row }) => bytes(row.original.rx),
+    },
+    {
+      accessorKey: "tx",
+      header: "Sent",
+      cell: ({ row }) => bytes(row.original.tx),
+    },
+  ]
+  const networkLogs = (logs.data?.items ?? []).filter((item) =>
+    `${item.unit} ${item.message}`
+      .toLowerCase()
+      .match(/networkmanager|systemd-networkd|network|link is|carrier/)
+  )
+  const logColumns: ColumnDef<LogEntry>[] = [
+    {
+      accessorKey: "timestamp",
+      header: "Time",
+      cell: ({ row }) => new Date(row.original.timestamp).toLocaleString(),
+    },
+    { accessorKey: "unit", header: "Source" },
+    {
+      accessorKey: "message",
+      header: "Message",
+      cell: ({ row }) => (
+        <span className="font-mono text-xs whitespace-normal">
+          {row.original.message}
+        </span>
+      ),
+    },
+  ]
+  return (
+    <Page
+      title="Network"
+      description="Interface health, traffic, addresses, and detected network manager."
+      interval={interval}
+    >
+      <MetricsCharts
+        initialSamples={metrics.data?.samples ?? []}
+        interval={interval.value}
+        compact
+      />
+      <State query={query} empty={!items.length}>
+        <DataTable
+          data={items}
+          columns={columns}
+          searchPlaceholder="Search devices, addresses, or managers"
+          height="45vh"
+        />
+      </State>
+      <Card>
+        <CardHeader>
+          <CardTitle>Network logs</CardTitle>
+          <CardDescription>
+            NetworkManager, systemd-networkd, and kernel link events.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            data={networkLogs}
+            columns={logColumns}
+            height="32vh"
+            searchPlaceholder="Search network logs"
+          />
+        </CardContent>
+      </Card>
+    </Page>
+  )
+}
+
+function LogsPage() {
   const [live, setLive] = React.useState<LogEntry[]>([])
-  const query = useQuery({ queryKey: ["logs"], queryFn: () => api<{ items: LogEntry[] }>("/logs?limit=300") })
+  const [following, setFollowing] = React.useState(true)
+  const query = useQuery({
+    queryKey: ["logs"],
+    queryFn: () => api<{ items: LogEntry[] }>("/logs?limit=500"),
+  })
   React.useEffect(() => {
+    if (!following) return
     const source = new EventSource("/api/v1/logs/stream")
-    source.addEventListener("log", (event) => {
-      const entry = JSON.parse((event as MessageEvent).data) as LogEntry
-      setLive((current) => [entry, ...current].slice(0, 300))
-    })
+    source.addEventListener("log", (event) =>
+      setLive((current) =>
+        [
+          JSON.parse((event as MessageEvent<string>).data) as LogEntry,
+          ...current,
+        ].slice(0, 2_000)
+      )
+    )
     return () => source.close()
-  }, [])
-  const items = [...live, ...(query.data?.items ?? [])].filter((item) => `${item.unit} ${item.message}`.toLowerCase().includes(search.toLowerCase())).slice(0, 300)
-  return <ModuleShell title="System logs" description="Newest 300 journal entries." capability={capability}>
-    <div className="mb-4 flex items-center gap-2"><SearchIcon aria-hidden="true" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter unit or message" aria-label="Filter logs" /></div>
-    <DataState pending={query.isPending} error={query.isError} empty={items.length === 0}><div className="max-h-[65vh] overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Priority</TableHead><TableHead>Unit</TableHead><TableHead>Message</TableHead></TableRow></TableHeader><TableBody>{items.map((item, index) => <TableRow key={`${item.timestamp}-${index}`}><TableCell className="whitespace-nowrap text-xs">{new Date(item.timestamp).toLocaleString()}</TableCell><TableCell><Badge variant="outline">{item.priority || "-"}</Badge></TableCell><TableCell className="whitespace-nowrap">{item.unit || "kernel"}</TableCell><TableCell className="max-w-xl whitespace-normal font-mono text-xs">{item.message}</TableCell></TableRow>)}</TableBody></Table></div></DataState>
-  </ModuleShell>
+  }, [following])
+  const items = [...live, ...(query.data?.items ?? [])]
+  const columns: ColumnDef<LogEntry>[] = [
+    {
+      accessorKey: "timestamp",
+      header: "Time",
+      cell: ({ row }) => new Date(row.original.timestamp).toLocaleString(),
+    },
+    {
+      accessorKey: "priority",
+      header: "Priority",
+      cell: ({ row }) => (
+        <Badge variant="outline">{row.original.priority || "-"}</Badge>
+      ),
+    },
+    { accessorKey: "unit", header: "Unit" },
+    {
+      accessorKey: "message",
+      header: "Message",
+      cell: ({ row }) => (
+        <span className="font-mono text-xs whitespace-normal">
+          {row.original.message}
+        </span>
+      ),
+    },
+  ]
+  return (
+    <Page
+      title="System logs"
+      description="Searchable, virtualized live journal with bounded browser memory."
+    >
+      <State query={query} empty={!items.length}>
+        <DataTable
+          data={items}
+          columns={columns}
+          searchPlaceholder="Search unit, priority, or message"
+          toolbar={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFollowing((value) => !value)}
+            >
+              {following ? (
+                <PauseIcon data-icon="inline-start" />
+              ) : (
+                <PlayIcon data-icon="inline-start" />
+              )}
+              {following ? "Pause" : "Follow"}
+            </Button>
+          }
+        />
+      </State>
+    </Page>
+  )
 }
 
-function ProcessesPage({ capability }: { capability?: Capability }) {
-  const [search, setSearch] = React.useState("")
-  const query = useQuery({ queryKey: ["processes"], queryFn: () => api<{ items: ProcessInfo[] }>("/processes"), refetchInterval: 5000 })
-  const items = query.data?.items.filter((item) => `${item.pid} ${item.user} ${item.command}`.toLowerCase().includes(search.toLowerCase())).slice(0, 500) ?? []
-  return <ModuleShell title="Processes" description="Live process inventory sorted by resident memory." capability={capability}><Input className="mb-4" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter PID, user, or command" aria-label="Filter processes" /><DataState pending={query.isPending} error={query.isError} empty={items.length === 0}><div className="max-h-[65vh] overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>PID</TableHead><TableHead>User</TableHead><TableHead>State</TableHead><TableHead>Memory</TableHead><TableHead>CPU time</TableHead><TableHead>Command</TableHead></TableRow></TableHeader><TableBody>{items.map((item) => <TableRow key={item.pid}><TableCell>{item.pid}</TableCell><TableCell>{item.user}</TableCell><TableCell><Badge variant="secondary">{item.state}</Badge></TableCell><TableCell>{bytes(item.memory)}</TableCell><TableCell>{item.cpuTime.toFixed(1)}s</TableCell><TableCell className="max-w-xl truncate font-mono text-xs" title={item.command}>{item.command}</TableCell></TableRow>)}</TableBody></Table></div></DataState></ModuleShell>
+function SettingsPage() {
+  const [value, setValue] = usePreference<RefreshInterval>(
+    "current",
+    "interval:default",
+    "1m"
+  )
+  const capabilities = useQuery({
+    queryKey: ["capabilities"],
+    queryFn: () => api<{ capabilities: Capability[] }>("/capabilities"),
+  })
+  return (
+    <Page
+      title="Settings"
+      description="Browser preferences and host integration capabilities."
+    >
+      <Card>
+        <CardHeader>
+          <CardTitle>Monitoring</CardTitle>
+          <CardDescription>
+            Default browser interval. Individual pages may override it. History
+            is retained in memory for 24 hours.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <RefreshSelect value={value} onChange={setValue} />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Host capabilities</CardTitle>
+          <CardDescription>
+            Optional integrations detected at runtime.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {capabilities.data?.capabilities.map((item) => (
+            <div
+              key={item.id}
+              className="flex items-center justify-between gap-3 rounded-lg border p-3"
+            >
+              <div>
+                <p className="font-medium capitalize">{item.id}</p>
+                <p className="text-xs text-muted-foreground">
+                  {item.reason || "Ready"}
+                </p>
+              </div>
+              <Badge variant={item.available ? "secondary" : "outline"}>
+                {item.available ? "Ready" : "Unavailable"}
+              </Badge>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </Page>
+  )
 }
 
-function UsersPage({ capability }: { capability?: Capability }) {
-  const query = useQuery({ queryKey: ["users"], queryFn: () => api<{ items: UserInfo[] }>("/users") })
+function UsersPage() {
+  const query = useQuery({
+    queryKey: ["users"],
+    queryFn: () => api<{ items: UserInfo[] }>("/users"),
+  })
   const items = query.data?.items ?? []
-  return <ModuleShell title="Users" description="Local accounts from the host identity database." capability={capability}><DataState pending={query.isPending} error={query.isError} empty={items.length === 0}><div className="overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>User</TableHead><TableHead>UID</TableHead><TableHead>Name</TableHead><TableHead>Home</TableHead><TableHead>Shell</TableHead></TableRow></TableHeader><TableBody>{items.map((item) => <TableRow key={item.username}><TableCell className="font-medium">{item.username}</TableCell><TableCell>{item.uid}</TableCell><TableCell>{item.name || "—"}</TableCell><TableCell className="font-mono text-xs">{item.home}</TableCell><TableCell className="font-mono text-xs">{item.shell}</TableCell></TableRow>)}</TableBody></Table></div></DataState></ModuleShell>
+  const columns: ColumnDef<UserInfo>[] = [
+    { accessorKey: "username", header: "User" },
+    { accessorKey: "uid", header: "UID" },
+    { accessorKey: "name", header: "Name" },
+    { accessorKey: "home", header: "Home" },
+    { accessorKey: "shell", header: "Shell" },
+  ]
+  return (
+    <Page title="Users" description="Local account inventory.">
+      <State query={query} empty={!items.length}>
+        <DataTable data={items} columns={columns} />
+      </State>
+    </Page>
+  )
 }
-
-function ServicesPage({ capability }: { capability?: Capability }) {
-  const [search, setSearch] = React.useState("")
-  const query = useQuery({ queryKey: ["services"], queryFn: () => api<{ items: ServiceInfo[] }>("/services"), refetchInterval: 10000 })
-  const items = query.data?.items.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase())) ?? []
-  return <ModuleShell title="Services" description="systemd service unit state from D-Bus." capability={capability}><Input className="mb-4" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter services" aria-label="Filter services" /><DataState pending={query.isPending} error={query.isError} empty={items.length === 0}><div className="max-h-[65vh] overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>Unit</TableHead><TableHead>Description</TableHead><TableHead>State</TableHead><TableHead>Detail</TableHead></TableRow></TableHeader><TableBody>{items.map((item) => <TableRow key={item.name}><TableCell className="font-medium">{item.name}</TableCell><TableCell>{item.description}</TableCell><TableCell><Badge variant={item.activeState === "active" ? "secondary" : "outline"}>{item.activeState}</Badge></TableCell><TableCell>{item.subState}</TableCell></TableRow>)}</TableBody></Table></div></DataState></ModuleShell>
+function UpdatesPage() {
+  const query = useQuery({
+    queryKey: ["updates"],
+    queryFn: () => api<UpdateStatus>("/updates"),
+  })
+  return (
+    <Page title="Updates" description="Package backend readiness.">
+      <Alert>
+        <RefreshCwIcon />
+        <AlertTitle>{query.data?.backend || "Package updates"}</AlertTitle>
+        <AlertDescription>{query.data?.message}</AlertDescription>
+      </Alert>
+    </Page>
+  )
 }
-
-function StoragePage({ capability }: { capability?: Capability }) {
-  const query = useQuery({ queryKey: ["storage"], queryFn: () => api<{ items: MountInfo[] }>("/storage"), refetchInterval: 15000 })
-  const items = query.data?.items ?? []
-  return <ModuleShell title="Storage" description="Mounted persistent filesystems and current usage." capability={capability}><DataState pending={query.isPending} error={query.isError} empty={items.length === 0}><div className="grid gap-4 md:grid-cols-2">{items.map((item) => <Card key={item.target}><CardHeader><CardTitle className="text-base">{item.target}</CardTitle><CardDescription>{item.source} · {item.filesystem}</CardDescription></CardHeader><CardContent className="flex flex-col gap-3"><Progress value={item.percent} /><div className="flex justify-between text-sm"><span>{bytes(item.used)} used</span><span className="text-muted-foreground">{bytes(item.total)} total</span></div></CardContent></Card>)}</div></DataState></ModuleShell>
-}
-
-function NetworkPage({ capability }: { capability?: Capability }) {
-  const query = useQuery({ queryKey: ["network"], queryFn: () => api<{ items: InterfaceInfo[] }>("/network"), refetchInterval: 5000 })
-  const items = query.data?.items ?? []
-  return <ModuleShell title="Network" description="Kernel interface state; NetworkManager capability shown separately." capability={capability}><DataState pending={query.isPending} error={query.isError} empty={items.length === 0}><div className="grid gap-4 md:grid-cols-2">{items.map((item) => <Card key={item.index}><CardHeader><div className="flex items-center justify-between"><CardTitle className="text-base">{item.name}</CardTitle><Badge variant={item.up ? "secondary" : "outline"}>{item.up ? "Up" : "Down"}</Badge></div><CardDescription>{item.hardware || "No hardware address"} · MTU {item.mtu}</CardDescription></CardHeader><CardContent className="flex flex-col gap-3"><div className="flex flex-wrap gap-2">{item.addresses.map((address) => <Badge key={address} variant="outline">{address}</Badge>)}</div><p className="text-sm text-muted-foreground">Received {bytes(item.rx)} · Sent {bytes(item.tx)}</p></CardContent></Card>)}</div></DataState></ModuleShell>
-}
-
-function UpdatesPage({ capability }: { capability?: Capability }) {
-  const query = useQuery({ queryKey: ["updates"], queryFn: () => api<UpdateStatus>("/updates") })
-  return <ModuleShell title="Updates" description="PackageKit capability and transaction readiness." capability={capability}><DataState pending={query.isPending} error={query.isError} empty={!query.data}><Alert><RefreshCwIcon /><AlertTitle>{query.data?.backend || "Package updates"}</AlertTitle><AlertDescription>{query.data?.message}</AlertDescription></Alert></DataState></ModuleShell>
-}
-
-function TerminalPage({ capability }: { capability?: Capability }) {
-  const query = useQuery({ queryKey: ["terminal"], queryFn: () => api<TerminalStatus>("/terminal") })
-  return <ModuleShell title="Terminal" description="Interactive PTY sessions run as your authenticated UNIX identity." capability={capability}>
-    <DataState pending={query.isPending} error={query.isError} empty={!query.data}>
-      {query.data?.available ? <React.Suspense fallback={<Skeleton className="h-[65vh]" />}><SystemTerminal /></React.Suspense> : <Empty><EmptyHeader><EmptyMedia variant="icon"><TerminalIcon /></EmptyMedia><EmptyTitle>User bridge unavailable</EmptyTitle><EmptyDescription>{query.data?.message}</EmptyDescription></EmptyHeader></Empty>}
-    </DataState>
-  </ModuleShell>
+const SystemTerminal = React.lazy(() =>
+  import("@/components/system-terminal").then((value) => ({
+    default: value.SystemTerminal,
+  }))
+)
+function TerminalPage() {
+  const query = useQuery({
+    queryKey: ["terminal"],
+    queryFn: () => api<TerminalStatus>("/terminal"),
+  })
+  return (
+    <Page
+      title="Terminal"
+      description="Interactive shell under authenticated UNIX identity."
+    >
+      {query.data?.available ? (
+        <React.Suspense fallback={<Skeleton className="h-[65vh]" />}>
+          <SystemTerminal />
+        </React.Suspense>
+      ) : (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <TerminalIcon />
+            </EmptyMedia>
+            <EmptyTitle>User bridge unavailable</EmptyTitle>
+            <EmptyDescription>{query.data?.message}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+    </Page>
+  )
 }

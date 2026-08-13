@@ -1,0 +1,265 @@
+import * as React from "react"
+import { Link, useParams } from "@tanstack/react-router"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+
+import {
+  api,
+  type LogEntry,
+  type ServiceDetail,
+  type SessionResponse,
+} from "@/lib/api"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { DataTable } from "@/components/data-table"
+import { Skeleton } from "@/components/ui/skeleton"
+import type { ColumnDef } from "@tanstack/react-table"
+
+const bytes = (value: number) =>
+  value
+    ? new Intl.NumberFormat(undefined, {
+        notation: "compact",
+        style: "unit",
+        unit: "byte",
+        unitDisplay: "narrow",
+      }).format(value)
+    : "—"
+
+export function ServiceDetailPage() {
+  const { scope, unit } = useParams({ strict: false }) as {
+    scope: string
+    unit: string
+  }
+  const client = useQueryClient()
+  const session = useQuery({
+    queryKey: ["session"],
+    queryFn: () => api<SessionResponse>("/auth/session"),
+  })
+  const detail = useQuery({
+    queryKey: ["service", scope, unit],
+    queryFn: () =>
+      api<ServiceDetail>(`/services/${scope}/${encodeURIComponent(unit)}`),
+    refetchInterval: 10_000,
+  })
+  const logs = useQuery({
+    queryKey: ["service-logs", unit],
+    queryFn: () =>
+      api<{ items: LogEntry[] }>(
+        `/logs?limit=300&unit=${encodeURIComponent(unit)}`
+      ),
+  })
+  const action = useMutation({
+    mutationFn: (name: string) =>
+      api<ServiceDetail>(
+        `/services/${scope}/${encodeURIComponent(unit)}/actions`,
+        {
+          method: "POST",
+          headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
+          body: JSON.stringify({ action: name }),
+        }
+      ),
+    onSuccess: (value) => client.setQueryData(["service", scope, unit], value),
+  })
+  if (detail.isPending)
+    return (
+      <main className="p-6">
+        <Skeleton className="h-96" />
+      </main>
+    )
+  if (!detail.data)
+    return (
+      <main className="p-6">
+        <Alert variant="destructive">
+          <AlertTitle>Service unavailable</AlertTitle>
+          <AlertDescription>Could not load unit details.</AlertDescription>
+        </Alert>
+      </main>
+    )
+  const item = detail.data
+  const relations: [string, string[]][] = [
+    ["Requires", item.requires],
+    ["Wants", item.wants],
+    ["Wanted by", item.wantedBy],
+    ["Conflicts", item.conflicts],
+    ["Before", item.before],
+    ["After", item.after],
+  ]
+  const logColumns: ColumnDef<LogEntry>[] = [
+    {
+      accessorKey: "timestamp",
+      header: "Time",
+      cell: ({ row }) => new Date(row.original.timestamp).toLocaleString(),
+    },
+    { accessorKey: "priority", header: "Priority" },
+    {
+      accessorKey: "message",
+      header: "Message",
+      cell: ({ row }) => (
+        <span className="font-mono text-xs whitespace-normal">
+          {row.original.message}
+        </span>
+      ),
+    },
+  ]
+  return (
+    <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink render={<Link to="/services" />}>
+              Services
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{unit}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>{item.description || item.name}</CardTitle>
+              <CardDescription>
+                {item.name} · {scope}
+              </CardDescription>
+            </div>
+            <Badge
+              variant={item.activeState === "active" ? "secondary" : "outline"}
+            >
+              {item.activeState} / {item.subState}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          {action.isError && (
+            <Alert variant="destructive">
+              <AlertTitle>Action failed</AlertTitle>
+              <AlertDescription>{action.error.message}</AlertDescription>
+            </Alert>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {[
+              "start",
+              "stop",
+              "restart",
+              "reload",
+              "enable",
+              "disable",
+              "mask",
+              "unmask",
+            ].map((name) => (
+              <AlertDialog key={name}>
+                <AlertDialogTrigger
+                  render={
+                    <Button
+                      variant={
+                        name === "stop" || name === "mask"
+                          ? "destructive"
+                          : "outline"
+                      }
+                      size="sm"
+                    />
+                  }
+                >
+                  {name[0].toUpperCase() + name.slice(1)}
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      {name} {unit}?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This changes {scope} systemd state. Administrative access
+                      is required for system units.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      disabled={action.isPending}
+                      onClick={() => action.mutate(name)}
+                    >
+                      Confirm
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            ))}
+          </div>
+          <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[10rem_1fr]">
+            <dt className="font-medium">Path</dt>
+            <dd className="font-mono text-xs">{item.path || "—"}</dd>
+            <dt className="font-medium">Main PID</dt>
+            <dd>{item.mainPid || "—"}</dd>
+            <dt className="font-medium">Memory</dt>
+            <dd>{bytes(item.memoryCurrent)}</dd>
+            <dt className="font-medium">Tasks</dt>
+            <dd>{item.tasksCurrent || "—"}</dd>
+            {relations.map(([label, values]) => (
+              <React.Fragment key={label}>
+                <dt className="font-medium">{label}</dt>
+                <dd className="flex flex-wrap gap-2">
+                  {values?.length
+                    ? values.map((value) => (
+                        <Link
+                          key={value}
+                          to="/services/$scope/$unit"
+                          params={{ scope, unit: value }}
+                          className="text-primary underline-offset-4 hover:underline"
+                        >
+                          {value}
+                        </Link>
+                      ))
+                    : "—"}
+                </dd>
+              </React.Fragment>
+            ))}
+          </dl>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Service logs</CardTitle>
+          <CardDescription>
+            Recent journal entries for this unit.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            data={logs.data?.items ?? []}
+            columns={logColumns}
+            height="45vh"
+          />
+        </CardContent>
+      </Card>
+    </main>
+  )
+}

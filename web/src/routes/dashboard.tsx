@@ -1,116 +1,266 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CpuIcon, HardDriveIcon, MemoryStickIcon, TimerIcon } from "lucide-react"
+import type { ColumnDef } from "@tanstack/react-table"
+import {
+  ActivityIcon,
+  CircleAlertIcon,
+  CpuIcon,
+  HardDriveIcon,
+  MemoryStickIcon,
+  NetworkIcon,
+} from "lucide-react"
 
-import { api, type Capability, type DashboardResponse, type MetricSample } from "@/lib/api"
+import {
+  api,
+  type DashboardResponse,
+  type LogEntry,
+  type MetricSample,
+  type MountInfo,
+  type ProcessInfo,
+  type ServiceInfo,
+} from "@/lib/api"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { DataTable } from "@/components/data-table"
+import { MetricsCharts } from "@/components/metrics-chart"
+import { RefreshSelect } from "@/components/refresh-select"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  usePreference,
+  refreshIntervals,
+  type RefreshInterval,
+} from "@/hooks/use-preference"
 
-const MetricsChart = React.lazy(() =>
-  import("@/components/metrics-chart").then((module) => ({ default: module.MetricsChart }))
-)
-
-function bytes(value: number) {
+const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
-  let amount = value
-  let index = 0
+  let amount = value,
+    index = 0
   while (amount >= 1024 && index < units.length - 1) {
     amount /= 1024
     index++
   }
-  return `${amount.toFixed(index > 2 ? 1 : 0)} ${units[index]}`
+  return `${amount.toFixed(index ? 1 : 0)} ${units[index]}`
 }
-
-function duration(seconds: number) {
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  return days > 0 ? `${days}d ${hours}h` : `${hours}h ${Math.floor((seconds % 3600) / 60)}m`
+const duration = (seconds: number) => {
+  const days = Math.floor(seconds / 86400),
+    hours = Math.floor((seconds % 86400) / 3600),
+    minutes = Math.floor((seconds % 3600) / 60)
+  return `${days ? `${days}d ` : ""}${hours}h ${minutes}m`
 }
 
 export function DashboardPage() {
-  const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: () => api<DashboardResponse>("/dashboard"), refetchInterval: 10_000 })
-  const history = useQuery({ queryKey: ["metrics"], queryFn: () => api<{ samples: MetricSample[] }>("/metrics") })
-  const capabilities = useQuery({ queryKey: ["capabilities"], queryFn: () => api<{ capabilities: Capability[] }>("/capabilities") })
-
-  if (!dashboard.data) {
-    return <DashboardSkeleton />
-  }
-
+  const [interval, setInterval] = usePreference<RefreshInterval>(
+    "current",
+    "interval:dashboard",
+    "1m"
+  )
+  const milliseconds =
+    refreshIntervals.find((item) => item.value === interval)?.milliseconds ||
+    false
+  const dashboard = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: () => api<DashboardResponse>("/dashboard"),
+    refetchInterval: milliseconds,
+  })
+  const history = useQuery({
+    queryKey: ["metrics", "dashboard"],
+    queryFn: () => api<{ samples: MetricSample[] }>("/metrics?range=1h"),
+  })
+  const processes = useQuery({
+    queryKey: ["processes", "dashboard"],
+    queryFn: () => api<{ items: ProcessInfo[] }>("/processes"),
+    refetchInterval: milliseconds,
+  })
+  const services = useQuery({
+    queryKey: ["services", "failed"],
+    queryFn: () =>
+      api<{ items: ServiceInfo[] }>("/services?scope=system&type=service"),
+    refetchInterval: milliseconds,
+  })
+  const logs = useQuery({
+    queryKey: ["logs", "critical"],
+    queryFn: () => api<{ items: LogEntry[] }>("/logs?limit=100"),
+  })
+  const storage = useQuery({
+    queryKey: ["storage", "dashboard"],
+    queryFn: () => api<{ items: MountInfo[] }>("/storage"),
+    refetchInterval: milliseconds,
+  })
+  if (!dashboard.data)
+    return (
+      <main className="p-6">
+        <Skeleton className="h-[70vh]" />
+      </main>
+    )
   const { host, metrics } = dashboard.data
-  const memoryPercent = metrics.memoryTotal ? (metrics.memoryUsed / metrics.memoryTotal) * 100 : 0
-  const available = capabilities.data?.capabilities.filter((item) => item.available).length ?? 0
-  const total = capabilities.data?.capabilities.length ?? 0
-
+  const memory = metrics.memoryTotal
+    ? (metrics.memoryUsed / metrics.memoryTotal) * 100
+    : 0
+  const storageUsed =
+      storage.data?.items.reduce((sum, item) => sum + item.used, 0) ?? 0,
+    storageTotal =
+      storage.data?.items.reduce((sum, item) => sum + item.total, 0) ?? 0
+  const failed =
+    services.data?.items.filter((item) => item.activeState === "failed") ?? []
+  const critical =
+    logs.data?.items.filter((item) => Number(item.priority) <= 3).slice(0, 8) ??
+    []
+  const top = (processes.data?.items ?? []).slice(0, 10)
+  const processColumns: ColumnDef<ProcessInfo>[] = [
+    { accessorKey: "pid", header: "PID" },
+    { accessorKey: "program", header: "Program" },
+    { accessorKey: "user", header: "User" },
+    {
+      accessorKey: "memory",
+      header: "Memory",
+      cell: ({ row }) => bytes(row.original.memory),
+    },
+    {
+      accessorKey: "cpuTime",
+      header: "CPU time",
+      cell: ({ row }) => `${row.original.cpuTime.toFixed(1)}s`,
+    },
+  ]
   return (
     <main className="@container/main flex flex-1 flex-col gap-6 p-4 lg:p-6">
-      <section className="flex flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-2xl font-semibold tracking-tight">{host.hostname}</h2>
-          <Badge variant="secondary">Online</Badge>
+      <section className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-semibold tracking-tight">
+              {host.hostname}
+            </h2>
+            <Badge variant="secondary">Online</Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {host.operatingSystem} · Linux {host.kernel} · {host.architecture} ·
+            up {duration(host.uptimeSeconds)}
+          </p>
         </div>
-        <p className="text-sm text-muted-foreground">{host.operatingSystem} · Linux {host.kernel} · {host.architecture}</p>
+        <RefreshSelect value={interval} onChange={setInterval} />
       </section>
-
-      <section className="grid gap-4 @xl/main:grid-cols-2 @5xl/main:grid-cols-4">
-        <MetricCard title="CPU" value={`${metrics.cpuPercent.toFixed(1)}%`} description={`Load average ${metrics.load1.toFixed(2)}`} icon={CpuIcon} progress={metrics.cpuPercent} />
-        <MetricCard title="Memory" value={bytes(metrics.memoryUsed)} description={`${bytes(metrics.memoryTotal)} total`} icon={MemoryStickIcon} progress={memoryPercent} />
-        <MetricCard title="Network" value={bytes(metrics.networkRx)} description={`${bytes(metrics.networkTx)} transmitted`} icon={HardDriveIcon} />
-        <MetricCard title="Uptime" value={duration(host.uptimeSeconds)} description={`${available} of ${total} capabilities ready`} icon={TimerIcon} />
+      {failed.length > 0 && (
+        <Alert variant="destructive">
+          <CircleAlertIcon />
+          <AlertTitle>
+            {failed.length} failed service{failed.length === 1 ? "" : "s"}
+          </AlertTitle>
+          <AlertDescription>
+            {failed
+              .slice(0, 5)
+              .map((item) => item.name)
+              .join(", ")}
+          </AlertDescription>
+        </Alert>
+      )}
+      <section className="grid gap-4 sm:grid-cols-2 @5xl/main:grid-cols-4">
+        <Summary
+          title="CPU"
+          value={`${metrics.cpuPercent.toFixed(1)}%`}
+          detail={`Load ${metrics.load1.toFixed(2)}`}
+          icon={CpuIcon}
+        />
+        <Summary
+          title="Memory"
+          value={`${memory.toFixed(1)}%`}
+          detail={`${bytes(metrics.memoryUsed)} of ${bytes(metrics.memoryTotal)}`}
+          icon={MemoryStickIcon}
+        />
+        <Summary
+          title="Storage"
+          value={
+            storageTotal
+              ? `${((storageUsed / storageTotal) * 100).toFixed(1)}%`
+              : "—"
+          }
+          detail={`${bytes(storageUsed)} used`}
+          icon={HardDriveIcon}
+        />
+        <Summary
+          title="Network"
+          value={bytes(metrics.networkRx)}
+          detail={`${bytes(metrics.networkTx)} sent`}
+          icon={NetworkIcon}
+        />
       </section>
-
-      <React.Suspense fallback={<Skeleton className="h-80" />}>
-        <MetricsChart initialSamples={history.data?.samples ?? []} />
-      </React.Suspense>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Host capabilities</CardTitle>
-          <CardDescription>Tako detects optional system services at runtime.</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {capabilities.data?.capabilities.map((capability) => (
-            <div key={capability.id} className="flex items-start justify-between gap-3 rounded-lg border p-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium capitalize">{capability.id}</p>
-                <p className="truncate text-xs text-muted-foreground">{capability.reason ?? "Ready"}</p>
-              </div>
-              <Badge variant={capability.available ? "secondary" : "outline"}>{capability.available ? "Ready" : "Unavailable"}</Badge>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+      <MetricsCharts
+        initialSamples={history.data?.samples ?? []}
+        interval={interval}
+        compact
+      />
+      <section className="grid gap-4 @5xl/main:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Top processes</CardTitle>
+            <CardDescription>Highest resident memory usage.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DataTable data={top} columns={processColumns} height="22rem" />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent critical logs</CardTitle>
+            <CardDescription>Journal priority error or higher.</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {critical.length ? (
+              critical.map((entry, index) => (
+                <div
+                  key={`${entry.timestamp}-${index}`}
+                  className="flex gap-3 border-b pb-3 last:border-0"
+                >
+                  <ActivityIcon />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {entry.unit || "kernel"}
+                    </p>
+                    <p className="line-clamp-2 font-mono text-xs text-muted-foreground">
+                      {entry.message}
+                    </p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No recent critical entries.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
     </main>
   )
 }
-
-function MetricCard({ title, value, description, icon: Icon, progress }: { title: string; value: string; description: string; icon: React.ComponentType; progress?: number }) {
+function Summary({
+  title,
+  value,
+  detail,
+  icon: Icon,
+}: {
+  title: string
+  value: string
+  detail: string
+  icon: React.ComponentType
+}) {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-3">
           <CardDescription>{title}</CardDescription>
           <Icon />
         </div>
         <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {progress !== undefined && <Progress value={Math.min(100, progress)} aria-label={`${title} usage`} />}
-        <p className="text-xs text-muted-foreground">{description}</p>
+      <CardContent>
+        <p className="text-xs text-muted-foreground">{detail}</p>
       </CardContent>
     </Card>
-  )
-}
-
-function DashboardSkeleton() {
-  return (
-    <main className="flex flex-col gap-6 p-4 lg:p-6">
-      <Skeleton className="h-16 w-full max-w-xl" />
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-40" />)}
-      </section>
-      <Skeleton className="h-80" />
-    </main>
   )
 }

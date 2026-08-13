@@ -8,6 +8,9 @@ export type User = {
 export type SessionResponse = {
   user: User
   csrfToken: string
+  administrative?: boolean
+  adminUntil?: string
+  adminIdleTimeoutSeconds?: number
 }
 
 export type HostInfo = {
@@ -25,8 +28,16 @@ export type MetricSample = {
   memoryUsed: number
   memoryTotal: number
   load1: number
+  load5: number
+  load15: number
+  cpuCorePercent: number[]
+  swapUsed: number
+  swapTotal: number
   networkRx: number
   networkTx: number
+  diskRead: number
+  diskWrite: number
+  interfaces: Record<string, { rx: number; tx: number }>
 }
 
 export type DashboardResponse = {
@@ -43,11 +54,22 @@ export type Capability = {
 export type ProcessInfo = {
   pid: number
   ppid: number
+  started: number
   user: string
+  program: string
   command: string
   state: string
+  threads: number
   cpuTime: number
   memory: number
+  virtualMemory: number
+  diskRead: number
+  diskWrite: number
+  cpuPercent?: number
+  diskReadRate?: number
+  diskWriteRate?: number
+  networkRxRate?: number
+  networkTxRate?: number
 }
 export type UserInfo = {
   username: string
@@ -76,6 +98,7 @@ export type InterfaceInfo = {
   up: boolean
   rx: number
   tx: number
+  manager: string
 }
 export type ServiceInfo = {
   name: string
@@ -83,6 +106,22 @@ export type ServiceInfo = {
   loadState: string
   activeState: string
   subState: string
+  fileState: string
+  scope: "system" | "user"
+  type: "service" | "target" | "socket" | "timer" | "path"
+}
+export type ServiceDetail = ServiceInfo & {
+  path: string
+  mainPid: number
+  memoryCurrent: number
+  tasksCurrent: number
+  activeEnterTimestamp: number
+  requires: string[]
+  wants: string[]
+  wantedBy: string[]
+  conflicts: string[]
+  before: string[]
+  after: string[]
 }
 export type LogEntry = {
   timestamp: string

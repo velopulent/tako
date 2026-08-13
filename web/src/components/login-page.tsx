@@ -1,5 +1,10 @@
 import * as React from "react"
-import { LoaderCircleIcon, ShieldCheckIcon } from "lucide-react"
+import {
+  LoaderCircleIcon,
+  LockKeyholeIcon,
+  ShieldCheckIcon,
+  UserIcon,
+} from "lucide-react"
 
 import { APIError, api, type SessionResponse } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -18,7 +23,11 @@ import {
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group"
 
 export function LoginPage({
   onAuthenticated,
@@ -80,22 +89,32 @@ export function LoginPage({
               )}
               <Field>
                 <FieldLabel htmlFor="username">Username</FieldLabel>
-                <Input
-                  id="username"
-                  name="username"
-                  autoComplete="username"
-                  required
-                  autoFocus
-                />
+                <InputGroup>
+                  <InputGroupAddon>
+                    <UserIcon aria-hidden="true" />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    id="username"
+                    name="username"
+                    autoComplete="username"
+                    required
+                    autoFocus
+                  />
+                </InputGroup>
               </Field>
               <Field>
                 <FieldLabel htmlFor="password">Password</FieldLabel>
-                <Input
-                  id="password"
-                  name="password"
-                  type="password"
-                  autoComplete="current-password"
-                />
+                <InputGroup>
+                  <InputGroupAddon>
+                    <LockKeyholeIcon aria-hidden="true" />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    id="password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                  />
+                </InputGroup>
                 <FieldDescription>
                   Authentication follows this host&apos;s PAM policy.
                 </FieldDescription>

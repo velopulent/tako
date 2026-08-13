@@ -13,7 +13,8 @@ export function SystemTerminal() {
     const terminal = new Terminal({
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontFamily:
+        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       fontSize: 14,
       scrollback: 5000,
       theme: {
@@ -29,23 +30,32 @@ export function SystemTerminal() {
     fit.fit()
 
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const socket = new WebSocket(`${scheme}//${window.location.host}/api/v1/terminal/ws?columns=${terminal.cols}&rows=${terminal.rows}`)
+    const socket = new WebSocket(
+      `${scheme}//${window.location.host}/api/v1/terminal/ws?columns=${terminal.cols}&rows=${terminal.rows}`
+    )
     socket.binaryType = "arraybuffer"
     socket.onopen = () => {
       setState("Connected")
       terminal.focus()
     }
-    socket.onmessage = (event) => terminal.write(event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data)
+    socket.onmessage = (event) =>
+      terminal.write(
+        event.data instanceof ArrayBuffer
+          ? new Uint8Array(event.data)
+          : event.data
+      )
     socket.onerror = () => setState("Connection failed")
     socket.onclose = (event) => {
       setState(event.reason || "Disconnected")
       terminal.write("\r\n\x1b[2m[session closed]\x1b[0m\r\n")
     }
     const input = terminal.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data))
+      if (socket.readyState === WebSocket.OPEN)
+        socket.send(new TextEncoder().encode(data))
     })
     const resize = terminal.onResize(({ cols, rows }) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ columns: cols, rows }))
+      if (socket.readyState === WebSocket.OPEN)
+        socket.send(JSON.stringify({ columns: cols, rows }))
     })
     const observer = new ResizeObserver(() => fit.fit())
     observer.observe(container.current)
@@ -62,9 +72,14 @@ export function SystemTerminal() {
   return (
     <div className="overflow-hidden rounded-xl border bg-zinc-950 shadow-sm">
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2 text-xs text-zinc-400">
-        <span>Authenticated shell</span><span aria-live="polite">{state}</span>
+        <span>Authenticated shell</span>
+        <span aria-live="polite">{state}</span>
       </div>
-      <div ref={container} className="h-[65vh] min-h-80 p-3" aria-label="Interactive terminal" />
+      <div
+        ref={container}
+        className="h-[65vh] min-h-80 p-3"
+        aria-label="Interactive terminal"
+      />
     </div>
   )
 }

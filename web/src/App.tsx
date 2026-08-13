@@ -19,6 +19,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { DashboardPage } from "@/routes/dashboard"
 import { ModulePage } from "@/routes/module"
+import { ServiceDetailPage } from "@/routes/service-detail"
 import { api, type SessionResponse } from "@/lib/api"
 
 type RouterContext = {
@@ -65,6 +66,7 @@ const moduleNames = [
   "storage",
   "network",
   "processes",
+  "settings",
 ] as const
 
 const moduleRoutes = moduleNames.map((module) =>
@@ -75,7 +77,17 @@ const moduleRoutes = moduleNames.map((module) =>
   })
 )
 
-const routeTree = rootRoute.addChildren([dashboardRoute, ...moduleRoutes])
+const serviceDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/services/$scope/$unit",
+  component: ServiceDetailPage,
+})
+
+const routeTree = rootRoute.addChildren([
+  dashboardRoute,
+  ...moduleRoutes,
+  serviceDetailRoute,
+])
 const router = createRouter({
   routeTree,
   context: { session: undefined! },

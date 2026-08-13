@@ -1,42 +1,180 @@
-import { useLocation } from "@tanstack/react-router"
-import { LogOutIcon, MoonIcon, SunIcon } from "lucide-react"
+import * as React from "react"
+import { Link, useLocation } from "@tanstack/react-router"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  KeyRoundIcon,
+  LockKeyholeIcon,
+  LogOutIcon,
+  MoonIcon,
+  SunIcon,
+} from "lucide-react"
 
 import type { User } from "@/lib/api"
 import { api } from "@/lib/api"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
 import { Button } from "@/components/ui/button"
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { useTheme } from "@/components/theme-provider"
 
 const titles: Record<string, string> = {
-  "/": "Dashboard",
-  "/logs": "System logs",
-  "/users": "Users",
-  "/updates": "Updates",
-  "/terminal": "Terminal",
-  "/metrics": "Metrics",
-  "/services": "Services",
-  "/storage": "Storage",
-  "/network": "Network",
-  "/processes": "Processes",
+  dashboard: "Dashboard",
+  logs: "System logs",
+  users: "Users",
+  updates: "Updates",
+  terminal: "Terminal",
+  metrics: "Metrics",
+  services: "Services",
+  storage: "Storage",
+  network: "Network",
+  processes: "Processes",
+  settings: "Settings",
 }
 
-export function SiteHeader({ user, csrfToken }: { user: User; csrfToken: string }) {
-  const location = useLocation()
-  const { theme, setTheme } = useTheme()
-
+export function SiteHeader({
+  user,
+  csrfToken,
+}: {
+  user: User
+  csrfToken: string
+}) {
+  const location = useLocation(),
+    client = useQueryClient(),
+    { theme, setTheme } = useTheme(),
+    [password, setPassword] = React.useState("")
+  const admin = useQuery({
+    queryKey: ["admin"],
+    queryFn: () =>
+      api<{
+        administrative: boolean
+        until: string
+        idleTimeoutSeconds: number
+      }>("/admin"),
+    refetchInterval: 10_000,
+  })
+  const segments = location.pathname.split("/").filter(Boolean)
+  const remaining = admin.data?.until
+    ? Math.max(
+        0,
+        Math.ceil(
+          (new Date(admin.data.until).getTime() - admin.dataUpdatedAt) / 60_000
+        )
+      )
+    : 0
   async function logout() {
-    await api<void>("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken } })
+    await api<void>("/auth/logout", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken },
+    })
     window.location.reload()
   }
-
+  async function elevate() {
+    await api("/admin/elevate", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({ password }),
+    })
+    setPassword("")
+    await admin.refetch()
+    await client.invalidateQueries({ queryKey: ["session"] })
+  }
+  async function drop() {
+    await api<void>("/admin/drop", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken },
+    })
+    await admin.refetch()
+  }
   return (
     <header className="flex h-(--header-height) shrink-0 items-center border-b">
       <div className="flex w-full items-center gap-2 px-4 lg:px-6">
         <SidebarTrigger className="-ml-1" />
-        <Separator orientation="vertical" className="mx-1 h-4 data-vertical:self-auto" />
-        <h1 className="min-w-0 flex-1 truncate text-base font-medium">{titles[location.pathname] ?? "Tako"}</h1>
-        <span className="hidden text-sm text-muted-foreground sm:inline">{user.username}</span>
+        <Separator
+          orientation="vertical"
+          className="mx-1 h-4 data-vertical:self-auto"
+        />
+        <Breadcrumb className="min-w-0 flex-1">
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbLink render={<Link to="/" />}>
+                {segments.length ? titles[segments[0]] || "Tako" : "Dashboard"}
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            {segments.slice(1).map((segment) => (
+              <React.Fragment key={segment}>
+                <BreadcrumbSeparator />
+                <BreadcrumbItem>
+                  <BreadcrumbPage>{decodeURIComponent(segment)}</BreadcrumbPage>
+                </BreadcrumbItem>
+              </React.Fragment>
+            ))}
+          </BreadcrumbList>
+        </Breadcrumb>
+        {admin.data?.administrative ? (
+          <Button variant="outline" size="sm" onClick={drop}>
+            <KeyRoundIcon data-icon="inline-start" />
+            Administrative access · {remaining}m
+          </Button>
+        ) : (
+          <AlertDialog>
+            <AlertDialogTrigger render={<Button variant="outline" size="sm" />}>
+              <LockKeyholeIcon data-icon="inline-start" />
+              <span className="hidden sm:inline">Limited access</span>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Gain Administrative access</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Authenticate as {user.username}. Access expires after{" "}
+                  {Math.round((admin.data?.idleTimeoutSeconds ?? 300) / 60)}{" "}
+                  idle minutes.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <InputGroup>
+                <InputGroupAddon>
+                  <LockKeyholeIcon aria-hidden="true" />
+                </InputGroupAddon>
+                <InputGroupInput
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Password"
+                  aria-label="Password"
+                  autoComplete="current-password"
+                />
+              </InputGroup>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={elevate} disabled={!password}>
+                  Authenticate
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
         <Button
           variant="ghost"
           size="icon"
@@ -45,11 +183,15 @@ export function SiteHeader({ user, csrfToken }: { user: User; csrfToken: string 
         >
           {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </Button>
-        <Button variant="ghost" size="icon" onClick={logout} aria-label="Sign out">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={logout}
+          aria-label="Sign out"
+        >
           <LogOutIcon />
         </Button>
       </div>
     </header>
   )
 }
-
