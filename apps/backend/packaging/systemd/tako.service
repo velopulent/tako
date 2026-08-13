@@ -1,17 +1,31 @@
 [Unit]
 Description=Tako web gateway
-After=network.target
+After=network-online.target tako-sessiond.socket
+Wants=network-online.target
 Requires=tako-sessiond.socket
 
 [Service]
 User=tako
 Group=tako
 ExecStart=/usr/bin/tako serve --config /etc/tako/config.toml
+Restart=on-failure
+RestartSec=2s
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+StateDirectory=tako
+StateDirectoryMode=0700
 ReadWritePaths=/var/lib/tako
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 
+[Install]
+WantedBy=multi-user.target

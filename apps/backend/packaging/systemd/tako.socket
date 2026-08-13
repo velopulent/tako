@@ -4,7 +4,7 @@ Description=Tako HTTPS socket
 [Socket]
 ListenStream=9090
 NoDelay=true
+RemoveOnStop=true
 
 [Install]
 WantedBy=sockets.target
-

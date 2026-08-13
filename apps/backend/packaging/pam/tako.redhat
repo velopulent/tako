@@ -1,0 +1,5 @@
+# Fedora/RHEL-compatible package variant. Install as /etc/pam.d/tako.
+auth    substack system-auth
+account include system-auth
+session include system-auth
+session include postlogin

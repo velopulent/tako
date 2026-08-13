@@ -1,0 +1,7 @@
+# Optional NOPASSWD policy for Tako Administrative access.
+#
+# Grant this exact probe only to a dedicated operator group. Tako's privileged
+# session service still validates every system operation independently.
+# Replace tako-admin with the local group used by the deployment.
+#
+# %tako-admin ALL=(root) NOPASSWD: /usr/bin/true
