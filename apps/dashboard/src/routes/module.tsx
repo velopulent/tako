@@ -58,6 +58,7 @@ import { SettingsPage } from "@/routes/settings"
 import { JobsPage } from "@/routes/jobs"
 import { HostPage } from "@/routes/host"
 import { JournalBrowser } from "@/components/journal-browser"
+import { ProcessDetails } from "@/components/process-details"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -249,6 +250,7 @@ function ProcessesTable({
 }: {
   interval: ReturnType<typeof usePageInterval>
 }) {
+  const [selected, setSelected] = React.useState<ProcessInfo | null>(null)
   const previous = React.useRef<{
     at: number
     items: Map<string, ProcessInfo>
@@ -287,31 +289,35 @@ function ProcessesTable({
   })
   const items = query.data?.items ?? []
   return (
-    <State query={query} empty={!items.length}>
-      <Card>
-        <CardHeader>
-          <CardTitle>Processes</CardTitle>
-          <CardDescription>
-            {items.length} processes · per-process network requires optional
-            eBPF collector
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <DataTable
-            data={items}
-            columns={processColumns}
-            searchPlaceholder="Search PID, program, command, or user"
-            initialVisibility={{
-              virtualMemory: false,
-              diskRead: false,
-              diskWrite: false,
-              diskReadRate: false,
-              diskWriteRate: false,
-            }}
-          />
-        </CardContent>
-      </Card>
-    </State>
+    <>
+      <State query={query} empty={!items.length}>
+        <Card>
+          <CardHeader>
+            <CardTitle>Processes</CardTitle>
+            <CardDescription>
+              {items.length} processes · per-process network requires optional
+              eBPF collector
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DataTable
+              data={items}
+              columns={processColumns}
+              searchPlaceholder="Search PID, program, command, or user"
+              onRowClick={setSelected}
+              initialVisibility={{
+                virtualMemory: false,
+                diskRead: false,
+                diskWrite: false,
+                diskReadRate: false,
+                diskWriteRate: false,
+              }}
+            />
+          </CardContent>
+        </Card>
+      </State>
+      <ProcessDetails process={selected} onClose={() => setSelected(null)} />
+    </>
   )
 }
 function ProcessesPage() {

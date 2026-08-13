@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -20,19 +21,21 @@ import (
 )
 
 type Process struct {
-	PID           int     `json:"pid"`
-	PPID          int     `json:"ppid"`
-	Started       uint64  `json:"started"`
-	User          string  `json:"user"`
-	Program       string  `json:"program"`
-	Command       string  `json:"command"`
-	State         string  `json:"state"`
-	Threads       int     `json:"threads"`
-	CPUTime       float64 `json:"cpuTime"`
-	Memory        uint64  `json:"memory"`
-	VirtualMemory uint64  `json:"virtualMemory"`
-	DiskRead      uint64  `json:"diskRead"`
-	DiskWrite     uint64  `json:"diskWrite"`
+	PID              int     `json:"pid"`
+	PPID             int     `json:"ppid"`
+	Started          uint64  `json:"started"`
+	User             string  `json:"user"`
+	Program          string  `json:"program"`
+	Command          string  `json:"command"`
+	State            string  `json:"state"`
+	Threads          int     `json:"threads"`
+	CPUTime          float64 `json:"cpuTime"`
+	Memory           uint64  `json:"memory"`
+	VirtualMemory    uint64  `json:"virtualMemory"`
+	DiskRead         uint64  `json:"diskRead"`
+	DiskWrite        uint64  `json:"diskWrite"`
+	PermissionDenied bool    `json:"permissionDenied,omitempty"`
+	Reason           string  `json:"reason,omitempty"`
 }
 
 func Processes() ([]Process, error) {
@@ -51,6 +54,9 @@ func Processes() ([]Process, error) {
 		}
 		stat, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "stat"))
 		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				result = append(result, Process{PID: pid, User: "?", PermissionDenied: true, Reason: "process metadata is not readable"})
+			}
 			continue
 		}
 		line := string(stat)
@@ -71,8 +77,13 @@ func Processes() ([]Process, error) {
 		threads, _ := strconv.Atoi(fields[17])
 		program := line[open+1 : close]
 		command := program
-		if cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline")); err == nil && len(cmdline) > 0 {
+		reason := ""
+		permissionDenied := false
+		if cmdline, err := readProcessFile(filepath.Join("/proc", entry.Name(), "cmdline")); err == nil && len(cmdline) > 0 {
 			command = strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			permissionDenied = true
+			reason = "command line is not readable"
 		}
 		uid := processUID(entry.Name())
 		username := users[uid]
@@ -83,17 +94,23 @@ func Processes() ([]Process, error) {
 			}
 			users[uid] = username
 		}
-		diskRead, diskWrite := processIO(entry.Name())
-		result = append(result, Process{PID: pid, PPID: ppid, Started: started, User: username, Program: program, Command: command, State: fields[0], Threads: threads, CPUTime: float64(utime+stime) / clockTicks, Memory: rss * pageSize, VirtualMemory: virtualMemory, DiskRead: diskRead, DiskWrite: diskWrite})
+		diskRead, diskWrite, ioErr := processIO(entry.Name())
+		if ioErr != nil && !errors.Is(ioErr, os.ErrNotExist) {
+			permissionDenied = true
+			if reason == "" {
+				reason = "I/O counters are not readable"
+			}
+		}
+		result = append(result, Process{PID: pid, PPID: ppid, Started: started, User: username, Program: program, Command: command, State: fields[0], Threads: threads, CPUTime: float64(utime+stime) / clockTicks, Memory: rss * pageSize, VirtualMemory: virtualMemory, DiskRead: diskRead, DiskWrite: diskWrite, PermissionDenied: permissionDenied, Reason: reason})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Memory > result[j].Memory })
 	return result, nil
 }
 
-func processIO(pid string) (uint64, uint64) {
+func processIO(pid string) (uint64, uint64, error) {
 	file, err := os.Open(filepath.Join("/proc", pid, "io"))
 	if err != nil {
-		return 0, 0
+		return 0, 0, err
 	}
 	defer file.Close()
 	var read, write uint64
@@ -111,7 +128,7 @@ func processIO(pid string) (uint64, uint64) {
 			write = value
 		}
 	}
-	return read, write
+	return read, write, scanner.Err()
 }
 
 func processUID(pid string) string {

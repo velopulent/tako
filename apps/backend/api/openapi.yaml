@@ -688,7 +688,38 @@ paths:
     get:
       operationId: listProcesses
       responses:
-        '200': { description: Process inventory }
+        '200':
+          description: Process inventory with PID-start identity and per-process access status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 4096
+                    items: { $ref: '#/components/schemas/ProcessInfo' }
+  /processes/{pid}:
+    get:
+      operationId: getProcessDetails
+      parameters:
+        - in: path
+          name: pid
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - in: query
+          name: started
+          schema: { type: integer, minimum: 1, description: Linux process start ticks used to reject PID reuse }
+      responses:
+        '200':
+          description: Process relationships, resource history, cgroup, files, and sockets
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/ProcessDetails' } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /terminal:
     get:
       operationId: getTerminalStatus
@@ -1042,6 +1073,70 @@ components:
         revision: { type: integer, minimum: 1 }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    ProcessInfo:
+      type: object
+      required: [pid, ppid, started, user, program, command, state, threads, cpuTime, memory, virtualMemory, diskRead, diskWrite]
+      properties:
+        pid: { type: integer, minimum: 1 }
+        ppid: { type: integer, minimum: 0 }
+        started: { type: integer, minimum: 0, description: Linux process start ticks; zero means metadata was restricted }
+        user: { type: string }
+        program: { type: string }
+        command: { type: string, maxLength: 16384 }
+        state: { type: string, maxLength: 1 }
+        threads: { type: integer, minimum: 0 }
+        cpuTime: { type: number, minimum: 0 }
+        memory: { type: integer, minimum: 0 }
+        virtualMemory: { type: integer, minimum: 0 }
+        diskRead: { type: integer, minimum: 0 }
+        diskWrite: { type: integer, minimum: 0 }
+        permissionDenied: { type: boolean }
+        reason: { type: string, maxLength: 256 }
+    ProcessSocket:
+      type: object
+      required: [protocol, local]
+      properties:
+        protocol: { type: string, maxLength: 8 }
+        local: { type: string, maxLength: 256 }
+        remote: { type: string, maxLength: 256 }
+        state: { type: string, maxLength: 16 }
+    ProcessResourceSample:
+      type: object
+      required: [timestamp, cpuTime, memory, virtualMemory, diskRead, diskWrite]
+      properties:
+        timestamp: { type: string, format: date-time }
+        cpuTime: { type: number, minimum: 0 }
+        memory: { type: integer, minimum: 0 }
+        virtualMemory: { type: integer, minimum: 0 }
+        diskRead: { type: integer, minimum: 0 }
+        diskWrite: { type: integer, minimum: 0 }
+    ProcessDetails:
+      type: object
+      required: [process, children, openFiles, sockets, history]
+      properties:
+        process: { $ref: '#/components/schemas/ProcessInfo' }
+        parent: { $ref: '#/components/schemas/ProcessInfo' }
+        children:
+          type: array
+          maxItems: 2048
+          items: { $ref: '#/components/schemas/ProcessInfo' }
+        cgroup: { type: string, maxLength: 65536 }
+        openFiles:
+          type: array
+          maxItems: 256
+          items: { type: string, maxLength: 4096 }
+        sockets:
+          type: array
+          maxItems: 256
+          items: { $ref: '#/components/schemas/ProcessSocket' }
+        history:
+          type: array
+          maxItems: 120
+          items: { $ref: '#/components/schemas/ProcessResourceSample' }
+        accessIssues:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
     MetricSample:
       type: object
       required: [timestamp, cpuPercent, memoryUsed, memoryTotal, networkRx, networkTx, diskRead, diskWrite]

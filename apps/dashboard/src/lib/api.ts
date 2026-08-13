@@ -184,6 +184,32 @@ export type ProcessInfo = {
   diskWriteRate?: number
   networkRxRate?: number
   networkTxRate?: number
+  permissionDenied?: boolean
+  reason?: string
+}
+export type ProcessSocket = {
+  protocol: string
+  local: string
+  remote?: string
+  state?: string
+}
+export type ProcessResourceSample = {
+  timestamp: string
+  cpuTime: number
+  memory: number
+  virtualMemory: number
+  diskRead: number
+  diskWrite: number
+}
+export type ProcessDetails = {
+  process: ProcessInfo
+  parent?: ProcessInfo
+  children: ProcessInfo[]
+  cgroup?: string
+  openFiles: string[]
+  sockets: ProcessSocket[]
+  history: ProcessResourceSample[]
+  accessIssues?: string[]
 }
 export type UserInfo = {
   username: string

@@ -630,6 +630,29 @@ func TestSavedLogViewRoutesPersistAndRejectStaleWrites(t *testing.T) {
 	}
 }
 
+func TestProcessDetailRouteUsesStartIdentityAndDegradesAccess(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	server.readProcessDetails = func(_ context.Context, pid int, started uint64) (platform.ProcessDetails, error) {
+		if pid != 42 || started != 99 {
+			t.Fatalf("unexpected process identity pid=%d started=%d", pid, started)
+		}
+		return platform.ProcessDetails{Process: platform.Process{PID: pid, Started: started, PermissionDenied: true, Reason: "I/O counters are not readable"}, Children: []platform.Process{}, OpenFiles: []string{}, Sockets: []platform.ProcessSocket{}, History: []platform.ProcessResourceSample{}, AccessIssues: []string{"open files are not readable"}}, nil
+	}
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/processes/42?started=99", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "permissionDenied") || !strings.Contains(recorder.Body.String(), "open files") {
+		t.Fatalf("process details returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

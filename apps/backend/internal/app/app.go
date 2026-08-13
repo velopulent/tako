@@ -67,6 +67,8 @@ type Server struct {
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
 	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
+	processTracker        *platform.ProcessTracker
+	readProcessDetails    func(context.Context, int, uint64) (platform.ProcessDetails, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -90,6 +92,7 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
+	processTracker := platform.NewProcessTracker()
 	go sampler.Run(ctx, cfg.MonitoringInterval)
 	server := &Server{
 		config:                cfg,
@@ -113,7 +116,9 @@ func New(cfg config.Config) (*Server, error) {
 		applyOverride: func(ctx context.Context, request auth.OverrideRequest) (platform.OverrideState, error) {
 			return auth.ApplyOverride(ctx, cfg.SessionSocket, request)
 		},
-		queryLogs: platform.QueryLogs,
+		queryLogs:          platform.QueryLogs,
+		processTracker:     processTracker,
+		readProcessDetails: processTracker.Inspect,
 		followLogs: func(ctx context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
 			return platform.FollowJournal(ctx, query, emit)
 		},
@@ -316,6 +321,7 @@ func (server *Server) routes() http.Handler {
 			router.Get("/storage", server.storage)
 			router.Get("/network", server.network)
 			router.Get("/processes", server.processes)
+			router.Get("/processes/{pid}", server.processDetail)
 			router.Get("/terminal", server.terminalStatus)
 		})
 	})
@@ -696,8 +702,49 @@ func (server *Server) terminalWebSocket(writer http.ResponseWriter, request *htt
 }
 
 func (server *Server) processes(writer http.ResponseWriter, _ *http.Request) {
-	items, err := platform.Processes()
+	var (
+		items []platform.Process
+		err   error
+	)
+	if server.processTracker != nil {
+		items, err = server.processTracker.Snapshot()
+	} else {
+		items, err = platform.Processes()
+	}
 	server.writeModule(writer, "processes", items, err)
+}
+
+func (server *Server) processDetail(writer http.ResponseWriter, request *http.Request) {
+	pid, err := strconv.Atoi(chi.URLParam(request, "pid"))
+	if err != nil || pid < 1 {
+		problem(writer, http.StatusBadRequest, "invalid-process", "Process ID is invalid")
+		return
+	}
+	var started uint64
+	if raw := request.URL.Query().Get("started"); raw != "" {
+		started, err = strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			problem(writer, http.StatusBadRequest, "invalid-process", "Process start identity is invalid")
+			return
+		}
+	}
+	if server.readProcessDetails == nil {
+		problem(writer, http.StatusServiceUnavailable, "processes-unavailable", "Process details are unavailable")
+		return
+	}
+	details, err := server.readProcessDetails(request.Context(), pid, started)
+	if err != nil {
+		switch {
+		case errors.Is(err, platform.ErrProcessNotFound):
+			problem(writer, http.StatusNotFound, "process-not-found", "The process no longer exists")
+		case errors.Is(err, platform.ErrProcessReused):
+			problem(writer, http.StatusConflict, "process-reused", "The process ID now refers to a different process")
+		default:
+			problem(writer, http.StatusServiceUnavailable, "processes-unavailable", "Process details are unavailable")
+		}
+		return
+	}
+	writeJSON(writer, http.StatusOK, details)
 }
 
 func (server *Server) users(writer http.ResponseWriter, _ *http.Request) {

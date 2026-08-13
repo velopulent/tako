@@ -4,8 +4,8 @@
 
 **Blocked by:** 03 — Enrich capability reporting
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Process identity includes start time to distinguish PID reuse.
-- [ ] Permission-denied details degrade per process without failing whole inventory.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Process identity includes start time to distinguish PID reuse.
+- [x] Permission-denied details degrade per process without failing whole inventory.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
