@@ -75,6 +75,7 @@ type Server struct {
 	previewSSHKeysFn      func(context.Context, auth.SSHKeyRequest) (platform.SSHKeyPreview, error)
 	applySSHKeysFn        func(context.Context, auth.SSHKeyRequest) (platform.SSHKeyState, error)
 	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
+	queryLoginHistory     func(context.Context, platform.LoginHistoryQuery) (platform.LoginHistoryPage, error)
 	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
 	processTracker        *platform.ProcessTracker
 	readProcessDetails    func(context.Context, int, uint64) (platform.ProcessDetails, error)
@@ -154,6 +155,7 @@ func New(cfg config.Config) (*Server, error) {
 			return auth.ApplySSHKeys(ctx, cfg.SessionSocket, request)
 		},
 		queryLogs:          platform.QueryLogs,
+		queryLoginHistory:  platform.QueryLoginHistory,
 		processTracker:     processTracker,
 		readProcessDetails: processTracker.Inspect,
 		signalProcesses: func(ctx context.Context, request auth.SignalRequest) (platform.SignalResult, error) {
@@ -348,6 +350,7 @@ func (server *Server) routes() http.Handler {
 			router.Post("/host/power/preview", server.previewPower)
 			router.With(server.requireCSRF).Post("/host/power", server.requestPower)
 			router.Get("/users", server.users)
+			router.Get("/users/{username}/login-history", server.loginHistory)
 			router.Get("/groups", server.groups)
 			router.Post("/users/account/preview", server.previewLocalAccount)
 			router.With(server.requireCSRF).Post("/users/account", server.applyLocalAccount)

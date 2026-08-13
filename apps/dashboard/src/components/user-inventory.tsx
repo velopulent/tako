@@ -4,6 +4,7 @@ import type { ColumnDef } from "@tanstack/react-table"
 
 import { api, type SessionResponse, type UserInfo } from "@/lib/api"
 import { UserAccountManager } from "@/components/user-account-manager"
+import { AccountLoginHistory } from "@/components/account-login-history"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -115,6 +116,7 @@ export function UserInventory() {
           </Button>
         }
       />
+      <AccountLoginHistory username={selected?.username} />
     </div>
   )
 }

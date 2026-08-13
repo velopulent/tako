@@ -298,6 +298,40 @@ paths:
                     maxItems: 100000
                     items: { $ref: '#/components/schemas/NSSUser' }
         '503': { $ref: '#/components/responses/Problem' }
+  /users/{username}/login-history:
+    parameters:
+      - in: path
+        name: username
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 256 }
+    get:
+      operationId: listAccountLoginHistory
+      description: Bounded login and session events read directly from journald. Deleted or remote NSS identities remain queryable for administrators and are never copied into SQLite.
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: cursor
+          schema: { type: string, maxLength: 8192 }
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          schema: { type: string, format: date-time }
+        - in: query
+          name: outcome
+          schema: { type: string, enum: [success, failure] }
+      responses:
+        '200':
+          description: Bounded account login and session history with identity source metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginHistoryPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /users/account/preview:
     post:
       operationId: previewLocalAccount
@@ -1274,6 +1308,33 @@ components:
         details:
           type: object
           additionalProperties: { type: string, maxLength: 16384 }
+    LoginHistoryIdentity:
+      type: object
+      required: [username, source, present]
+      properties:
+        username: { type: string, maxLength: 256 }
+        source: { type: string, enum: [local, nss-read-only, deleted-unknown] }
+        present: { type: boolean }
+    LoginHistoryEntry:
+      type: object
+      required: [timestamp, event, outcome, service]
+      properties:
+        timestamp: { type: string, format: date-time }
+        event: { type: string, enum: [login, session-open, session-close] }
+        outcome: { type: string, enum: [success, failure] }
+        service: { type: string, maxLength: 128 }
+        remote: { type: string, maxLength: 256 }
+        session: { type: string, maxLength: 128 }
+    LoginHistoryPage:
+      type: object
+      required: [identity, items]
+      properties:
+        identity: { $ref: '#/components/schemas/LoginHistoryIdentity' }
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/LoginHistoryEntry' }
+        nextCursor: { type: string, maxLength: 8192 }
     SavedLogFilter:
       type: object
       additionalProperties: false

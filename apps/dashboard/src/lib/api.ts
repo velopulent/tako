@@ -451,6 +451,24 @@ export type JournalPage = {
   items: LogEntry[]
   nextCursor?: string
 }
+export type LoginHistoryIdentity = {
+  username: string
+  source: "local" | "nss-read-only" | "deleted-unknown"
+  present: boolean
+}
+export type LoginHistoryEntry = {
+  timestamp: string
+  event: "login" | "session-open" | "session-close"
+  outcome: "success" | "failure"
+  service: string
+  remote?: string
+  session?: string
+}
+export type LoginHistoryPage = {
+  identity: LoginHistoryIdentity
+  items: LoginHistoryEntry[]
+  nextCursor?: string
+}
 export type SavedLogFilter = {
   boot?: string
   since?: string
