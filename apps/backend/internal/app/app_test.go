@@ -14,6 +14,7 @@ import (
 
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
+	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
@@ -191,11 +192,14 @@ func TestDevelopmentLoginAndDashboard(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("dashboard returned %d: %s", recorder.Code, recorder.Body.String())
 	}
-	var payload map[string]any
+	var payload struct {
+		Host    host.Info `json:"host"`
+		Metrics any       `json:"metrics"`
+	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["host"] == nil || payload["metrics"] == nil {
+	if payload.Host.Hostname == "" || payload.Host.Hardware.CPUCores < 1 || payload.Metrics == nil {
 		t.Fatalf("dashboard response incomplete: %#v", payload)
 	}
 }

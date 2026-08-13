@@ -33,6 +33,26 @@ export type HostInfo = {
   architecture: string
   uptimeSeconds: number
   bootedAt: string
+  bootId?: string
+  hardware: {
+    available: boolean
+    cpuModel?: string
+    cpuCores?: number
+    memoryTotal?: number
+    memoryAvailable?: number
+    reason?: string
+  }
+  shutdown: {
+    available: boolean
+    clean: boolean
+    reason?: string
+  }
+  restart: {
+    available: boolean
+    required: boolean
+    source?: string
+    reason?: string
+  }
 }
 
 export type MetricSample = {

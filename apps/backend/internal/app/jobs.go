@@ -262,7 +262,7 @@ func (server *Server) runDiagnosticJob(ctx context.Context, kind string, update 
 	if err := update(10, "Reading host identity"); err != nil {
 		return nil, err
 	}
-	info := host.Read()
+	info := server.hostInfo(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

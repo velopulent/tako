@@ -54,6 +54,9 @@ type Server struct {
 	workersWG          sync.WaitGroup
 	cleanupMu          sync.Mutex
 	cleanupClosed      bool
+	hostMu             sync.Mutex
+	hostSnapshot       host.Info
+	hostSnapshotAt     time.Time
 	detectCapabilities func(context.Context) []platform.Capability
 }
 
@@ -511,9 +514,20 @@ func (server *Server) capabilities(writer http.ResponseWriter, request *http.Req
 	writeJSON(writer, http.StatusOK, map[string]any{"capabilities": capabilities})
 }
 
-func (server *Server) dashboard(writer http.ResponseWriter, _ *http.Request) {
+func (server *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 	current, _ := server.metrics.Current()
-	writeJSON(writer, http.StatusOK, map[string]any{"host": host.Read(), "metrics": current})
+	writeJSON(writer, http.StatusOK, map[string]any{"host": server.hostInfo(request.Context()), "metrics": current})
+}
+
+func (server *Server) hostInfo(ctx context.Context) host.Info {
+	server.hostMu.Lock()
+	defer server.hostMu.Unlock()
+	if !server.hostSnapshotAt.IsZero() && time.Since(server.hostSnapshotAt) < 15*time.Second {
+		return server.hostSnapshot
+	}
+	server.hostSnapshot = host.ReadContext(ctx)
+	server.hostSnapshotAt = time.Now()
+	return server.hostSnapshot
 }
 
 func (server *Server) metricHistory(writer http.ResponseWriter, request *http.Request) {

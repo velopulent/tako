@@ -30,12 +30,11 @@ import {
 } from "@/components/ui/card"
 import { DataTable } from "@/components/data-table"
 import { MetricsCharts } from "@/components/metrics-chart"
+import { HostInventory } from "@/components/host-inventory"
 import { RefreshSelect } from "@/components/refresh-select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
-import {
-  usePreference,
-} from "@/hooks/use-preference"
+import { usePreference } from "@/hooks/use-preference"
 import { refreshIntervals, type RefreshInterval } from "@/lib/monitoring"
 
 const bytes = (value: number) => {
@@ -95,10 +94,21 @@ export function DashboardPage() {
     queryFn: () => api<{ items: MountInfo[] }>("/storage"),
     refetchInterval: milliseconds,
   })
-  if (!dashboard.data)
+  if (dashboard.isPending)
     return (
       <main className="p-6">
         <Skeleton className="h-[70vh]" />
+      </main>
+    )
+  if (dashboard.isError || !dashboard.data)
+    return (
+      <main className="p-6">
+        <Alert variant="destructive">
+          <AlertTitle>Could not load host inventory</AlertTitle>
+          <AlertDescription>
+            The host adapter did not return a dashboard snapshot.
+          </AlertDescription>
+        </Alert>
       </main>
     )
   const { host, metrics } = dashboard.data
@@ -191,6 +201,7 @@ export function DashboardPage() {
           icon={NetworkIcon}
         />
       </section>
+      <HostInventory host={host} />
       <MetricsCharts
         initialSamples={history.data?.samples ?? []}
         interval={interval}
