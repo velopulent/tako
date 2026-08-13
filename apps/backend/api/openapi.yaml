@@ -1086,6 +1086,31 @@ paths:
         '200': { description: Notification state transition }
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+  /certificates:
+    get:
+      operationId: getCertificateStatus
+      responses:
+        '200':
+          description: Configured HTTPS certificate validity and expiry warning
+          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateStatus' } } }
+  /incidents/report:
+    post:
+      operationId: collectSupportReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmation]
+              additionalProperties: false
+              properties:
+                confirmation: { type: string, enum: [CONFIRM SUPPORT REPORT] }
+      responses:
+        '202': { description: Bounded report metadata; report contents are not persisted in the gateway database }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
   /files:
     get:
       operationId: listFiles
@@ -1453,6 +1478,27 @@ components:
           type: array
           maxItems: 8
           items: { type: string, maxLength: 512 }
+    CertificateStatus:
+      type: object
+      required: [configured, valid]
+      properties:
+        configured: { type: boolean }
+        path: { type: string }
+        subject: { type: string }
+        issuer: { type: string }
+        notBefore: { type: string, format: date-time }
+        notAfter: { type: string, format: date-time }
+        daysRemaining: { type: integer }
+        valid: { type: boolean }
+        warning: { type: string }
+    SupportReport:
+      type: object
+      required: [path, bytes, createdAt, warning]
+      properties:
+        path: { type: string, maxLength: 4096 }
+        bytes: { type: integer, minimum: 0, maximum: 268435456 }
+        createdAt: { type: string, format: date-time }
+        warning: { type: string, maxLength: 512 }
     FileEntry:
       type: object
       required: [name, path, kind, size, mode, modifiedAt, fingerprint, hidden, readable, writable]

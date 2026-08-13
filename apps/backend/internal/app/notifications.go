@@ -1,13 +1,18 @@
 package app
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/platform"
+	"github.com/velopulent/tako/internal/session"
 )
 
 type Notification struct {
@@ -111,6 +116,15 @@ func (server *Server) notificationsList(writer http.ResponseWriter, request *htt
 	writeJSON(writer, http.StatusOK, map[string]any{"items": server.notifications.list(request.URL.Query().Get("state"))})
 }
 
+func (server *Server) certificates(writer http.ResponseWriter, _ *http.Request) {
+	status, err := platform.InspectCertificate(server.config.Certificate)
+	if err != nil {
+		writeJSON(writer, http.StatusOK, status)
+		return
+	}
+	writeJSON(writer, http.StatusOK, status)
+}
+
 func (server *Server) notificationTransition(writer http.ResponseWriter, request *http.Request) {
 	if server.notifications == nil {
 		problem(writer, http.StatusNotFound, "notification-not-found", "Notification was not found")
@@ -130,4 +144,30 @@ func (server *Server) notificationTransition(writer http.ResponseWriter, request
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"state": state, "mutedUntil": muteUntil})
+}
+
+func (server *Server) supportReport(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before collecting a support report")
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var operation platform.SupportReportOperation
+	if err := decoder.Decode(&operation); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-support-report", "Support report confirmation is required")
+		return
+	}
+	report, err := auth.CollectSupportReport(request.Context(), server.config.SessionSocket, auth.SupportReportRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		if errors.Is(err, platform.ErrInvalidSupportReport) {
+			problem(writer, http.StatusBadRequest, "invalid-support-report", "Support report confirmation is required")
+		} else {
+			problem(writer, http.StatusBadGateway, "support-report-failed", "The support report could not be collected")
+		}
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, report)
 }

@@ -282,6 +282,10 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
+	if request.Operation != "support-report" && request.SupportReport != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
 	if request.Operation == "conversation" {
 		if request.Token != "" || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
 			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
@@ -998,6 +1002,31 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 			return
 		}
 		_ = encoder.Encode(auth.Response{SecurityStatus: &status})
+		return
+	}
+	if request.Operation == "support-report" {
+		if request.SupportReport == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil || request.Firewall != nil || request.Security != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-support-report"})
+			return
+		}
+		if _, ok := grants.adminIdentity(request.AdminToken); !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.SupportReport
+		request.SupportReport = nil
+		reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		report, reportErr := platform.CollectSupportReport(reportCtx, operation)
+		cancel()
+		if reportErr != nil {
+			if errors.Is(reportErr, platform.ErrInvalidSupportReport) {
+				_ = encoder.Encode(auth.Response{Error: "invalid-support-report"})
+			} else {
+				_ = encoder.Encode(auth.Response{Error: "support-report-failed"})
+			}
+			return
+		}
+		_ = encoder.Encode(auth.Response{SupportReport: &report})
 		return
 	}
 	if request.Operation == "host-config" {

@@ -137,6 +137,7 @@ type Request struct {
 	Network             *platform.NetworkOperation            `json:"network,omitempty"`
 	Firewall            *platform.FirewallOperation           `json:"firewall,omitempty"`
 	Security            *platform.SecurityOperation           `json:"security,omitempty"`
+	SupportReport       *platform.SupportReportOperation      `json:"supportReport,omitempty"`
 }
 
 // PasswordChangeOperation is deliberately wire-only. Secret fields are sent
@@ -270,6 +271,11 @@ type FirewallRequest struct {
 type SecurityRequest struct {
 	AdminToken string
 	Operation  platform.SecurityOperation
+}
+
+type SupportReportRequest struct {
+	AdminToken string
+	Operation  platform.SupportReportOperation
 }
 
 type HostConfigurationRequest struct {
@@ -672,6 +678,23 @@ func ApplySecurity(ctx context.Context, path string, request SecurityRequest) (p
 	return *response.SecurityStatus, nil
 }
 
+func CollectSupportReport(ctx context.Context, path string, request SupportReportRequest) (platform.SupportReport, error) {
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "support-report", AdminToken: request.AdminToken, SupportReport: &request.Operation}, 5*time.Minute, 64<<10)
+	if err != nil {
+		return platform.SupportReport{}, err
+	}
+	if response.Error != "" {
+		if response.Error == "invalid-support-report" {
+			return platform.SupportReport{}, platform.ErrInvalidSupportReport
+		}
+		return platform.SupportReport{}, errors.New(response.Error)
+	}
+	if response.SupportReport == nil {
+		return platform.SupportReport{}, ErrServiceUnavailable
+	}
+	return *response.SupportReport, nil
+}
+
 func securityResponseError(code string) error {
 	switch code {
 	case "invalid-security-operation":
@@ -911,6 +934,7 @@ type Response struct {
 	NetworkState           *platform.NetworkState              `json:"networkState,omitempty"`
 	FirewallState          *platform.FirewallState             `json:"firewallState,omitempty"`
 	SecurityStatus         *platform.SecurityStatus            `json:"securityStatus,omitempty"`
+	SupportReport          *platform.SupportReport             `json:"supportReport,omitempty"`
 }
 
 type Authenticator interface {

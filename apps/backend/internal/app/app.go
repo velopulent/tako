@@ -405,6 +405,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/incidents", server.incidents)
 			router.Get("/notifications", server.notificationsList)
 			router.With(server.requireCSRF).Post("/notifications/{id}/{state}", server.notificationTransition)
+			router.Get("/certificates", server.certificates)
+			router.With(server.requireCSRF).Post("/incidents/report", server.supportReport)
 			router.Get("/files", server.filesList)
 			router.Get("/files/search", server.filesSearch)
 			router.Get("/files/content", server.fileContent)
