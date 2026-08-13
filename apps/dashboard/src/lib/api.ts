@@ -60,8 +60,18 @@ export type DashboardResponse = {
 
 export type Capability = {
   id: string
-  available: boolean
+  state: "ready" | "degraded" | "unavailable" | "conflicted"
+  backend?: string
+  version?: string
+  readable: boolean
+  mutable: boolean
+  rollback: boolean
+  readAuthority: "none" | "session" | "user" | "administrative"
+  mutationAuthority: "none" | "user" | "administrative"
+  contract: string
   reason?: string
+  missingDependency?: string
+  setupGuidance?: string
 }
 
 export type ProcessInfo = {

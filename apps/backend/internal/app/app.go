@@ -39,20 +39,21 @@ import (
 )
 
 type Server struct {
-	config        config.Config
-	http          *http.Server
-	sessions      *session.Store
-	authenticator auth.Authenticator
-	metrics       *metrics.Sampler
-	preferences   *preferences.Store
-	loginAttempts *loginLimiter
-	logger        *zap.Logger
-	cancel        context.CancelFunc
-	cleanupQueue  chan auth.Identity
-	pruneDone     chan struct{}
-	workersWG     sync.WaitGroup
-	cleanupMu     sync.Mutex
-	cleanupClosed bool
+	config             config.Config
+	http               *http.Server
+	sessions           *session.Store
+	authenticator      auth.Authenticator
+	metrics            *metrics.Sampler
+	preferences        *preferences.Store
+	loginAttempts      *loginLimiter
+	logger             *zap.Logger
+	cancel             context.CancelFunc
+	cleanupQueue       chan auth.Identity
+	pruneDone          chan struct{}
+	workersWG          sync.WaitGroup
+	cleanupMu          sync.Mutex
+	cleanupClosed      bool
+	detectCapabilities func(context.Context) []platform.Capability
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -72,16 +73,17 @@ func New(cfg config.Config) (*Server, error) {
 	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
 	go sampler.Run(ctx, cfg.MonitoringInterval)
 	server := &Server{
-		config:        cfg,
-		sessions:      sessions,
-		authenticator: authenticator,
-		metrics:       sampler,
-		preferences:   preferenceStore,
-		loginAttempts: newLoginLimiter(5, time.Minute),
-		logger:        zap.L().Named("gateway"),
-		cancel:        cancel,
-		cleanupQueue:  make(chan auth.Identity, 64),
-		pruneDone:     make(chan struct{}),
+		config:             cfg,
+		sessions:           sessions,
+		authenticator:      authenticator,
+		metrics:            sampler,
+		preferences:        preferenceStore,
+		loginAttempts:      newLoginLimiter(5, time.Minute),
+		logger:             zap.L().Named("gateway"),
+		cancel:             cancel,
+		cleanupQueue:       make(chan auth.Identity, 64),
+		pruneDone:          make(chan struct{}),
+		detectCapabilities: platform.Detect,
 	}
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
 	if _, ok := authenticator.(auth.SessionController); ok {
@@ -431,12 +433,17 @@ func (server *Server) logRequest(next http.Handler) http.Handler {
 }
 
 func (server *Server) capabilities(writer http.ResponseWriter, request *http.Request) {
-	capabilities := platform.Detect(request.Context())
+	capabilities := server.detectCapabilities(request.Context())
 	current := request.Context().Value(sessionKey{}).(session.Session)
 	for index := range capabilities {
 		if capabilities[index].ID == "terminal" && current.Identity.BridgeToken != "" {
-			capabilities[index].Available = true
+			capabilities[index].State = platform.StateReady
+			capabilities[index].Readable = true
+			capabilities[index].ReadAuthority = "user"
+			capabilities[index].MutationAuthority = "user"
+			capabilities[index].Contract = "user-bridge"
 			capabilities[index].Reason = ""
+			capabilities[index].SetupGuidance = ""
 		}
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"capabilities": capabilities})

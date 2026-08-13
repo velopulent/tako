@@ -45,6 +45,15 @@ paths:
       responses:
         '200':
           description: Runtime module capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [capabilities]
+                properties:
+                  capabilities:
+                    type: array
+                    items: { $ref: '#/components/schemas/Capability' }
   /dashboard:
     get:
       operationId: getDashboard
@@ -214,6 +223,23 @@ paths:
         '101': { description: Binary PTY WebSocket }
 components:
   schemas:
+    Capability:
+      type: object
+      required: [id, state, readable, mutable, rollback, readAuthority, mutationAuthority, contract]
+      properties:
+        id: { type: string }
+        state: { type: string, enum: [ready, degraded, unavailable, conflicted] }
+        backend: { type: string }
+        version: { type: string }
+        readable: { type: boolean }
+        mutable: { type: boolean }
+        rollback: { type: boolean }
+        readAuthority: { type: string, enum: [none, session, user, administrative] }
+        mutationAuthority: { type: string, enum: [none, user, administrative] }
+        contract: { type: string }
+        reason: { type: string }
+        missingDependency: { type: string }
+        setupGuidance: { type: string }
     LoginRequest:
       oneOf:
         - type: object

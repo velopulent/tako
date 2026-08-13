@@ -61,11 +61,40 @@ export function CapabilitySettings({
             <div>
               <p className="font-medium capitalize">{item.id}</p>
               <p className="text-xs text-muted-foreground">
-                {item.reason || "Ready"}
+                {[item.backend, item.version].filter(Boolean).join(" · ") ||
+                  "Built in"}
               </p>
+              {item.reason ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {item.reason}
+                </p>
+              ) : null}
+              {item.setupGuidance ? (
+                <p className="mt-1 text-xs">{item.setupGuidance}</p>
+              ) : null}
+              <p className="mt-2 text-xs text-muted-foreground">
+                {item.readable ? "Read" : "No read"} ·{" "}
+                {item.mutable ? "Write" : "No write"} ·{" "}
+                {item.rollback ? "Rollback" : "No rollback"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Authority: {item.readAuthority} read · {item.mutationAuthority}{" "}
+                write
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Contract: {item.contract}
+              </p>
+              {item.missingDependency ? (
+                <p className="text-xs text-muted-foreground">
+                  Missing: {item.missingDependency}
+                </p>
+              ) : null}
             </div>
-            <Badge variant={item.available ? "secondary" : "outline"}>
-              {item.available ? "Ready" : "Unavailable"}
+            <Badge
+              variant={item.state === "ready" ? "secondary" : "outline"}
+              className="capitalize"
+            >
+              {item.state}
             </Badge>
           </div>
         ))}

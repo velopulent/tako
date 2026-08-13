@@ -14,6 +14,7 @@ import (
 
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
+	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
 )
 
@@ -195,6 +196,59 @@ func TestDevelopmentLoginAndDashboard(t *testing.T) {
 	}
 	if payload["host"] == nil || payload["metrics"] == nil {
 		t.Fatalf("dashboard response incomplete: %#v", payload)
+	}
+}
+
+func TestCapabilitiesExposeRuntimeContractsAndGuidance(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	server.detectCapabilities = func(context.Context) []platform.Capability {
+		return []platform.Capability{
+			{ID: "services", State: platform.StateReady, Backend: "systemd", Version: "systemd 257", Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "dbus-read-only"},
+			{ID: "network", State: platform.StateConflicted, Backend: "NetworkManager+networkd", Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "conflicted-read-only", Reason: "Multiple managers are active", SetupGuidance: "Choose one network manager."},
+			{ID: "updates", State: platform.StateDegraded, Backend: "apt-get", Version: "apt 3.0", Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "bounded-command-read-only", Reason: "PackageKit unavailable", SetupGuidance: "Install PackageKit.", MissingDependency: "org.freedesktop.PackageKit"},
+		}
+	}
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("capabilities returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Capabilities []struct {
+			ID             string `json:"id"`
+			State          string `json:"state"`
+			Contract       string `json:"contract"`
+			Mutable        bool   `json:"mutable"`
+			ReadAuthority  string `json:"readAuthority"`
+			WriteAuthority string `json:"mutationAuthority"`
+			Reason         string `json:"reason"`
+			SetupGuidance  string `json:"setupGuidance"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Capabilities) != 3 {
+		t.Fatalf("capability inventory is incomplete: %#v", response.Capabilities)
+	}
+	for _, capability := range response.Capabilities {
+		if capability.ID == "" || capability.State == "" || capability.Contract == "" || capability.ReadAuthority == "" || capability.WriteAuthority == "" {
+			t.Fatalf("capability lacks contract fields: %#v", capability)
+		}
+		if capability.State != "ready" && (capability.Reason == "" || capability.SetupGuidance == "") {
+			t.Fatalf("unready capability lacks guidance: %#v", capability)
+		}
+		if capability.State == "conflicted" && capability.Mutable {
+			t.Fatalf("conflicted capability allows mutation: %#v", capability)
+		}
 	}
 }
 

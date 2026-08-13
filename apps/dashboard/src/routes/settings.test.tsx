@@ -86,7 +86,19 @@ describe("SettingsPage", () => {
           return jsonResponse({ defaultInterval: "1m", revision: 3 })
         if (path.endsWith("/capabilities"))
           return jsonResponse({
-            capabilities: [{ id: "systemd", available: true }],
+            capabilities: [
+              {
+                id: "services",
+                state: "ready",
+                backend: "systemd",
+                readable: true,
+                mutable: true,
+                rollback: false,
+                readAuthority: "session",
+                mutationAuthority: "administrative",
+                contract: "dbus",
+              },
+            ],
           })
         return jsonResponse({ csrfToken: "csrf-token" })
       }
@@ -112,5 +124,8 @@ describe("SettingsPage", () => {
         JSON.stringify({ defaultInterval: "30s", expectedRevision: 3 })
       )
     })
+    expect(screen.getByText("systemd")).toBeTruthy()
+    expect(screen.getByText("Read · Write · No rollback")).toBeTruthy()
+    expect(screen.getByText("Contract: dbus")).toBeTruthy()
   })
 })
