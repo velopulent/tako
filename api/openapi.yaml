@@ -41,12 +41,20 @@ paths:
   /metrics:
     get:
       operationId: getMetricHistory
+      parameters:
+        - in: query
+          name: range
+          schema: { type: string, enum: [15m, 1h, 6h, 24h], default: 1h }
       responses:
         '200':
           description: Bounded in-memory metric history
   /metrics/stream:
     get:
       operationId: streamMetrics
+      parameters:
+        - in: query
+          name: interval
+          schema: { type: string, enum: [1s, 5s, 15s, 30s, 1m, 5m], default: 1m }
       responses:
         '200':
           description: text/event-stream of metric events
@@ -57,12 +65,19 @@ paths:
         - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+        - in: query
+          name: unit
+          schema: { type: string }
       responses:
         '200': { description: Recent journal entries }
         '503': { $ref: '#/components/responses/Problem' }
   /logs/stream:
     get:
       operationId: streamLogs
+      parameters:
+        - in: query
+          name: unit
+          schema: { type: string }
       responses:
         '200': { description: text/event-stream of new journal entries }
   /users:
@@ -78,9 +93,56 @@ paths:
   /services:
     get:
       operationId: listServices
+      parameters:
+        - { in: query, name: scope, schema: { type: string, enum: [system, user], default: system } }
+        - { in: query, name: type, schema: { type: string, enum: [service, target, socket, timer, path], default: service } }
       responses:
         '200': { description: systemd unit snapshot }
         '503': { $ref: '#/components/responses/Problem' }
+  /services/{scope}/{unit}:
+    parameters:
+      - { in: path, name: scope, required: true, schema: { type: string, enum: [system, user] } }
+      - { in: path, name: unit, required: true, schema: { type: string } }
+    get:
+      operationId: getService
+      responses:
+        '200': { description: Unit status, runtime properties, and relationships }
+        '503': { $ref: '#/components/responses/Problem' }
+  /services/{scope}/{unit}/actions:
+    parameters:
+      - { in: path, name: scope, required: true, schema: { type: string, enum: [system, user] } }
+      - { in: path, name: unit, required: true, schema: { type: string } }
+    post:
+      operationId: actOnService
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [start, stop, restart, reload, enable, disable, mask, unmask] }
+      responses:
+        '200': { description: Refreshed unit state }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /admin:
+    get:
+      operationId: getAdministrativeAccess
+      responses:
+        '200': { description: Current elevation state and expiry }
+  /admin/elevate:
+    post:
+      operationId: gainAdministrativeAccess
+      responses:
+        '200': { description: Administrative access granted }
+        '403': { $ref: '#/components/responses/Problem' }
+  /admin/drop:
+    post:
+      operationId: dropAdministrativeAccess
+      responses:
+        '204': { description: Administrative access dropped }
   /storage:
     get:
       operationId: listStorage
@@ -129,6 +191,24 @@ components:
         status: { type: integer }
         code: { type: string }
         detail: { type: string }
+    MetricSample:
+      type: object
+      required: [timestamp, cpuPercent, memoryUsed, memoryTotal, networkRx, networkTx, diskRead, diskWrite]
+      properties:
+        timestamp: { type: string, format: date-time }
+        cpuPercent: { type: number }
+        cpuCorePercent: { type: array, items: { type: number } }
+        memoryUsed: { type: integer }
+        memoryTotal: { type: integer }
+        swapUsed: { type: integer }
+        swapTotal: { type: integer }
+        load1: { type: number }
+        load5: { type: number }
+        load15: { type: number }
+        networkRx: { type: integer }
+        networkTx: { type: integer }
+        diskRead: { type: integer }
+        diskWrite: { type: integer }
   responses:
     Problem:
       description: Structured API error

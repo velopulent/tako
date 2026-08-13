@@ -53,8 +53,10 @@ func New(cfg config.Config) (*Server, error) {
 	if cfg.Development {
 		authenticator = auth.DevelopmentAuthenticator{}
 	}
-	sampler := metrics.NewSampler(450)
-	go sampler.Run(ctx, 2*time.Second)
+	capacity := int(cfg.HistoryRetention/time.Second) + 1
+	sampler := metrics.NewSampler(capacity)
+	sampler.Configure(cfg.MonitoringInterval, cfg.HistoryRetention)
+	go sampler.Run(ctx, cfg.MonitoringInterval)
 	server := &Server{
 		config:        cfg,
 		sessions:      session.NewStore(15*time.Minute, 12*time.Hour),
@@ -131,6 +133,9 @@ func (server *Server) routes() http.Handler {
 			router.Use(server.requireSession)
 			router.Get("/auth/session", server.currentSession)
 			router.With(server.requireCSRF).Post("/auth/logout", server.logout)
+			router.Get("/admin", server.adminStatus)
+			router.With(server.requireCSRF).Post("/admin/elevate", server.adminElevate)
+			router.With(server.requireCSRF).Post("/admin/drop", server.adminDrop)
 			router.Get("/capabilities", server.capabilities)
 			router.Get("/dashboard", server.dashboard)
 			router.Get("/metrics", server.metricHistory)
@@ -141,6 +146,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/users", server.users)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)
+			router.Get("/services/{scope}/{unit}", server.serviceDetail)
+			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/actions", server.serviceAction)
 			router.Get("/storage", server.storage)
 			router.Get("/network", server.network)
 			router.Get("/processes", server.processes)
@@ -197,7 +204,45 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 
 func (server *Server) currentSession(writer http.ResponseWriter, request *http.Request) {
 	current := request.Context().Value(sessionKey{}).(session.Session)
-	writeJSON(writer, http.StatusOK, map[string]any{"user": current.Identity, "csrfToken": current.CSRF})
+	writeJSON(writer, http.StatusOK, map[string]any{"user": current.Identity, "csrfToken": current.CSRF, "administrative": time.Now().Before(current.AdminUntil), "adminUntil": current.AdminUntil, "adminIdleTimeoutSeconds": int(server.config.AdminIdleTimeout.Seconds())})
+}
+
+func (server *Server) adminStatus(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	writeJSON(writer, http.StatusOK, map[string]any{"administrative": time.Now().Before(current.AdminUntil), "until": current.AdminUntil, "idleTimeoutSeconds": int(server.config.AdminIdleTimeout.Seconds())})
+}
+func (server *Server) adminElevate(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	var body struct {
+		Password string `json:"password"`
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
+	if json.NewDecoder(request.Body).Decode(&body) != nil {
+		problem(writer, 400, "invalid-request", "Password is required")
+		return
+	}
+	var identity auth.Identity
+	var err error
+	if server.config.Development {
+		identity, err = server.authenticator.Authenticate(request.Context(), current.Identity.Username, body.Password)
+	} else {
+		identity, err = auth.VerifyPassword(request.Context(), server.config.SessionSocket, current.Identity.Username, body.Password)
+	}
+	body.Password = ""
+	if err != nil || identity.UID != current.Identity.UID {
+		problem(writer, 403, "administrative-access-denied", "Could not gain administrative access")
+		return
+	}
+	until := time.Now().Add(server.config.AdminIdleTimeout)
+	server.sessions.SetAdministrative(current.ID, until)
+	server.logger.Info("administrative access gained", zap.String("username", current.Identity.Username))
+	writeJSON(writer, 200, map[string]any{"administrative": true, "until": until})
+}
+func (server *Server) adminDrop(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	server.sessions.DropAdministrative(current.ID)
+	server.logger.Info("administrative access dropped", zap.String("username", current.Identity.Username))
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 func (server *Server) logout(writer http.ResponseWriter, request *http.Request) {
@@ -242,8 +287,13 @@ func (server *Server) dashboard(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"host": host.Read(), "metrics": current})
 }
 
-func (server *Server) metricHistory(writer http.ResponseWriter, _ *http.Request) {
-	writeJSON(writer, http.StatusOK, map[string]any{"samples": server.metrics.History()})
+func (server *Server) metricHistory(writer http.ResponseWriter, request *http.Request) {
+	ranges := map[string]time.Duration{"15m": 15 * time.Minute, "1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour}
+	duration := ranges[request.URL.Query().Get("range")]
+	if duration == 0 {
+		duration = time.Hour
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"samples": server.metrics.HistorySince(time.Now().Add(-duration), 1000)})
 }
 
 func (server *Server) metricStream(writer http.ResponseWriter, request *http.Request) {
@@ -255,7 +305,17 @@ func (server *Server) metricStream(writer http.ResponseWriter, request *http.Req
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache, no-transform")
 	writer.Header().Set("X-Accel-Buffering", "no")
-	stream, unsubscribe := server.metrics.Subscribe()
+	intervals := map[string]time.Duration{"1s": time.Second, "5s": 5 * time.Second, "15s": 15 * time.Second, "30s": 30 * time.Second, "1m": time.Minute, "5m": 5 * time.Minute}
+	requested := request.URL.Query().Get("interval")
+	interval := intervals[requested]
+	if requested != "" && interval == 0 {
+		problem(writer, http.StatusBadRequest, "invalid-metric-interval", "Unsupported metric interval")
+		return
+	}
+	if interval == 0 {
+		interval = server.config.MonitoringInterval
+	}
+	stream, unsubscribe := server.metrics.SubscribeEvery(interval)
 	defer unsubscribe()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
@@ -372,13 +432,68 @@ func (server *Server) network(writer http.ResponseWriter, _ *http.Request) {
 }
 
 func (server *Server) services(writer http.ResponseWriter, request *http.Request) {
-	items, err := platform.Units(request.Context())
+	scope, unitType := request.URL.Query().Get("scope"), request.URL.Query().Get("type")
+	if scope == "" {
+		scope = "system"
+	}
+	if unitType == "" {
+		unitType = "service"
+	}
+	validType := map[string]bool{"service": true, "target": true, "socket": true, "timer": true, "path": true}
+	if (scope != "system" && scope != "user") || !validType[unitType] {
+		problem(writer, 400, "invalid-unit-filter", "Unsupported unit scope or type")
+		return
+	}
+	items, err := platform.Units(request.Context(), scope, unitType)
 	server.writeModule(writer, "services", items, err)
+}
+
+func (server *Server) serviceDetail(writer http.ResponseWriter, request *http.Request) {
+	item, err := platform.UnitDetails(request.Context(), chi.URLParam(request, "scope"), chi.URLParam(request, "unit"))
+	if err != nil {
+		server.writeModule(writer, "services", nil, err)
+		return
+	}
+	writeJSON(writer, 200, item)
+}
+func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if chi.URLParam(request, "scope") == "system" && !time.Now().Before(current.AdminUntil) {
+		problem(writer, 403, "administrative-access-required", "Gain Administrative access first")
+		return
+	}
+	var body struct {
+		Action string `json:"action"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096)).Decode(&body) != nil {
+		problem(writer, 400, "invalid-request", "Action is required")
+		return
+	}
+	if err := auth.ServiceAction(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, chi.URLParam(request, "scope"), chi.URLParam(request, "unit"), body.Action); err != nil {
+		problem(writer, 502, "service-action-failed", err.Error())
+		return
+	}
+	server.sessions.SetAdministrative(current.ID, time.Now().Add(server.config.AdminIdleTimeout))
+	item, err := platform.UnitDetails(request.Context(), chi.URLParam(request, "scope"), chi.URLParam(request, "unit"))
+	if err != nil {
+		problem(writer, 502, "service-refresh-failed", err.Error())
+		return
+	}
+	writeJSON(writer, 200, item)
 }
 
 func (server *Server) logs(writer http.ResponseWriter, request *http.Request) {
 	limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
 	items, err := platform.Logs(request.Context(), limit)
+	if unit := request.URL.Query().Get("unit"); unit != "" {
+		filtered := items[:0]
+		for _, item := range items {
+			if item.Unit == unit {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
 	server.writeModule(writer, "logs", items, err)
 }
 
@@ -399,6 +514,9 @@ func (server *Server) logStream(writer http.ResponseWriter, request *http.Reques
 	go func() {
 		defer close(entries)
 		err := platform.FollowLogs(ctx, func(entry platform.LogEntry) error {
+			if unit := request.URL.Query().Get("unit"); unit != "" && entry.Unit != unit {
+				return nil
+			}
 			select {
 			case entries <- entry:
 				return nil
