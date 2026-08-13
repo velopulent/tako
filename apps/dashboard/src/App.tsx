@@ -62,6 +62,7 @@ const moduleNames = [
   "updates",
   "operations",
   "jobs",
+  "host",
   "terminal",
   "metrics",
   "services",

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/platform"
 	"go.uber.org/zap"
 )
 
@@ -384,5 +385,71 @@ func TestSystemServiceActionRequiresAdministrativeGrant(t *testing.T) {
 	}
 	if response.Error != "invalid-administrative-request" {
 		t.Fatalf("system action without admin grant returned %q", response.Error)
+	}
+}
+
+type fakeHostConfigBackend struct {
+	current platform.HostConfiguration
+	applied platform.HostConfiguration
+}
+
+func (backend *fakeHostConfigBackend) Read(context.Context) (platform.HostConfiguration, error) {
+	return backend.current, nil
+}
+
+func (backend *fakeHostConfigBackend) Apply(_ context.Context, _, desired platform.HostConfiguration) error {
+	backend.applied = desired
+	backend.current = desired
+	return nil
+}
+
+func TestHostConfigurationUsesAdminGrantAndRejectsStaleWrites(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "octopus", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, err := store.authorize(context.Background(), bridgeToken, "secret", 300, func(context.Context, auth.Identity, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeHostConfigBackend{current: platform.NewHostConfiguration("old-host", "UTC", true)}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handle(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), backend)
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{
+		Operation:           "host-config",
+		AdminToken:          adminToken,
+		Hostname:            "new-host",
+		Timezone:            "Asia/Kolkata",
+		NTPEnabled:          false,
+		ExpectedFingerprint: backend.current.Fingerprint,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || backend.applied.Hostname != "new-host" || backend.applied.NTPEnabled {
+		t.Fatalf("host configuration was not applied: response=%#v applied=%#v", response, backend.applied)
+	}
+
+	serverConn, clientConn = net.Pipe()
+	defer clientConn.Close()
+	go handle(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), backend)
+	_ = json.NewEncoder(clientConn).Encode(auth.Request{
+		Operation:           "host-config",
+		AdminToken:          adminToken,
+		Hostname:            "another-host",
+		Timezone:            "UTC",
+		NTPEnabled:          true,
+		ExpectedFingerprint: "0000000000000000000000000000000000000000000000000000000000000000",
+	})
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "host-config-conflict" {
+		t.Fatalf("stale host configuration returned %q", response.Error)
 	}
 }

@@ -98,19 +98,31 @@ type UserSession struct {
 type Conversation func(PromptStyle, string) (string, error)
 
 type Request struct {
-	Operation      string           `json:"operation,omitempty"`
-	Username       string           `json:"username,omitempty"`
-	Password       string           `json:"password,omitempty"`
-	ConversationID string           `json:"conversationId,omitempty"`
-	Responses      []PromptResponse `json:"responses,omitempty"`
-	Token          string           `json:"token,omitempty"`
-	AdminToken     string           `json:"adminToken,omitempty"`
-	AdminTTL       uint32           `json:"adminTtlSeconds,omitempty"`
-	Columns        uint16           `json:"columns,omitempty"`
-	Rows           uint16           `json:"rows,omitempty"`
-	Action         string           `json:"action,omitempty"`
-	Unit           string           `json:"unit,omitempty"`
-	Scope          string           `json:"scope,omitempty"`
+	Operation           string           `json:"operation,omitempty"`
+	Username            string           `json:"username,omitempty"`
+	Password            string           `json:"password,omitempty"`
+	ConversationID      string           `json:"conversationId,omitempty"`
+	Responses           []PromptResponse `json:"responses,omitempty"`
+	Token               string           `json:"token,omitempty"`
+	AdminToken          string           `json:"adminToken,omitempty"`
+	AdminTTL            uint32           `json:"adminTtlSeconds,omitempty"`
+	Columns             uint16           `json:"columns,omitempty"`
+	Rows                uint16           `json:"rows,omitempty"`
+	Action              string           `json:"action,omitempty"`
+	Unit                string           `json:"unit,omitempty"`
+	Scope               string           `json:"scope,omitempty"`
+	Hostname            string           `json:"hostname,omitempty"`
+	Timezone            string           `json:"timezone,omitempty"`
+	NTPEnabled          bool             `json:"ntpEnabled,omitempty"`
+	ExpectedFingerprint string           `json:"expectedFingerprint,omitempty"`
+}
+
+type HostConfigurationRequest struct {
+	AdminToken          string
+	Hostname            string
+	Timezone            string
+	NTPEnabled          bool
+	ExpectedFingerprint string
 }
 
 func ServiceAction(ctx context.Context, path, token, scope, unit, action string) error {
@@ -119,6 +131,17 @@ func ServiceAction(ctx context.Context, path, token, scope, unit, action string)
 
 func ServiceActionAsAdmin(ctx context.Context, path, adminToken, scope, unit, action string) error {
 	return serviceActionRequest(ctx, path, Request{Operation: "service-action", AdminToken: adminToken, Scope: scope, Unit: unit, Action: action})
+}
+
+func ApplyHostConfiguration(ctx context.Context, path string, request HostConfigurationRequest) error {
+	return hostConfigurationRequest(ctx, path, Request{
+		Operation:           "host-config",
+		AdminToken:          request.AdminToken,
+		Hostname:            request.Hostname,
+		Timezone:            request.Timezone,
+		NTPEnabled:          request.NTPEnabled,
+		ExpectedFingerprint: request.ExpectedFingerprint,
+	})
 }
 
 func serviceActionRequest(ctx context.Context, path string, request Request) error {
@@ -148,6 +171,40 @@ func serviceActionRequest(ctx context.Context, path string, request Request) err
 	var response Response
 	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
 		return err
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	return nil
+}
+
+func hostConfigurationRequest(ctx context.Context, path string, request Request) error {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return fmt.Errorf("%w: connect to %s: %v", ErrServiceUnavailable, path, err)
+	}
+	defer conn.Close()
+	stopCancelWatch := make(chan struct{})
+	defer close(stopCancelWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopCancelWatch:
+		}
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
+		return fmt.Errorf("%w: send host configuration request: %v", ErrServiceUnavailable, err)
+	}
+	var response Response
+	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+		return fmt.Errorf("%w: read host configuration response: %v", ErrServiceUnavailable, err)
 	}
 	if response.Error != "" {
 		return errors.New(response.Error)

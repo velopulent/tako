@@ -26,6 +26,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/platform"
 	"go.uber.org/zap"
 )
 
@@ -126,14 +127,22 @@ func activatedListener() (net.Listener, bool, error) {
 	return listener, true, err
 }
 
-func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger) {
+func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, hostBackends ...hostConfigBackend) {
 	defer conn.Close()
+	backend := hostConfigBackend(systemHostConfigBackend{})
+	if len(hostBackends) > 0 && hostBackends[0] != nil {
+		backend = hostBackends[0]
+	}
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReaderSize(conn, 16<<10)
 	encoder := json.NewEncoder(conn)
 	var request auth.Request
 	if err := decodeRequestLine(reader, &request); err != nil {
 		logger.Warn("session request rejected", zap.String("reason", "invalid-request"), zap.Error(err))
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "host-config" && hasHostConfigurationFields(request) {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -317,6 +326,44 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 		_ = encoder.Encode(auth.Response{Error: errorCode})
 		return
 	}
+	if request.Operation == "host-config" {
+		if request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
+			_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
+			return
+		}
+		operation, operationErr := parseHostConfigurationOperation(request.Hostname, request.Timezone, request.NTPEnabled, request.ExpectedFingerprint)
+		if operationErr != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-host-configuration"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		configurationCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		current, readErr := backend.Read(configurationCtx)
+		if readErr != nil {
+			cancel()
+			_ = encoder.Encode(auth.Response{Error: "host-config-unavailable"})
+			return
+		}
+		if current.Fingerprint != operation.ExpectedFingerprint {
+			cancel()
+			_ = encoder.Encode(auth.Response{Error: "host-config-conflict"})
+			return
+		}
+		desired := platform.NewHostConfiguration(operation.Hostname, operation.Timezone, operation.NTPEnabled)
+		applyErr := backend.Apply(configurationCtx, current, desired)
+		cancel()
+		if applyErr != nil {
+			_ = encoder.Encode(auth.Response{Error: "host-config-failed"})
+			return
+		}
+		logger.Info("host configuration changed", zap.String("username", identity.Username))
+		_ = encoder.Encode(auth.Response{})
+		return
+	}
 	if request.Operation != "authenticate" || request.Token != "" || request.AdminToken != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Username == "" || request.Password == "" {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
@@ -337,6 +384,10 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 	}
 	logger.Info("PAM authentication succeeded", zap.String("username", identity.Username), zap.Int("uid", identity.UID))
 	_ = encoder.Encode(auth.Response{Identity: &identity, BridgeToken: token})
+}
+
+func hasHostConfigurationFields(request auth.Request) bool {
+	return request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != ""
 }
 
 func runServiceAction(operation serviceOperation) string {

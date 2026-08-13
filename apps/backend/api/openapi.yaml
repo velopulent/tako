@@ -308,6 +308,59 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+  /host/config:
+    get:
+      operationId: getHostConfiguration
+      responses:
+        '200':
+          description: Current hostname, timezone, and NTP state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HostConfiguration' }
+        '503': { $ref: '#/components/responses/Problem' }
+    put:
+      operationId: updateHostConfiguration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HostConfigurationUpdate' }
+      responses:
+        '200':
+          description: Verified host configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HostConfiguration' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /host/config/preview:
+    post:
+      operationId: previewHostConfiguration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HostConfigurationUpdate' }
+      responses:
+        '200':
+          description: Current and proposed host configuration with stale-state indication
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current, proposed, changes, stale]
+                properties:
+                  current: { $ref: '#/components/schemas/HostConfiguration' }
+                  proposed: { $ref: '#/components/schemas/HostConfiguration' }
+                  changes:
+                    type: array
+                    items: { type: string, enum: [hostname, timezone, ntp] }
+                  stale: { type: boolean }
+        '400': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /storage:
     get:
       operationId: listStorage
@@ -400,6 +453,23 @@ components:
         completedAt: { type: string, format: date-time }
         cancelRequested: { type: boolean }
         dangerous: { type: boolean }
+    HostConfiguration:
+      type: object
+      required: [hostname, timezone, ntpEnabled, fingerprint]
+      properties:
+        hostname: { type: string, maxLength: 253 }
+        timezone: { type: string, maxLength: 128 }
+        ntpEnabled: { type: boolean }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+    HostConfigurationUpdate:
+      type: object
+      required: [hostname, timezone, ntpEnabled, expectedFingerprint]
+      additionalProperties: false
+      properties:
+        hostname: { type: string, minLength: 1, maxLength: 253 }
+        timezone: { type: string, minLength: 1, maxLength: 128 }
+        ntpEnabled: { type: boolean }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
     LoginRequest:
       oneOf:
         - type: object

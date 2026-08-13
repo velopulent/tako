@@ -29,3 +29,28 @@ func TestParseServiceOperationUsesExactAllowlist(t *testing.T) {
 		})
 	}
 }
+
+func TestParseHostConfigurationOperationValidatesIdentityAndFingerprint(t *testing.T) {
+	configuration, err := parseHostConfigurationOperation("tako.example", "Asia/Kolkata", true, strings.Repeat("a", 64))
+	if err != nil || configuration.Hostname != "tako.example" || !configuration.NTPEnabled {
+		t.Fatalf("valid host configuration = %#v, %v", configuration, err)
+	}
+	for _, test := range []struct {
+		name        string
+		hostname    string
+		timezone    string
+		fingerprint string
+	}{
+		{name: "empty hostname", hostname: "", timezone: "UTC", fingerprint: strings.Repeat("a", 64)},
+		{name: "hostname path", hostname: "../tako", timezone: "UTC", fingerprint: strings.Repeat("a", 64)},
+		{name: "timezone traversal", hostname: "tako", timezone: "../etc", fingerprint: strings.Repeat("a", 64)},
+		{name: "short fingerprint", hostname: "tako", timezone: "UTC", fingerprint: "deadbeef"},
+		{name: "non-hex fingerprint", hostname: "tako", timezone: "UTC", fingerprint: strings.Repeat("z", 64)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseHostConfigurationOperation(test.hostname, test.timezone, false, test.fingerprint); err == nil {
+				t.Fatal("unsafe host configuration was accepted")
+			}
+		})
+	}
+}

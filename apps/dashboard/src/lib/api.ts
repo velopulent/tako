@@ -127,6 +127,20 @@ export type DiagnosticJob = {
   dangerous: boolean
 }
 
+export type HostConfiguration = {
+  hostname: string
+  timezone: string
+  ntpEnabled: boolean
+  fingerprint: string
+}
+
+export type HostConfigurationPreview = {
+  current: HostConfiguration
+  proposed: HostConfiguration
+  changes: ("hostname" | "timezone" | "ntp")[]
+  stale: boolean
+}
+
 export type ProcessInfo = {
   pid: number
   ppid: number

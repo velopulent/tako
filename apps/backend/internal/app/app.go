@@ -39,25 +39,26 @@ import (
 )
 
 type Server struct {
-	config             config.Config
-	http               *http.Server
-	sessions           *session.Store
-	authenticator      auth.Authenticator
-	metrics            *metrics.Sampler
-	preferences        *preferences.Store
-	jobs               *diagnosticJobManager
-	loginAttempts      *loginLimiter
-	logger             *zap.Logger
-	cancel             context.CancelFunc
-	cleanupQueue       chan auth.Identity
-	pruneDone          chan struct{}
-	workersWG          sync.WaitGroup
-	cleanupMu          sync.Mutex
-	cleanupClosed      bool
-	hostMu             sync.Mutex
-	hostSnapshot       host.Info
-	hostSnapshotAt     time.Time
-	detectCapabilities func(context.Context) []platform.Capability
+	config                config.Config
+	http                  *http.Server
+	sessions              *session.Store
+	authenticator         auth.Authenticator
+	metrics               *metrics.Sampler
+	preferences           *preferences.Store
+	jobs                  *diagnosticJobManager
+	loginAttempts         *loginLimiter
+	logger                *zap.Logger
+	cancel                context.CancelFunc
+	cleanupQueue          chan auth.Identity
+	pruneDone             chan struct{}
+	workersWG             sync.WaitGroup
+	cleanupMu             sync.Mutex
+	cleanupClosed         bool
+	hostMu                sync.Mutex
+	hostSnapshot          host.Info
+	hostSnapshotAt        time.Time
+	readHostConfiguration func(context.Context) (platform.HostConfiguration, error)
+	detectCapabilities    func(context.Context) []platform.Capability
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -82,17 +83,18 @@ func New(cfg config.Config) (*Server, error) {
 	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
 	go sampler.Run(ctx, cfg.MonitoringInterval)
 	server := &Server{
-		config:             cfg,
-		sessions:           sessions,
-		authenticator:      authenticator,
-		metrics:            sampler,
-		preferences:        preferenceStore,
-		loginAttempts:      newLoginLimiter(5, time.Minute),
-		logger:             zap.L().Named("gateway"),
-		cancel:             cancel,
-		cleanupQueue:       make(chan auth.Identity, 64),
-		pruneDone:          make(chan struct{}),
-		detectCapabilities: platform.Detect,
+		config:                cfg,
+		sessions:              sessions,
+		authenticator:         authenticator,
+		metrics:               sampler,
+		preferences:           preferenceStore,
+		loginAttempts:         newLoginLimiter(5, time.Minute),
+		logger:                zap.L().Named("gateway"),
+		cancel:                cancel,
+		cleanupQueue:          make(chan auth.Identity, 64),
+		pruneDone:             make(chan struct{}),
+		detectCapabilities:    platform.Detect,
+		readHostConfiguration: platform.ReadHostConfiguration,
 	}
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
@@ -267,6 +269,9 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/jobs/host-inventory", server.startHostInventoryJob)
 			router.Get("/jobs/{id}", server.jobDetail)
 			router.With(server.requireCSRF).Post("/jobs/{id}/cancel", server.cancelJob)
+			router.Get("/host/config", server.hostConfiguration)
+			router.Post("/host/config/preview", server.previewHostConfiguration)
+			router.With(server.requireCSRF).Put("/host/config", server.updateHostConfiguration)
 			router.Get("/users", server.users)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)

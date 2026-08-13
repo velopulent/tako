@@ -101,6 +101,46 @@ func TestServiceActionStopsReadingWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestApplyHostConfigurationUsesAdminGrantAndStrictPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
+	}
+	defer listener.Close()
+	requestSeen := make(chan Request, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request Request
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr == nil {
+			requestSeen <- request
+			_ = json.NewEncoder(connection).Encode(Response{})
+		}
+	}()
+	err = ApplyHostConfiguration(context.Background(), path, HostConfigurationRequest{
+		AdminToken:          "admin-token",
+		Hostname:            "tako",
+		Timezone:            "UTC",
+		NTPEnabled:          false,
+		ExpectedFingerprint: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case request := <-requestSeen:
+		if request.Operation != "host-config" || request.AdminToken != "admin-token" || request.Hostname != "tako" || request.ExpectedFingerprint != strings.Repeat("a", 64) {
+			t.Fatalf("unexpected host configuration request: %#v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host configuration request was not received")
+	}
+}
+
 func TestSocketAuthenticatorReportsUnavailableService(t *testing.T) {
 	authenticator := SocketAuthenticator{Path: filepath.Join(t.TempDir(), "missing.sock")}
 	_, err := authenticator.Authenticate(context.Background(), "octopus", "secret")

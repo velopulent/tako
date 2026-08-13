@@ -5,6 +5,7 @@ const titles: Record<string, string> = {
   updates: "Updates",
   operations: "Operations",
   jobs: "Jobs",
+  host: "Host",
   terminal: "Terminal",
   metrics: "Metrics",
   services: "Services",
