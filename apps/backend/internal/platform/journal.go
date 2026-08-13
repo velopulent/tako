@@ -23,6 +23,41 @@ var (
 	ErrInvalidJournalQuery = errors.New("invalid journal query")
 )
 
+var journalDetailFields = []string{
+	"__CURSOR",
+	"__REALTIME_TIMESTAMP",
+	"PRIORITY",
+	"_SYSTEMD_UNIT",
+	"_SYSTEMD_USER_UNIT",
+	"_EXE",
+	"MESSAGE",
+	"_PID",
+	"_UID",
+	"_GID",
+	"_COMM",
+	"_CMDLINE",
+	"_HOSTNAME",
+	"_BOOT_ID",
+	"_MACHINE_ID",
+	"_SYSTEMD_OWNER_UID",
+	"_SYSTEMD_SESSION",
+	"_CAP_EFFECTIVE",
+	"_SELINUX_CONTEXT",
+	"SYSLOG_IDENTIFIER",
+	"SYSLOG_PID",
+	"CODE_FILE",
+	"CODE_LINE",
+	"CODE_FUNC",
+	"MESSAGE_ID",
+}
+
+func journalFields(details bool) []string {
+	if details {
+		return journalDetailFields
+	}
+	return journalDetailFields[:7]
+}
+
 type JournalQuery struct {
 	Limit      int
 	Cursor     string
@@ -33,6 +68,7 @@ type JournalQuery struct {
 	Unit       string
 	Executable string
 	Text       string
+	Details    bool
 }
 
 type JournalPage struct {
@@ -116,7 +152,7 @@ func QueryLogs(ctx context.Context, query JournalQuery) (JournalPage, error) {
 	if query.Cursor != "" {
 		fetchLimit++
 	}
-	arguments := []string{"--no-pager", "--output=json", "--output-fields=__CURSOR,__REALTIME_TIMESTAMP,PRIORITY,_SYSTEMD_UNIT,_SYSTEMD_USER_UNIT,_EXE,MESSAGE", "--reverse", "-n", strconv.Itoa(fetchLimit)}
+	arguments := []string{"--no-pager", "--output=json", "--output-fields=" + strings.Join(journalFields(query.Details), ","), "--reverse", "-n", strconv.Itoa(fetchLimit)}
 	if query.Cursor != "" {
 		arguments = append(arguments, "--cursor="+query.Cursor)
 	}

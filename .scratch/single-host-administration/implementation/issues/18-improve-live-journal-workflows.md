@@ -4,8 +4,8 @@
 
 **Blocked by:** 17 — Query journal history precisely
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Incoming rows follow only while viewer is at latest and browser memory stays bounded.
-- [ ] Exports apply exact active filters and authorization.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Incoming rows follow only while viewer is at latest and browser memory stays bounded.
+- [x] Exports apply exact active filters and authorization.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

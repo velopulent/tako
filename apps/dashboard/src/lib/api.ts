@@ -260,6 +260,7 @@ export type LogEntry = {
   priority: string
   unit: string
   message: string
+  details?: Record<string, string>
 }
 export type JournalPage = {
   items: LogEntry[]

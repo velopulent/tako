@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -438,11 +439,12 @@ func unitNameFromObjectPath(path dbus.ObjectPath) string {
 }
 
 type LogEntry struct {
-	Timestamp string `json:"timestamp"`
-	Priority  string `json:"priority"`
-	Unit      string `json:"unit"`
-	Message   string `json:"message"`
-	Cursor    string `json:"-"`
+	Timestamp string            `json:"timestamp"`
+	Priority  string            `json:"priority"`
+	Unit      string            `json:"unit"`
+	Message   string            `json:"message"`
+	Details   map[string]string `json:"details,omitempty"`
+	Cursor    string            `json:"-"`
 }
 
 func Logs(ctx context.Context, limit int) ([]LogEntry, error) {
@@ -453,7 +455,42 @@ func Logs(ctx context.Context, limit int) ([]LogEntry, error) {
 // FollowLogs emits new journal entries until ctx is cancelled. The subprocess
 // inherits cancellation, while the synchronous callback supplies backpressure.
 func FollowLogs(ctx context.Context, emit func(LogEntry) error) error {
-	command := exec.CommandContext(ctx, "journalctl", "--no-pager", "--output=json", "--follow", "--lines=0")
+	return FollowJournal(ctx, JournalQuery{}, emit)
+}
+
+// FollowJournal emits filtered, structured journal entries until ctx is
+// cancelled. It does not buffer entries; emit supplies backpressure and owns
+// the stream's memory bound.
+func FollowJournal(ctx context.Context, query JournalQuery, emit func(LogEntry) error) error {
+	if query.Limit == 0 {
+		query.Limit = 200
+	}
+	if err := query.Validate(); err != nil {
+		return err
+	}
+	arguments := []string{"--no-pager", "--output=json", "--output-fields=" + strings.Join(journalFields(query.Details), ","), "--follow", "--lines=0"}
+	if query.Boot != "" {
+		arguments = append(arguments, "--boot="+query.Boot)
+	}
+	if !query.Since.IsZero() {
+		arguments = append(arguments, "--since="+query.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if !query.Until.IsZero() {
+		arguments = append(arguments, "--until="+query.Until.UTC().Format(time.RFC3339Nano))
+	}
+	if query.Priority != "" {
+		arguments = append(arguments, "--priority="+query.Priority)
+	}
+	if query.Unit != "" {
+		arguments = append(arguments, "--unit="+query.Unit)
+	}
+	if query.Executable != "" {
+		arguments = append(arguments, "_EXE="+query.Executable)
+	}
+	if query.Text != "" {
+		arguments = append(arguments, "--grep="+regexp.QuoteMeta(query.Text))
+	}
+	command := exec.CommandContext(ctx, "journalctl", arguments...)
 	pipe, err := command.StdoutPipe()
 	if err != nil {
 		return err
@@ -464,7 +501,7 @@ func FollowLogs(ctx context.Context, emit func(LogEntry) error) error {
 	scanner := bufio.NewScanner(pipe)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
-		entry, ok := parseLogEntry(scanner.Bytes())
+		entry, ok := parseLogEntryWithDetails(scanner.Bytes(), query.Details)
 		if ok && emit(entry) != nil {
 			_ = command.Process.Kill()
 			_ = command.Wait()
@@ -482,6 +519,10 @@ func FollowLogs(ctx context.Context, emit func(LogEntry) error) error {
 }
 
 func parseLogEntry(payload []byte) (LogEntry, bool) {
+	return parseLogEntryWithDetails(payload, false)
+}
+
+func parseLogEntryWithDetails(payload []byte, details bool) (LogEntry, bool) {
 	var row map[string]any
 	if json.Unmarshal(payload, &row) != nil {
 		return LogEntry{}, false
@@ -491,7 +532,28 @@ func parseLogEntry(payload []byte) (LogEntry, bool) {
 	if unit == "" {
 		unit = stringValue(row["_SYSTEMD_USER_UNIT"])
 	}
-	return LogEntry{Timestamp: time.UnixMicro(micros).UTC().Format(time.RFC3339Nano), Priority: stringValue(row["PRIORITY"]), Unit: unit, Message: stringValue(row["MESSAGE"]), Cursor: stringValue(row["__CURSOR"])}, true
+	entry := LogEntry{Timestamp: time.UnixMicro(micros).UTC().Format(time.RFC3339Nano), Priority: stringValue(row["PRIORITY"]), Unit: unit, Message: stringValue(row["MESSAGE"]), Cursor: stringValue(row["__CURSOR"])}
+	if details {
+		const maxDetailBytes = 64 << 10
+		const maxDetailValue = 16 << 10
+		entry.Details = make(map[string]string)
+		total := 0
+		for _, field := range journalDetailFields {
+			if field == "__CURSOR" || field == "__REALTIME_TIMESTAMP" {
+				continue
+			}
+			value := stringValue(row[field])
+			if value == "" || len(value) > maxDetailValue || total+len(field)+len(value) > maxDetailBytes {
+				continue
+			}
+			entry.Details[field] = value
+			total += len(field) + len(value)
+		}
+		if len(entry.Details) == 0 {
+			entry.Details = nil
+		}
+	}
+	return entry, true
 }
 
 func stringValue(value any) string {

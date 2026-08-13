@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/csv"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -64,6 +66,7 @@ type Server struct {
 	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
+	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -111,6 +114,9 @@ func New(cfg config.Config) (*Server, error) {
 			return auth.ApplyOverride(ctx, cfg.SessionSocket, request)
 		},
 		queryLogs: platform.QueryLogs,
+		followLogs: func(ctx context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
+			return platform.FollowJournal(ctx, query, emit)
+		},
 	}
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
@@ -280,6 +286,7 @@ func (server *Server) routes() http.Handler {
 			router.Get("/terminal/ws", server.terminalWebSocket)
 			router.Get("/logs", server.logs)
 			router.Get("/logs/stream", server.logStream)
+			router.Get("/logs/export", server.logExport)
 			router.Get("/operations", server.operationReceipts)
 			router.Get("/jobs", server.jobsList)
 			router.With(server.requireCSRF).Post("/jobs/host-inventory", server.startHostInventoryJob)
@@ -1075,6 +1082,13 @@ func parseJournalQuery(request *http.Request) (platform.JournalQuery, error) {
 		Executable: values.Get("executable"),
 		Text:       values.Get("text"),
 	}
+	if raw := values.Get("details"); raw != "" {
+		details, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return platform.JournalQuery{}, parseErr
+		}
+		query.Details = details
+	}
 	for key, destination := range map[string]*time.Time{"since": &query.Since, "until": &query.Until} {
 		if raw := values.Get(key); raw != "" {
 			parsed, parseErr := time.Parse(time.RFC3339Nano, raw)
@@ -1090,7 +1104,95 @@ func parseJournalQuery(request *http.Request) (platform.JournalQuery, error) {
 	return query, nil
 }
 
+const maxJournalExportBytes = 8 << 20
+
+func (server *Server) logExport(writer http.ResponseWriter, request *http.Request) {
+	query, err := parseJournalQuery(request)
+	if err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-journal-query", "Unsupported journal filter, cursor, or time range")
+		return
+	}
+	if request.URL.Query().Get("limit") == "" {
+		query.Limit = platform.MaxJournalPageSize
+	}
+	if err := query.Validate(); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-journal-query", "Unsupported journal filter, cursor, or time range")
+		return
+	}
+	format := request.URL.Query().Get("format")
+	if format == "" {
+		format = "csv"
+	}
+	if format != "csv" && format != "json" {
+		problem(writer, http.StatusBadRequest, "invalid-export-format", "Export format must be csv or json")
+		return
+	}
+	page, err := server.queryLogs(request.Context(), query)
+	if err != nil {
+		if request.Context().Err() != nil {
+			return
+		}
+		problem(writer, http.StatusServiceUnavailable, "logs-unavailable", "The journal could not be queried")
+		return
+	}
+	writer.Header().Set("Content-Disposition", `attachment; filename="tako-journal-export.`+format+`"`)
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	if format == "json" {
+		payload, marshalErr := json.Marshal(page)
+		if marshalErr != nil || len(payload) > maxJournalExportBytes {
+			problem(writer, http.StatusRequestEntityTooLarge, "journal-export-too-large", "The filtered journal export is too large")
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write(payload)
+		return
+	}
+	payload, csvErr := encodeJournalCSV(page.Items)
+	if csvErr != nil {
+		problem(writer, http.StatusRequestEntityTooLarge, "journal-export-too-large", "The filtered journal export is too large")
+		return
+	}
+	writer.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(payload)
+}
+
+func encodeJournalCSV(entries []platform.LogEntry) ([]byte, error) {
+	var output bytes.Buffer
+	writer := csv.NewWriter(&output)
+	if err := writer.Write([]string{"timestamp", "priority", "unit", "message", "details"}); err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		details, err := json.Marshal(entry.Details)
+		if err != nil {
+			return nil, err
+		}
+		if err := writer.Write([]string{entry.Timestamp, entry.Priority, entry.Unit, entry.Message, string(details)}); err != nil {
+			return nil, err
+		}
+		writer.Flush()
+		if writer.Error() != nil || output.Len() > maxJournalExportBytes {
+			return nil, errors.New("journal export exceeds bounded output")
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil || output.Len() > maxJournalExportBytes {
+		if err == nil {
+			err = errors.New("journal export exceeds bounded output")
+		}
+		return nil, err
+	}
+	return output.Bytes(), nil
+}
+
 func (server *Server) logStream(writer http.ResponseWriter, request *http.Request) {
+	query, err := parseJournalQuery(request)
+	if err != nil || query.Cursor != "" {
+		problem(writer, http.StatusBadRequest, "invalid-journal-query", "Unsupported live journal filter or cursor")
+		return
+	}
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
 		problem(writer, http.StatusInternalServerError, "stream-unsupported", "Streaming is unavailable")
@@ -1106,10 +1208,7 @@ func (server *Server) logStream(writer http.ResponseWriter, request *http.Reques
 	entries := make(chan platform.LogEntry, 64)
 	go func() {
 		defer close(entries)
-		err := platform.FollowLogs(ctx, func(entry platform.LogEntry) error {
-			if unit := request.URL.Query().Get("unit"); unit != "" && entry.Unit != unit {
-				return nil
-			}
+		err := server.followLogs(ctx, query, func(entry platform.LogEntry) error {
 			select {
 			case entries <- entry:
 				return nil

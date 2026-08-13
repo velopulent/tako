@@ -519,6 +519,63 @@ func TestLogsRouteParsesBoundedFiltersAndOpaqueCursor(t *testing.T) {
 	}
 }
 
+func TestLogExportAppliesExactFiltersAndStaysBounded(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	var received platform.JournalQuery
+	server.queryLogs = func(_ context.Context, query platform.JournalQuery) (platform.JournalPage, error) {
+		received = query
+		return platform.JournalPage{Items: []platform.LogEntry{{Timestamp: "2023-11-14T22:13:20Z", Priority: "3", Unit: "worker.service", Message: "failed", Details: map[string]string{"_PID": "42"}}}}, nil
+	}
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/logs/export?format=csv&unit=worker.service&priority=3&details=true&text=failed", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Header().Get("Content-Disposition"), "tako-journal-export.csv") || !strings.Contains(recorder.Body.String(), "worker.service") {
+		t.Fatalf("export returned %d headers=%v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+	if received.Unit != "worker.service" || received.Priority != "3" || received.Text != "failed" || !received.Details || received.Limit != platform.MaxJournalPageSize {
+		t.Fatalf("export filters not preserved: %#v", received)
+	}
+	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/logs/export?format=xml", nil)
+	invalid.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, invalid)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid export format returned %d", recorder.Code)
+	}
+}
+
+func TestLogStreamAppliesFiltersAndEmitsStructuredEntries(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	var received platform.JournalQuery
+	server.followLogs = func(_ context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
+		received = query
+		return emit(platform.LogEntry{Timestamp: "2023-11-14T22:13:20Z", Priority: "3", Unit: "worker.service", Message: "failed"})
+	}
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/logs/stream?unit=worker.service&details=true&text=failed", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "event: log") || !strings.Contains(recorder.Body.String(), "worker.service") {
+		t.Fatalf("stream returned %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if received.Unit != "worker.service" || received.Text != "failed" || !received.Details {
+		t.Fatalf("stream filters not preserved: %#v", received)
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

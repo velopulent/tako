@@ -67,6 +67,7 @@ describe("JournalBrowser", () => {
             priority: "3",
             unit: "worker.service",
             message: "failed",
+            details: { _PID: "42" },
           },
         ],
         nextCursor: "opaque-cursor",
@@ -82,6 +83,19 @@ describe("JournalBrowser", () => {
         String(input).includes("text=failed")
       )
       expect(request).toBeTruthy()
+    })
+    expect(
+      (await screen.findByRole("link", { name: "Export CSV" })).getAttribute(
+        "href"
+      )
+    ).toContain("text=failed")
+    await user.click(screen.getByRole("button", { name: "Details off" }))
+    await vi.waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).includes("details=true")
+        )
+      ).toBe(true)
     })
     await user.click(
       await screen.findByRole("button", { name: "Older entries" })

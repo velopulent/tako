@@ -135,6 +135,9 @@ paths:
         - in: query
           name: text
           schema: { type: string, maxLength: 512 }
+        - in: query
+          name: details
+          schema: { type: boolean, default: false }
       responses:
         '200':
           description: Bounded structured journal page with an opaque next cursor
@@ -150,8 +153,76 @@ paths:
         - in: query
           name: unit
           schema: { type: string }
+        - in: query
+          name: boot
+          schema: { type: string, pattern: '^(current|[a-fA-F0-9]{32})$' }
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          schema: { type: string, format: date-time }
+        - in: query
+          name: priority
+          schema: { type: string, pattern: '^[0-7](\.\.[0-7])?$' }
+        - in: query
+          name: executable
+          schema: { type: string, maxLength: 4096 }
+        - in: query
+          name: text
+          schema: { type: string, maxLength: 512 }
+        - in: query
+          name: details
+          schema: { type: boolean, default: false }
       responses:
         '200': { description: text/event-stream of new journal entries }
+        '400': { $ref: '#/components/responses/Problem' }
+  /logs/export:
+    get:
+      operationId: exportLogs
+      parameters:
+        - in: query
+          name: format
+          schema: { type: string, enum: [csv, json], default: csv }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 500 }
+        - in: query
+          name: cursor
+          schema: { type: string, maxLength: 8192 }
+        - in: query
+          name: boot
+          schema: { type: string, pattern: '^(current|[a-fA-F0-9]{32})$' }
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          schema: { type: string, format: date-time }
+        - in: query
+          name: priority
+          schema: { type: string, pattern: '^[0-7](\.\.[0-7])?$' }
+        - in: query
+          name: unit
+          schema: { type: string }
+        - in: query
+          name: executable
+          schema: { type: string, maxLength: 4096 }
+        - in: query
+          name: text
+          schema: { type: string, maxLength: 512 }
+        - in: query
+          name: details
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Bounded filtered journal export
+          content:
+            text/csv: { schema: { type: string, format: binary } }
+            application/json: { schema: { $ref: '#/components/schemas/JournalPage' } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /users:
     get:
       operationId: listUsers
@@ -875,6 +946,9 @@ components:
         priority: { type: string, maxLength: 2 }
         unit: { type: string, maxLength: 256 }
         message: { type: string, maxLength: 1048576 }
+        details:
+          type: object
+          additionalProperties: { type: string, maxLength: 16384 }
     MetricSample:
       type: object
       required: [timestamp, cpuPercent, memoryUsed, memoryTotal, networkRx, networkTx, diskRead, diskWrite]

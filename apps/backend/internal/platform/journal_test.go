@@ -32,12 +32,15 @@ func TestJournalQueryValidationAndOpaqueCursor(t *testing.T) {
 }
 
 func TestParseLogEntryKeepsCursorPrivateAndSupportsUserUnits(t *testing.T) {
-	entry, ok := parseLogEntry([]byte(`{"__CURSOR":"s=cursor;seq=123","__REALTIME_TIMESTAMP":"1700000000000000","PRIORITY":"3","_SYSTEMD_USER_UNIT":"worker.service","MESSAGE":"failed safely"}`))
+	entry, ok := parseLogEntryWithDetails([]byte(`{"__CURSOR":"s=cursor;seq=123","__REALTIME_TIMESTAMP":"1700000000000000","PRIORITY":"3","_SYSTEMD_USER_UNIT":"worker.service","_PID":"42","_COMM":"worker","MESSAGE":"failed safely"}`), true)
 	if !ok || entry.Unit != "worker.service" || entry.Cursor == "" {
 		t.Fatalf("parsed entry=%#v ok=%v", entry, ok)
 	}
 	if payload := entry.Cursor; payload == "" {
 		t.Fatal("missing cursor")
+	}
+	if entry.Details["_PID"] != "42" || entry.Details["_COMM"] != "worker" {
+		t.Fatalf("detailed fields missing: %#v", entry.Details)
 	}
 }
 

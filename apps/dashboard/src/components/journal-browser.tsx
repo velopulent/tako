@@ -1,12 +1,12 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { PauseIcon, PlayIcon } from "lucide-react"
+import { ArrowDownToLineIcon, EyeIcon, PauseIcon, PlayIcon } from "lucide-react"
 import type { ColumnDef } from "@tanstack/react-table"
 
 import { api, type JournalPage, type LogEntry } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { DataTable } from "@/components/data-table"
 import {
   Empty,
@@ -23,6 +23,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 
 const columns: ColumnDef<LogEntry>[] = [
@@ -50,6 +57,27 @@ const columns: ColumnDef<LogEntry>[] = [
   },
 ]
 
+function makeParams(filters: {
+  priority: string
+  unit: string
+  executable: string
+  text: string
+  details: boolean
+  cursor?: string
+  limit?: number
+}) {
+  const params = new URLSearchParams({
+    limit: String(filters.limit ?? 200),
+  })
+  if (filters.priority) params.set("priority", filters.priority)
+  if (filters.unit) params.set("unit", filters.unit)
+  if (filters.executable) params.set("executable", filters.executable)
+  if (filters.text) params.set("text", filters.text)
+  if (filters.details) params.set("details", "true")
+  if (filters.cursor) params.set("cursor", filters.cursor)
+  return params
+}
+
 export function JournalBrowser() {
   const [priority, setPriority] = React.useState("")
   const [unit, setUnit] = React.useState("")
@@ -58,171 +86,261 @@ export function JournalBrowser() {
   const [activeUnit, setActiveUnit] = React.useState("")
   const [activeExecutable, setActiveExecutable] = React.useState("")
   const [activeText, setActiveText] = React.useState("")
+  const [details, setDetails] = React.useState(false)
   const [cursor, setCursor] = React.useState("")
   const [following, setFollowing] = React.useState(true)
+  const [atLatest, setAtLatest] = React.useState(true)
+  const [pendingLive, setPendingLive] = React.useState(0)
   const [live, setLive] = React.useState<LogEntry[]>([])
+  const [selected, setSelected] = React.useState<LogEntry | null>(null)
+  const atLatestRef = React.useRef(true)
+
+  const setLatest = (value: boolean) => {
+    atLatestRef.current = value
+    setAtLatest(value)
+  }
+  const filterValues = {
+    priority,
+    unit: activeUnit,
+    executable: activeExecutable,
+    text: activeText,
+    details,
+  }
   const query = useQuery({
-    queryKey: [
-      "logs",
-      priority,
-      activeUnit,
-      activeExecutable,
-      activeText,
-      cursor,
-    ],
-    queryFn: () => {
-      const params = new URLSearchParams({ limit: "200" })
-      if (priority) params.set("priority", priority)
-      if (activeUnit) params.set("unit", activeUnit)
-      if (activeExecutable) params.set("executable", activeExecutable)
-      if (activeText) params.set("text", activeText)
-      if (cursor) params.set("cursor", cursor)
-      return api<JournalPage>(`/logs?${params.toString()}`)
-    },
+    queryKey: ["logs", filterValues, cursor],
+    queryFn: () =>
+      api<JournalPage>(
+        `/logs?${makeParams({ ...filterValues, cursor }).toString()}`
+      ),
   })
+  const streamParams = React.useMemo(
+    () => makeParams(filterValues).toString(),
+    [priority, activeUnit, activeExecutable, activeText, details]
+  )
+  const exportParams = React.useMemo(
+    () => makeParams({ ...filterValues, limit: 500 }).toString(),
+    [priority, activeUnit, activeExecutable, activeText, details]
+  )
+
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
       setActiveUnit(unit)
       setActiveExecutable(executable)
       setActiveText(text)
       setCursor("")
+      setLive([])
+      setPendingLive(0)
+      setLatest(true)
     }, 250)
     return () => window.clearTimeout(timer)
   }, [unit, executable, text])
+
   React.useEffect(() => {
     if (!following || typeof EventSource === "undefined") return
-    const source = new EventSource("/api/v1/logs/stream")
+    const source = new EventSource(`/api/v1/logs/stream?${streamParams}`)
     source.addEventListener("log", (event) => {
       try {
-        setLive((current) =>
-          [
-            JSON.parse((event as MessageEvent<string>).data) as LogEntry,
-            ...current,
-          ].slice(0, 500)
-        )
+        const entry = JSON.parse(
+          (event as MessageEvent<string>).data
+        ) as LogEntry
+        if (!atLatestRef.current) {
+          setPendingLive((current) => Math.min(current + 1, 500))
+          return
+        }
+        setLive((current) => [entry, ...current].slice(0, 500))
       } catch {
         // Ignore malformed stream events; the bounded query remains usable.
       }
     })
     return () => source.close()
-  }, [following])
-  const items = [...live, ...(query.data?.items ?? [])]
-  const resetCursor = () => setCursor("")
+  }, [following, streamParams])
+
+  const items = atLatest
+    ? [...live, ...(query.data?.items ?? [])]
+    : (query.data?.items ?? [])
+  const jumpToLatest = () => {
+    setLive([])
+    setPendingLive(0)
+    setCursor("")
+    setLatest(true)
+    setFollowing(true)
+  }
 
   return (
-    <div className="space-y-4">
-      <FieldGroup className="grid gap-4 @lg/main:grid-cols-2 @4xl/main:grid-cols-4">
-        <Field>
-          <FieldLabel htmlFor="journal-text">Message contains</FieldLabel>
-          <Input
-            id="journal-text"
-            maxLength={512}
-            value={text}
-            onChange={(event) => {
-              setText(event.target.value)
-            }}
-            placeholder="failed"
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor="journal-unit">Unit</FieldLabel>
-          <Input
-            id="journal-unit"
-            maxLength={256}
-            value={unit}
-            onChange={(event) => {
-              setUnit(event.target.value)
-            }}
-            placeholder="worker.service"
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor="journal-executable">Executable</FieldLabel>
-          <Input
-            id="journal-executable"
-            maxLength={4096}
-            value={executable}
-            onChange={(event) => {
-              setExecutable(event.target.value)
-            }}
-            placeholder="/usr/bin/worker"
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor="journal-priority">Priority</FieldLabel>
-          <Select
-            value={priority || "all"}
-            onValueChange={(value) => {
-              setPriority(value === "all" ? "" : (value ?? ""))
-              resetCursor()
-            }}
-          >
-            <SelectTrigger id="journal-priority" aria-label="Journal priority">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All priorities</SelectItem>
-              <SelectItem value="0..3">Emergency–Error</SelectItem>
-              <SelectItem value="4">Warning</SelectItem>
-              <SelectItem value="5..7">Notice–Debug</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-      </FieldGroup>
-      {query.isPending && <Skeleton className="h-72" />}
-      {query.isError && (
-        <Alert variant="destructive">
-          <AlertTitle>Journal unavailable</AlertTitle>
-          <AlertDescription>
-            {query.error.message || "The journal query failed."}
-          </AlertDescription>
-        </Alert>
-      )}
-      {!query.isPending && !query.isError && !items.length && (
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>No journal entries</EmptyTitle>
-            <EmptyDescription>
-              Try a broader filter or time range.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-      {!query.isPending && !query.isError && items.length > 0 && (
-        <DataTable
-          data={items}
-          columns={columns}
-          searchPlaceholder="Search loaded entries"
-          toolbar={
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setFollowing((value) => !value)}
+    <>
+      <div className="space-y-4">
+        <FieldGroup className="grid gap-4 @lg/main:grid-cols-2 @4xl/main:grid-cols-4">
+          <Field>
+            <FieldLabel htmlFor="journal-text">Message contains</FieldLabel>
+            <Input
+              id="journal-text"
+              maxLength={512}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder="failed"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="journal-unit">Unit</FieldLabel>
+            <Input
+              id="journal-unit"
+              maxLength={256}
+              value={unit}
+              onChange={(event) => setUnit(event.target.value)}
+              placeholder="worker.service"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="journal-executable">Executable</FieldLabel>
+            <Input
+              id="journal-executable"
+              maxLength={4096}
+              value={executable}
+              onChange={(event) => setExecutable(event.target.value)}
+              placeholder="/usr/bin/worker"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="journal-priority">Priority</FieldLabel>
+            <Select
+              value={priority || "all"}
+              onValueChange={(value) => {
+                setPriority(value === "all" ? "" : (value ?? ""))
+                setCursor("")
+                setLive([])
+                setPendingLive(0)
+                setLatest(true)
+              }}
+            >
+              <SelectTrigger
+                id="journal-priority"
+                aria-label="Journal priority"
               >
-                {following ? (
-                  <PauseIcon data-icon="inline-start" />
-                ) : (
-                  <PlayIcon data-icon="inline-start" />
-                )}
-                {following ? "Pause" : "Follow"}
-              </Button>
-              {query.data?.nextCursor && (
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All priorities</SelectItem>
+                <SelectItem value="0..3">Emergency–Error</SelectItem>
+                <SelectItem value="4">Warning</SelectItem>
+                <SelectItem value="5..7">Notice–Debug</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        </FieldGroup>
+        {pendingLive > 0 && (
+          <Button variant="secondary" size="sm" onClick={jumpToLatest}>
+            <ArrowDownToLineIcon data-icon="inline-start" />
+            {pendingLive} new {pendingLive === 1 ? "entry" : "entries"} — jump
+            to latest
+          </Button>
+        )}
+        {query.isPending && <Skeleton className="h-72" />}
+        {query.isError && (
+          <Alert variant="destructive">
+            <AlertTitle>Journal unavailable</AlertTitle>
+            <AlertDescription>
+              {query.error.message || "The journal query failed."}
+            </AlertDescription>
+          </Alert>
+        )}
+        {!query.isPending && !query.isError && !items.length && (
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>No journal entries</EmptyTitle>
+              <EmptyDescription>
+                Try a broader filter or time range.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+        {!query.isPending && !query.isError && items.length > 0 && (
+          <DataTable
+            data={items}
+            columns={columns}
+            searchPlaceholder="Search loaded entries"
+            onRowClick={setSelected}
+            toolbar={
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   size="sm"
+                  onClick={() => setFollowing((value) => !value)}
+                >
+                  {following ? (
+                    <PauseIcon data-icon="inline-start" />
+                  ) : (
+                    <PlayIcon data-icon="inline-start" />
+                  )}
+                  {following ? "Pause" : "Follow"}
+                </Button>
+                <Button
+                  variant={details ? "secondary" : "outline"}
+                  size="sm"
                   onClick={() => {
+                    setDetails((value) => !value)
+                    setCursor("")
                     setLive([])
-                    setCursor(query.data?.nextCursor ?? "")
+                    setPendingLive(0)
+                    setLatest(true)
                   }}
                 >
-                  Older entries
+                  <EyeIcon data-icon="inline-start" />
+                  {details ? "Details on" : "Details off"}
                 </Button>
+                <a
+                  className={buttonVariants({ variant: "outline", size: "sm" })}
+                  href={`/api/v1/logs/export?${exportParams}`}
+                  download
+                >
+                  <ArrowDownToLineIcon data-icon="inline-start" />
+                  Export CSV
+                </a>
+                {query.data?.nextCursor && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setLive([])
+                      setPendingLive(0)
+                      setCursor(query.data?.nextCursor ?? "")
+                      setLatest(false)
+                    }}
+                  >
+                    Older entries
+                  </Button>
+                )}
+                {(!atLatest || pendingLive > 0) && (
+                  <Button variant="outline" size="sm" onClick={jumpToLatest}>
+                    Jump to latest
+                  </Button>
+                )}
+              </div>
+            }
+          />
+        )}
+      </div>
+      <Sheet
+        open={selected !== null}
+        onOpenChange={(open) => !open && setSelected(null)}
+      >
+        <SheetContent className="w-full sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>Journal entry details</SheetTitle>
+            <SheetDescription>
+              Structured fields from the authenticated journal record.
+            </SheetDescription>
+          </SheetHeader>
+          {selected && (
+            <pre className="m-4 max-h-[calc(100vh-10rem)] overflow-auto rounded-lg bg-muted p-4 text-xs whitespace-pre-wrap">
+              {JSON.stringify(
+                { ...selected, details: selected.details ?? {} },
+                null,
+                2
               )}
-            </div>
-          }
-        />
-      )}
-    </div>
+            </pre>
+          )}
+        </SheetContent>
+      </Sheet>
+    </>
   )
 }
