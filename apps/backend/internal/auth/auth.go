@@ -131,6 +131,7 @@ type Request struct {
 	GroupMembership     *platform.GroupMembershipOperation    `json:"groupMembership,omitempty"`
 	AdminRole           *platform.AdministrativeRoleOperation `json:"adminRole,omitempty"`
 	PasswordChange      *PasswordChangeOperation              `json:"passwordChange,omitempty"`
+	SSHKeys             *platform.SSHKeyOperation             `json:"sshKeys,omitempty"`
 }
 
 // PasswordChangeOperation is deliberately wire-only. Secret fields are sent
@@ -230,6 +231,13 @@ type PasswordChangeRequest struct {
 	Token      string
 	AdminToken string
 	Operation  PasswordChangeOperation
+}
+
+type SSHKeyRequest struct {
+	Token          string
+	AdminToken     string
+	Administrative bool
+	Operation      platform.SSHKeyOperation
 }
 
 type HostConfigurationRequest struct {
@@ -460,6 +468,61 @@ func ChangePassword(ctx context.Context, path string, request PasswordChangeRequ
 	return nil
 }
 
+func PreviewSSHKeys(ctx context.Context, path string, request SSHKeyRequest) (platform.SSHKeyPreview, error) {
+	operation := request.Operation
+	operation.Preview = true
+	response, err := socketRequest(ctx, path, Request{Operation: "ssh-keys", Token: request.Token, AdminToken: request.AdminToken, SSHKeys: &operation})
+	if err != nil {
+		return platform.SSHKeyPreview{}, err
+	}
+	if response.Error != "" {
+		return platform.SSHKeyPreview{}, sshKeyResponseError(response.Error)
+	}
+	if response.SSHKeyPreview == nil {
+		return platform.SSHKeyPreview{}, ErrServiceUnavailable
+	}
+	return *response.SSHKeyPreview, nil
+}
+
+func ApplySSHKeys(ctx context.Context, path string, request SSHKeyRequest) (platform.SSHKeyState, error) {
+	operation := request.Operation
+	operation.Preview = false
+	response, err := socketRequest(ctx, path, Request{Operation: "ssh-keys", Token: request.Token, AdminToken: request.AdminToken, SSHKeys: &operation})
+	if err != nil {
+		return platform.SSHKeyState{}, err
+	}
+	if response.Error != "" {
+		return platform.SSHKeyState{}, sshKeyResponseError(response.Error)
+	}
+	if response.SSHKeyState == nil {
+		return platform.SSHKeyState{}, ErrServiceUnavailable
+	}
+	return *response.SSHKeyState, nil
+}
+
+func sshKeyResponseError(code string) error {
+	switch code {
+	case "invalid-ssh-key-operation":
+		return platform.ErrInvalidSSHKeyOperation
+	case "ssh-key-conflict":
+		return platform.ErrSSHKeyConflict
+	case "ssh-key-not-found":
+		return platform.ErrSSHKeyNotFound
+	case "ssh-key-read-only":
+		return platform.ErrSSHKeyReadOnly
+	case "ssh-key-unauthorized":
+		return platform.ErrSSHKeyUnauthorized
+	case "ssh-key-protected":
+		return platform.ErrSSHKeyProtected
+	case "ssh-key-verification-failed":
+		return platform.ErrSSHKeyVerification
+	case "ssh-key-unavailable":
+		return platform.ErrSSHKeyUnavailable
+	default:
+		return errors.New(code)
+	}
+}
+
 func socketRequest(ctx context.Context, path string, request Request) (Response, error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", path)
@@ -597,6 +660,8 @@ type Response struct {
 	GroupMembershipPreview *platform.GroupMembershipPreview    `json:"groupMembershipPreview,omitempty"`
 	AdminRoleState         *platform.AdministrativeRoleState   `json:"adminRoleState,omitempty"`
 	AdminRolePreview       *platform.AdministrativeRolePreview `json:"adminRolePreview,omitempty"`
+	SSHKeyState            *platform.SSHKeyState               `json:"sshKeyState,omitempty"`
+	SSHKeyPreview          *platform.SSHKeyPreview             `json:"sshKeyPreview,omitempty"`
 }
 
 type Authenticator interface {

@@ -61,6 +61,7 @@ import { ProcessDetails } from "@/components/process-details"
 import { UserInventory } from "@/components/user-inventory"
 import { GroupInventory } from "@/components/group-inventory"
 import { PasswordManager } from "@/components/password-manager"
+import { SSHKeyManager } from "@/components/ssh-key-manager"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -640,6 +641,7 @@ function UsersPage() {
       <UserInventory />
       <GroupInventory />
       <PasswordManager />
+      <SSHKeyManager />
     </Page>
   )
 }

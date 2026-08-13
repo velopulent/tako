@@ -34,8 +34,23 @@ type passwordBackend interface {
 	Reset(context.Context, string, string) error
 }
 
+type sshKeysBackend interface {
+	Preview(context.Context, platform.SSHKeyOperation, auth.Identity, bool) (platform.SSHKeyPreview, error)
+	Apply(context.Context, platform.SSHKeyOperation, auth.Identity, bool) (platform.SSHKeyState, error)
+}
+
 type systemPasswordBackend struct {
 	service auth.PAMAuthenticator
+}
+
+type systemSSHKeysBackend struct{}
+
+func (systemSSHKeysBackend) Preview(ctx context.Context, operation platform.SSHKeyOperation, identity auth.Identity, administrative bool) (platform.SSHKeyPreview, error) {
+	return platform.PreviewSSHKeys(ctx, operation, identity.Username, administrative)
+}
+
+func (systemSSHKeysBackend) Apply(ctx context.Context, operation platform.SSHKeyOperation, identity auth.Identity, administrative bool) (platform.SSHKeyState, error) {
+	return platform.ApplySSHKeys(ctx, operation, identity.Username, administrative)
 }
 
 func (backend systemPasswordBackend) Change(ctx context.Context, username, current, replacement string) error {
@@ -128,5 +143,28 @@ func passwordErrorCode(err error) string {
 		return "password-unavailable"
 	default:
 		return "password-unavailable"
+	}
+}
+
+func sshKeyErrorCode(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrInvalidSSHKeyOperation):
+		return "invalid-ssh-key-operation"
+	case errors.Is(err, platform.ErrSSHKeyConflict):
+		return "ssh-key-conflict"
+	case errors.Is(err, platform.ErrSSHKeyNotFound):
+		return "ssh-key-not-found"
+	case errors.Is(err, platform.ErrSSHKeyReadOnly):
+		return "ssh-key-read-only"
+	case errors.Is(err, platform.ErrSSHKeyUnauthorized):
+		return "ssh-key-unauthorized"
+	case errors.Is(err, platform.ErrSSHKeyProtected):
+		return "ssh-key-protected"
+	case errors.Is(err, platform.ErrSSHKeyVerification):
+		return "ssh-key-verification-failed"
+	case errors.Is(err, platform.ErrSSHKeyUnavailable), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "ssh-key-unavailable"
+	default:
+		return "ssh-key-unavailable"
 	}
 }

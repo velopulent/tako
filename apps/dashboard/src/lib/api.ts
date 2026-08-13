@@ -294,6 +294,40 @@ export type PasswordChangeOperation =
       newPassword: string
       confirmation: string
     }
+export type SSHKey = {
+  fingerprint: string
+  type: string
+  comment?: string
+  line: string
+}
+export type SSHKeyState = {
+  username: string
+  path: string
+  fingerprint: string
+  keys: SSHKey[]
+  writable: boolean
+  authority: "user" | "administrative"
+  reason?: string
+}
+export type SSHKeyOperation = {
+  action: "add" | "remove"
+  username: string
+  key?: string
+  fingerprint?: string
+  expectedFingerprint?: string
+  confirmation?: string
+}
+export type SSHKeyPreview = {
+  action: SSHKeyOperation["action"]
+  username: string
+  current: SSHKeyState
+  changes: string[]
+  warnings: string[]
+  stale: boolean
+  allowed: boolean
+  reason?: string
+  requiresConfirmation: boolean
+}
 export type GroupMembershipOperation = {
   action: "add" | "remove"
   username: string

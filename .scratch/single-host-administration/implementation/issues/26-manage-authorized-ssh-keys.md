@@ -4,8 +4,8 @@
 
 **Blocked by:** 23 — Manage local account lifecycle; 31 — Browse Files under UNIX authority
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Keys are validated, atomically saved, permission-correct, and stale-write protected.
-- [ ] Protected-path authority and receipts are explicit.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Keys are validated, atomically saved, permission-correct, and stale-write protected.
+- [x] Protected-path authority and receipts are explicit.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

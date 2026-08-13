@@ -350,6 +350,55 @@ paths:
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /users/ssh-keys:
+    get:
+      operationId: listAuthorizedSSHKeys
+      parameters:
+        - in: query
+          name: username
+          schema: { type: string, maxLength: 32, pattern: '^[a-z_][a-z0-9_$-]*$' }
+      responses:
+        '200':
+          description: Authorized keys under the target account's protected home path
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SSHKeyState' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: applyAuthorizedSSHKeyOperation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SSHKeyOperation' }
+      responses:
+        '200':
+          description: Verified authorized key state after an atomic operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SSHKeyState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /users/ssh-keys/preview:
+    post:
+      operationId: previewAuthorizedSSHKeyOperation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SSHKeyOperation' }
+      responses:
+        '200':
+          description: Stale-aware authorized key impact preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SSHKeyPreview' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /groups:
     get:
       operationId: listGroups
@@ -1372,6 +1421,58 @@ components:
             username: { type: string, minLength: 1, maxLength: 32, pattern: '^[a-z_][a-z0-9_$-]*$' }
             newPassword: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
             confirmation: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+    SSHKeyOperation:
+      type: object
+      additionalProperties: false
+      required: [action, username]
+      properties:
+        action: { type: string, enum: [add, remove] }
+        username: { type: string, minLength: 1, maxLength: 32, pattern: '^[a-z_][a-z0-9_$-]*$' }
+        key: { type: string, maxLength: 12288, writeOnly: true }
+        fingerprint: { type: string, minLength: 64, maxLength: 64, pattern: '^[a-fA-F0-9]{64}$' }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64, pattern: '^[a-fA-F0-9]{64}$' }
+        confirmation: { type: string, maxLength: 128, writeOnly: true }
+    SSHKey:
+      type: object
+      required: [fingerprint, type, line]
+      properties:
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+        type: { type: string, maxLength: 128 }
+        comment: { type: string, maxLength: 1024 }
+        line: { type: string, maxLength: 16384 }
+    SSHKeyState:
+      type: object
+      required: [username, path, fingerprint, keys, writable, authority]
+      properties:
+        username: { type: string, maxLength: 32 }
+        path: { type: string, maxLength: 4096 }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+        keys:
+          type: array
+          maxItems: 2048
+          items: { $ref: '#/components/schemas/SSHKey' }
+        writable: { type: boolean }
+        authority: { type: string, enum: [user, administrative] }
+        reason: { type: string, maxLength: 512 }
+    SSHKeyPreview:
+      type: object
+      required: [action, username, current, changes, warnings, stale, allowed, requiresConfirmation]
+      properties:
+        action: { type: string, enum: [add, remove] }
+        username: { type: string, maxLength: 32 }
+        current: { $ref: '#/components/schemas/SSHKeyState' }
+        changes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        warnings:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 512 }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+        requiresConfirmation: { type: boolean }
     GroupMembershipOperation:
       type: object
       required: [action, username, group]

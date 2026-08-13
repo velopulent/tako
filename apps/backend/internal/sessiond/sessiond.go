@@ -154,22 +154,26 @@ func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversati
 }
 
 func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, systemSSHKeysBackend{}, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
 }
 
 func handleWithLocalAccountBackend(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, account localAccountBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, account, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, systemSSHKeysBackend{}, account, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
 }
 
 func handleWithGroupBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, systemLocalAccountBackend{}, groups, roles, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, systemSSHKeysBackend{}, systemLocalAccountBackend{}, groups, roles, serviceBackends...)
 }
 
 func handleWithPasswordBackend(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, password, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, password, systemSSHKeysBackend{}, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
 }
 
-func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
+func handleWithSSHKeysBackend(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, sshKeys sshKeysBackend, serviceBackends ...serviceBackend) {
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, sshKeys, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+}
+
+func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -185,6 +189,9 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 	}
 	if password == nil {
 		password = systemPasswordBackend{service: service}
+	}
+	if sshKeys == nil {
+		sshKeys = systemSSHKeysBackend{}
 	}
 	if account == nil {
 		account = systemLocalAccountBackend{}
@@ -241,6 +248,10 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 		return
 	}
 	if request.Operation != "password-change" && request.PasswordChange != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "ssh-keys" && request.SSHKeys != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -733,6 +744,57 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 		}
 		logger.Info("password operation succeeded", zap.String("username", identity.Username), zap.String("action", operation.Action), zap.Bool("administrative", operation.Action == "reset"))
 		_ = encoder.Encode(auth.Response{})
+		return
+	}
+	if request.Operation == "ssh-keys" {
+		if request.SSHKeys == nil || (request.Token == "" && request.AdminToken == "") || (request.Token != "" && request.AdminToken != "") || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-ssh-key-operation"})
+			return
+		}
+		operation := *request.SSHKeys
+		request.SSHKeys = nil
+		var identity auth.Identity
+		var ok bool
+		administrative := request.AdminToken != ""
+		if administrative {
+			identity, ok = grants.adminIdentity(request.AdminToken)
+		} else {
+			identity, ok = grants.get(request.Token)
+		}
+		if !ok {
+			if administrative {
+				_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			} else {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+			}
+			return
+		}
+		if !administrative && operation.Username != identity.Username {
+			_ = encoder.Encode(auth.Response{Error: "ssh-key-unauthorized"})
+			return
+		}
+		if err := platform.ValidateSSHKeyOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-ssh-key-operation"})
+			return
+		}
+		sshCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		if operation.Preview {
+			preview, previewErr := sshKeys.Preview(sshCtx, operation, identity, administrative)
+			cancel()
+			if previewErr != nil {
+				_ = encoder.Encode(auth.Response{Error: sshKeyErrorCode(previewErr)})
+				return
+			}
+			_ = encoder.Encode(auth.Response{SSHKeyPreview: &preview})
+			return
+		}
+		state, applyErr := sshKeys.Apply(sshCtx, operation, identity, administrative)
+		cancel()
+		if applyErr != nil {
+			_ = encoder.Encode(auth.Response{Error: sshKeyErrorCode(applyErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{SSHKeyState: &state})
 		return
 	}
 	if request.Operation == "host-config" {
