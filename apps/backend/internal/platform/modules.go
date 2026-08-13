@@ -228,6 +228,10 @@ type Interface struct {
 	RX        uint64   `json:"rx"`
 	TX        uint64   `json:"tx"`
 	Manager   string   `json:"manager"`
+	Profile   string   `json:"profile,omitempty"`
+	Owner     string   `json:"owner,omitempty"`
+	Conflict  bool     `json:"conflict,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
 }
 
 func Interfaces() ([]Interface, error) {

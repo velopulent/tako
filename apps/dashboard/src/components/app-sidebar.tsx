@@ -15,6 +15,8 @@ import {
   UserRoundCogIcon,
   UsersIcon,
   SettingsIcon,
+  ShieldCheckIcon,
+  SirenIcon,
   ListChecksIcon,
   ClipboardListIcon,
   ServerIcon,
@@ -61,6 +63,8 @@ const groups = [
       { title: "Storage", to: "/storage", icon: HardDriveIcon },
       { title: "Network", to: "/network", icon: NetworkIcon },
       { title: "Files", to: "/files", icon: FilesIcon },
+      { title: "Security", to: "/security", icon: ShieldCheckIcon },
+      { title: "Incidents", to: "/incidents", icon: SirenIcon },
     ],
   },
   {

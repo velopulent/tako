@@ -270,6 +270,18 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
+	if request.Operation != "network" && request.Network != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "firewall" && request.Firewall != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "security" && request.Security != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
 	if request.Operation == "conversation" {
 		if request.Token != "" || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
 			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
@@ -891,6 +903,101 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 			return
 		}
 		_ = encoder.Encode(auth.Response{FileResult: &result})
+		return
+	}
+	if request.Operation == "network" {
+		if request.Network == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-network-operation"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.Network
+		request.Network = nil
+		if err := platform.ValidateNetworkOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: networkErrorCode(err)})
+			return
+		}
+		networkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		var state platform.NetworkState
+		var operationErr error
+		if operation.Action == "preview" {
+			state, operationErr = platform.PreviewNetworkOperation(networkCtx, operation)
+		} else {
+			state, operationErr = platform.ApplyNetworkOperation(networkCtx, operation)
+		}
+		cancel()
+		if operationErr != nil {
+			_ = encoder.Encode(auth.Response{Error: networkErrorCode(operationErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{NetworkState: &state})
+		_ = identity
+		return
+	}
+	if request.Operation == "firewall" {
+		if request.Firewall == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-firewall-operation"})
+			return
+		}
+		if _, ok := grants.adminIdentity(request.AdminToken); !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.Firewall
+		request.Firewall = nil
+		if err := platform.ValidateFirewallOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: firewallErrorCode(err)})
+			return
+		}
+		firewallCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		var state platform.FirewallState
+		var operationErr error
+		if operation.Action == "preview" {
+			state, operationErr = platform.PreviewFirewallOperation(firewallCtx, operation)
+		} else {
+			state, operationErr = platform.ApplyFirewallOperation(firewallCtx, operation)
+		}
+		cancel()
+		if operationErr != nil {
+			_ = encoder.Encode(auth.Response{Error: firewallErrorCode(operationErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{FirewallState: &state})
+		return
+	}
+	if request.Operation == "security" {
+		if request.Security == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil || request.Firewall != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-security-operation"})
+			return
+		}
+		if _, ok := grants.adminIdentity(request.AdminToken); !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.Security
+		request.Security = nil
+		if err := platform.ValidateSecurityOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: securityErrorCode(err)})
+			return
+		}
+		securityCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		var status platform.SecurityStatus
+		var operationErr error
+		if operation.Action == "inspect" {
+			status, operationErr = platform.PreviewSecurityOperation(securityCtx, operation)
+		} else {
+			status, operationErr = platform.ApplySecurityOperation(securityCtx, operation)
+		}
+		cancel()
+		if operationErr != nil {
+			_ = encoder.Encode(auth.Response{Error: securityErrorCode(operationErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{SecurityStatus: &status})
 		return
 	}
 	if request.Operation == "host-config" {

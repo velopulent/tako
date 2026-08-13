@@ -21,6 +21,7 @@ import { DashboardPage } from "@/routes/dashboard"
 import { ModulePage } from "@/routes/module"
 import { ServiceDetailPage } from "@/routes/service-detail"
 import { TimersPage } from "@/routes/timers"
+import { IncidentsPage } from "@/routes/incidents"
 import { api, type SessionResponse } from "@/lib/api"
 
 type RouterContext = {
@@ -70,6 +71,7 @@ const moduleNames = [
   "storage",
   "network",
   "files",
+  "security",
   "processes",
   "settings",
 ] as const
@@ -94,11 +96,18 @@ const timersRoute = createRoute({
   component: TimersPage,
 })
 
+const incidentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/incidents",
+  component: IncidentsPage,
+})
+
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
   ...moduleRoutes,
   serviceDetailRoute,
   timersRoute,
+  incidentsRoute,
 ])
 const router = createRouter({
   routeTree,

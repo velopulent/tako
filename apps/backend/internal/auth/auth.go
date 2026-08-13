@@ -134,6 +134,9 @@ type Request struct {
 	SSHKeys             *platform.SSHKeyOperation             `json:"sshKeys,omitempty"`
 	Updates             *platform.UpdateOperation             `json:"updates,omitempty"`
 	File                *platform.FileOperation               `json:"file,omitempty"`
+	Network             *platform.NetworkOperation            `json:"network,omitempty"`
+	Firewall            *platform.FirewallOperation           `json:"firewall,omitempty"`
+	Security            *platform.SecurityOperation           `json:"security,omitempty"`
 }
 
 // PasswordChangeOperation is deliberately wire-only. Secret fields are sent
@@ -252,6 +255,21 @@ type FileRequest struct {
 	AdminToken     string
 	Administrative bool
 	Operation      platform.FileOperation
+}
+
+type NetworkRequest struct {
+	AdminToken string
+	Operation  platform.NetworkOperation
+}
+
+type FirewallRequest struct {
+	AdminToken string
+	Operation  platform.FirewallOperation
+}
+
+type SecurityRequest struct {
+	AdminToken string
+	Operation  platform.SecurityOperation
 }
 
 type HostConfigurationRequest struct {
@@ -564,6 +582,143 @@ func ApplyFileOperation(ctx context.Context, path string, request FileRequest) (
 	return *response.FileResult, nil
 }
 
+func PreviewNetwork(ctx context.Context, path string, request NetworkRequest) (platform.NetworkState, error) {
+	operation := request.Operation
+	operation.Action = "preview"
+	response, err := socketRequest(ctx, path, Request{Operation: "network", AdminToken: request.AdminToken, Network: &operation})
+	if err != nil {
+		return platform.NetworkState{}, err
+	}
+	if response.Error != "" {
+		return platform.NetworkState{}, networkResponseError(response.Error)
+	}
+	if response.NetworkState == nil {
+		return platform.NetworkState{}, ErrServiceUnavailable
+	}
+	return *response.NetworkState, nil
+}
+
+func ApplyNetwork(ctx context.Context, path string, request NetworkRequest) (platform.NetworkState, error) {
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "network", AdminToken: request.AdminToken, Network: &request.Operation}, 2*time.Minute, 512<<10)
+	if err != nil {
+		return platform.NetworkState{}, err
+	}
+	if response.Error != "" {
+		return platform.NetworkState{}, networkResponseError(response.Error)
+	}
+	if response.NetworkState == nil {
+		return platform.NetworkState{}, ErrServiceUnavailable
+	}
+	return *response.NetworkState, nil
+}
+
+func PreviewFirewall(ctx context.Context, path string, request FirewallRequest) (platform.FirewallState, error) {
+	operation := request.Operation
+	operation.Action = "preview"
+	response, err := socketRequest(ctx, path, Request{Operation: "firewall", AdminToken: request.AdminToken, Firewall: &operation})
+	if err != nil {
+		return platform.FirewallState{}, err
+	}
+	if response.Error != "" {
+		return platform.FirewallState{}, firewallResponseError(response.Error)
+	}
+	if response.FirewallState == nil {
+		return platform.FirewallState{}, ErrServiceUnavailable
+	}
+	return *response.FirewallState, nil
+}
+
+func ApplyFirewall(ctx context.Context, path string, request FirewallRequest) (platform.FirewallState, error) {
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "firewall", AdminToken: request.AdminToken, Firewall: &request.Operation}, 2*time.Minute, 512<<10)
+	if err != nil {
+		return platform.FirewallState{}, err
+	}
+	if response.Error != "" {
+		return platform.FirewallState{}, firewallResponseError(response.Error)
+	}
+	if response.FirewallState == nil {
+		return platform.FirewallState{}, ErrServiceUnavailable
+	}
+	return *response.FirewallState, nil
+}
+
+func PreviewSecurity(ctx context.Context, path string, request SecurityRequest) (platform.SecurityStatus, error) {
+	operation := request.Operation
+	operation.Action = "inspect"
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "security", AdminToken: request.AdminToken, Security: &operation}, 30*time.Second, 512<<10)
+	if err != nil {
+		return platform.SecurityStatus{}, err
+	}
+	if response.Error != "" {
+		return platform.SecurityStatus{}, securityResponseError(response.Error)
+	}
+	if response.SecurityStatus == nil {
+		return platform.SecurityStatus{}, ErrServiceUnavailable
+	}
+	return *response.SecurityStatus, nil
+}
+
+func ApplySecurity(ctx context.Context, path string, request SecurityRequest) (platform.SecurityStatus, error) {
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "security", AdminToken: request.AdminToken, Security: &request.Operation}, 2*time.Minute, 512<<10)
+	if err != nil {
+		return platform.SecurityStatus{}, err
+	}
+	if response.Error != "" {
+		return platform.SecurityStatus{}, securityResponseError(response.Error)
+	}
+	if response.SecurityStatus == nil {
+		return platform.SecurityStatus{}, ErrServiceUnavailable
+	}
+	return *response.SecurityStatus, nil
+}
+
+func securityResponseError(code string) error {
+	switch code {
+	case "invalid-security-operation":
+		return platform.ErrInvalidSecurityOperation
+	case "security-conflict":
+		return platform.ErrSecurityConflict
+	case "security-unsafe":
+		return platform.ErrSecurityUnsafe
+	case "security-unavailable":
+		return platform.ErrSecurityUnavailable
+	default:
+		return errors.New(code)
+	}
+}
+
+func firewallResponseError(code string) error {
+	switch code {
+	case "invalid-firewall-operation":
+		return platform.ErrInvalidFirewallOperation
+	case "firewall-conflict":
+		return platform.ErrFirewallConflict
+	case "firewall-ownership-conflict":
+		return platform.ErrFirewallOwnership
+	case "firewall-access-risk":
+		return platform.ErrFirewallAccessRisk
+	case "firewall-unavailable":
+		return platform.ErrFirewallUnavailable
+	default:
+		return errors.New(code)
+	}
+}
+
+func networkResponseError(code string) error {
+	switch code {
+	case "invalid-network-operation":
+		return platform.ErrInvalidNetworkOperation
+	case "network-conflict":
+		return platform.ErrNetworkConflict
+	case "network-ownership-conflict":
+		return platform.ErrNetworkOwnership
+	case "network-unavailable":
+		return platform.ErrNetworkUnavailable
+	default:
+		return errors.New(code)
+	}
+}
+
 func fileResponseError(code string) error {
 	switch code {
 	case "invalid-file-operation":
@@ -753,6 +908,9 @@ type Response struct {
 	SSHKeyPreview          *platform.SSHKeyPreview             `json:"sshKeyPreview,omitempty"`
 	UpdateResult           *platform.UpdateResult              `json:"updateResult,omitempty"`
 	FileResult             *platform.FileResult                `json:"fileResult,omitempty"`
+	NetworkState           *platform.NetworkState              `json:"networkState,omitempty"`
+	FirewallState          *platform.FirewallState             `json:"firewallState,omitempty"`
+	SecurityStatus         *platform.SecurityStatus            `json:"securityStatus,omitempty"`
 }
 
 type Authenticator interface {

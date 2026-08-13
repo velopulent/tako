@@ -440,6 +440,140 @@ export type InterfaceInfo = {
   rx: number
   tx: number
   manager: string
+  profile?: string
+  owner?: string
+  conflict?: boolean
+  reason?: string
+}
+export type NetworkAddress = {
+  interface: string
+  address: string
+  family: string
+  scope?: string
+}
+export type NetworkRoute = {
+  destination: string
+  gateway?: string
+  device?: string
+  metric?: number
+}
+export type NetworkOwnership = {
+  activeOwner: string
+  detected: string[]
+  conflicted: boolean
+  reason?: string
+}
+export type NetworkResponse = {
+  items: InterfaceInfo[]
+  addresses?: NetworkAddress[]
+  routes?: NetworkRoute[]
+  dns?: string[]
+  ownership?: NetworkOwnership
+  fingerprint?: string
+}
+export type NetworkOperation = {
+  backend: "NetworkManager" | "Netplan" | "systemd-networkd"
+  action:
+    | "preview"
+    | "dhcp"
+    | "static"
+    | "dns"
+    | "route-add"
+    | "route-remove"
+    | "checkpoint"
+    | "commit"
+    | "rollback"
+  interface?: string
+  connection?: string
+  address?: string
+  gateway?: string
+  dns?: string[]
+  route?: string
+  metric?: number
+  expectedFingerprint?: string
+  confirmation?: string
+  reconnectToken?: string
+}
+export type NetworkState = {
+  snapshot: NetworkResponse
+  action: string
+  checkpoint?: string
+  committed: boolean
+  rollback: boolean
+  warning?: string
+}
+export type FirewallSnapshot = {
+  backend: string
+  active: boolean
+  version?: string
+  defaultZone?: string
+  zones: string[]
+  rules: string[]
+  conflicted: boolean
+  readOnly: boolean
+  reason?: string
+  fingerprint: string
+}
+export type FirewallOperation = {
+  backend: "auto" | "firewalld" | "UFW"
+  action: string
+  zone?: string
+  service?: string
+  port?: string
+  source?: string
+  defaultZone?: string
+  expectedFingerprint?: string
+  confirmation?: string
+  persist?: boolean
+}
+export type FirewallState = {
+  snapshot: FirewallSnapshot
+  action: string
+  applied: boolean
+  warning?: string
+}
+export type SecurityFinding = {
+  framework: string
+  kind: string
+  subject: string
+  message: string
+  severity: string
+  guidance?: string
+}
+export type SecurityStatus = {
+  selinux: {
+    kernelPresent: boolean
+    userspace: boolean
+    mode: string
+    policy?: string
+    booleans: string[]
+    denials: string[]
+  }
+  apparmor: {
+    kernelPresent: boolean
+    userspace: boolean
+    profiles: string[]
+    denials: string[]
+  }
+  active: string
+  findings: SecurityFinding[]
+  fingerprint: string
+}
+export type IncidentEvent = {
+  id: string
+  timestamp: string
+  severity: "critical" | "error" | "warning"
+  kind: string
+  source?: string
+  summary: string
+  cursor?: string
+}
+export type IncidentTimeline = {
+  items: IncidentEvent[]
+  since: string
+  until: string
+  partial: boolean
+  warnings?: string[]
 }
 export type ServiceInfo = {
   name: string

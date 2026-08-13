@@ -321,7 +321,14 @@ func policyCapability(ctx context.Context, probe runtimeProbe, id, statusCommand
 	commandFound := probe.CommandExists(statusCommand)
 	kernelFound := probe.FileExists(kernelPath)
 	if kernelFound && commandFound {
+		status, statusOK := probe.CommandOutput(ctx, statusCommand)
+		if !statusOK {
+			return Capability{ID: id, State: StateDegraded, Backend: id, Readable: false, Contract: "kernel+bounded-command-read-only", Reason: "The policy status command is installed but did not return a trustworthy result.", SetupGuidance: guidance}
+		}
 		version, _ := probe.CommandVersion(ctx, versionCommand, "--version")
+		if strings.EqualFold(strings.TrimSpace(status), "disabled") {
+			return Capability{ID: id, State: StateDegraded, Backend: id, Version: version, Readable: true, Contract: "kernel+bounded-command-read-only", Reason: id + " is installed but not enforcing", SetupGuidance: guidance}
+		}
 		return Capability{ID: id, State: StateReady, Backend: id, Version: version, Readable: true, Contract: "kernel+bounded-command-read-only"}
 	}
 	missing := statusCommand

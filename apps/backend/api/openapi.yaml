@@ -964,6 +964,128 @@ paths:
       operationId: listNetworkInterfaces
       responses:
         '200': { description: Network interface inventory }
+    post:
+      operationId: applyNetworkOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/NetworkOperation' } }
+      responses:
+        '200': { description: Verified NetworkManager state after the operation, content: { application/json: { schema: { $ref: '#/components/schemas/NetworkState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+    
+  /network/preview:
+    post:
+      operationId: previewNetworkOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/NetworkOperation' } }
+      responses:
+        '200': { description: Current network ownership and configuration, content: { application/json: { schema: { $ref: '#/components/schemas/NetworkState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /firewall:
+    get:
+      operationId: getFirewallStatus
+      responses:
+        '200': { description: Active firewall status and bounded rules }
+        '403': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: applyFirewallOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/FirewallOperation' } }
+      responses:
+        '200': { description: Verified firewall state after the operation, content: { application/json: { schema: { $ref: '#/components/schemas/FirewallState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /firewall/preview:
+    post:
+      operationId: previewFirewallOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/FirewallOperation' } }
+      responses:
+        '200': { description: Current firewall runtime and persistence state, content: { application/json: { schema: { $ref: '#/components/schemas/FirewallState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /security:
+    get:
+      operationId: getSecurityStatus
+      responses:
+        '200': { description: Structured SELinux and AppArmor status and findings }
+        '403': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: applySecurityOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/SecurityOperation' } }
+      responses:
+        '200': { description: Verified security policy state after the operation }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /security/preview:
+    post:
+      operationId: previewSecurityOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/SecurityOperation' } }
+      responses:
+        '200': { description: Current security policy state and bounded findings }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /incidents:
+    get:
+      operationId: listIncidents
+      parameters:
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Bounded correlated incident timeline; journal data remains in the journal browser
+          content: { application/json: { schema: { $ref: '#/components/schemas/IncidentTimeline' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /notifications:
+    get:
+      operationId: listNotifications
+      parameters:
+        - in: query
+          name: state
+          schema: { type: string, enum: [open, acknowledged, muted, resolved] }
+      responses:
+        '200': { description: Built-in bounded notification list }
+  /notifications/{id}/{state}:
+    post:
+      operationId: transitionNotification
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, maxLength: 512 }
+        - in: path
+          name: state
+          required: true
+          schema: { type: string, enum: [acknowledged, muted, resolved] }
+      responses:
+        '200': { description: Notification state transition }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
   /files:
     get:
       operationId: listFiles
@@ -1195,6 +1317,95 @@ components:
         mode: { type: integer, minimum: 0, maximum: 511 }
         owner: { type: string, maxLength: 256 }
         group: { type: string, maxLength: 256 }
+    NetworkOperation:
+      type: object
+      additionalProperties: false
+      required: [backend, action]
+      properties:
+        backend: { type: string, enum: [NetworkManager, Netplan, systemd-networkd] }
+        action: { type: string, enum: [preview, dhcp, static, dns, route-add, route-remove, checkpoint, commit, rollback] }
+        interface: { type: string, maxLength: 256 }
+        connection: { type: string, maxLength: 256 }
+        address: { type: string, maxLength: 128 }
+        gateway: { type: string, maxLength: 128 }
+        dns: { type: array, maxItems: 8, items: { type: string } }
+        route: { type: string, maxLength: 128 }
+        metric: { type: integer, minimum: 0, maximum: 65535 }
+        expectedFingerprint: { type: string, maxLength: 128 }
+        confirmation: { type: string, maxLength: 128 }
+        reconnectToken: { type: string, maxLength: 256 }
+    NetworkState:
+      type: object
+      required: [snapshot, action, committed, rollback]
+      properties:
+        snapshot: { type: object }
+        action: { type: string }
+        checkpoint: { type: string }
+        committed: { type: boolean }
+        rollback: { type: boolean }
+        warning: { type: string }
+    FirewallOperation:
+      type: object
+      additionalProperties: false
+      required: [backend, action]
+      properties:
+        backend: { type: string, enum: [auto, firewalld, UFW] }
+        action: { type: string, enum: [preview, enable, disable, default-zone, add-service, remove-service, add-port, remove-port, add-source, remove-source, reload] }
+        zone: { type: string, maxLength: 128 }
+        service: { type: string, maxLength: 128 }
+        port: { type: string, maxLength: 32 }
+        source: { type: string, maxLength: 128 }
+        defaultZone: { type: string, maxLength: 128 }
+        expectedFingerprint: { type: string, maxLength: 128 }
+        confirmation: { type: string, maxLength: 128 }
+        persist: { type: boolean }
+    FirewallState:
+      type: object
+      required: [snapshot, action, applied]
+      properties:
+        snapshot: { type: object }
+        action: { type: string }
+        applied: { type: boolean }
+        warning: { type: string }
+    SecurityOperation:
+      type: object
+      additionalProperties: false
+      required: [action, framework]
+      properties:
+        action: { type: string, enum: [inspect, selinux-boolean, selinux-restorecon, apparmor-enforce, apparmor-complain, apparmor-load] }
+        framework: { type: string, enum: [SELinux, AppArmor] }
+        boolean: { type: string, maxLength: 128 }
+        value: { type: boolean }
+        path: { type: string, maxLength: 4096 }
+        profile: { type: string, maxLength: 256 }
+        expectedFingerprint: { type: string, maxLength: 128 }
+        confirmation: { type: string, maxLength: 128 }
+    IncidentEvent:
+      type: object
+      required: [id, timestamp, severity, kind, summary]
+      properties:
+        id: { type: string, maxLength: 512 }
+        timestamp: { type: string, format: date-time }
+        severity: { type: string, enum: [critical, error, warning] }
+        kind: { type: string }
+        source: { type: string }
+        summary: { type: string, maxLength: 512 }
+        cursor: { type: string, maxLength: 4096 }
+    IncidentTimeline:
+      type: object
+      required: [items, since, until, partial]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/IncidentEvent' }
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+        partial: { type: boolean }
+        warnings:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 512 }
     FileEntry:
       type: object
       required: [name, path, kind, size, mode, modifiedAt, fingerprint, hidden, readable, writable]

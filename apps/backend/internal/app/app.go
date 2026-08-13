@@ -87,6 +87,7 @@ type Server struct {
 	readProcessDetails    func(context.Context, int, uint64) (platform.ProcessDetails, error)
 	signalProcesses       func(context.Context, auth.SignalRequest) (platform.SignalResult, error)
 	detectCapabilities    func(context.Context) []platform.Capability
+	notifications         *notificationStore
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -123,6 +124,7 @@ func New(cfg config.Config) (*Server, error) {
 		cleanupQueue:          make(chan auth.Identity, 64),
 		pruneDone:             make(chan struct{}),
 		detectCapabilities:    platform.Detect,
+		notifications:         newNotificationStore(),
 		readHostConfiguration: platform.ReadHostConfiguration,
 		readPowerStatusFn:     platform.ReadPowerStatus,
 		readUnitDetails:       platform.UnitDetails,
@@ -392,6 +394,17 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/timers", server.timerAction)
 			router.Get("/storage", server.storage)
 			router.Get("/network", server.network)
+			router.With(server.requireCSRF).Post("/network/preview", server.networkPreview)
+			router.With(server.requireCSRF).Post("/network", server.networkApply)
+			router.Get("/firewall", server.firewallStatus)
+			router.With(server.requireCSRF).Post("/firewall/preview", server.firewallPreview)
+			router.With(server.requireCSRF).Post("/firewall", server.firewallApply)
+			router.Get("/security", server.securityStatus)
+			router.With(server.requireCSRF).Post("/security/preview", server.securityPreview)
+			router.With(server.requireCSRF).Post("/security", server.securityApply)
+			router.Get("/incidents", server.incidents)
+			router.Get("/notifications", server.notificationsList)
+			router.With(server.requireCSRF).Post("/notifications/{id}/{state}", server.notificationTransition)
 			router.Get("/files", server.filesList)
 			router.Get("/files/content", server.fileContent)
 			router.Get("/files/text-window", server.fileTextWindow)
@@ -941,9 +954,269 @@ func (server *Server) storage(writer http.ResponseWriter, _ *http.Request) {
 	server.writeModule(writer, "storage", items, err)
 }
 
-func (server *Server) network(writer http.ResponseWriter, _ *http.Request) {
-	items, err := platform.Interfaces()
-	server.writeModule(writer, "network", items, err)
+func (server *Server) network(writer http.ResponseWriter, request *http.Request) {
+	snapshot, err := platform.NetworkSnapshotRead(request.Context())
+	if err != nil {
+		server.writeModule(writer, "network", nil, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"items":       snapshot.Interfaces,
+		"addresses":   snapshot.Addresses,
+		"routes":      snapshot.Routes,
+		"dns":         snapshot.DNS,
+		"ownership":   snapshot.Ownership,
+		"fingerprint": snapshot.Fingerprint,
+	})
+}
+
+func decodeNetworkOperation(writer http.ResponseWriter, request *http.Request) (platform.NetworkOperation, bool) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var operation platform.NetworkOperation
+	if err := decoder.Decode(&operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-network-operation", "Network operation is invalid")
+		return platform.NetworkOperation{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-network-operation", "Network operation contains trailing data")
+		return platform.NetworkOperation{}, false
+	}
+	return operation, true
+}
+
+func (server *Server) networkPreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before previewing network changes")
+		return
+	}
+	operation, ok := decodeNetworkOperation(writer, request)
+	if !ok {
+		return
+	}
+	operation.Action = "preview"
+	state, err := auth.PreviewNetwork(request.Context(), server.config.SessionSocket, auth.NetworkRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeNetworkOperationError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (server *Server) networkApply(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before changing network configuration")
+		return
+	}
+	operation, ok := decodeNetworkOperation(writer, request)
+	if !ok {
+		return
+	}
+	startedAt := time.Now().UTC()
+	state, err := auth.ApplyNetwork(request.Context(), server.config.SessionSocket, auth.NetworkRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeNetworkOperationError(writer, err)
+		server.recordOperation(request.Context(), current.Identity.Username, "network/"+operation.Action, startedAt, "failed", err.Error(), true)
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, "network/"+operation.Action, startedAt, "succeeded", "", true)
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func writeNetworkOperationError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, platform.ErrInvalidNetworkOperation):
+		problem(writer, http.StatusBadRequest, "invalid-network-operation", "Network operation is invalid")
+	case errors.Is(err, platform.ErrNetworkConflict):
+		problem(writer, http.StatusConflict, "network-conflict", "Network state changed; preview again")
+	case errors.Is(err, platform.ErrNetworkOwnership):
+		problem(writer, http.StatusConflict, "network-ownership-conflict", "Network ownership is conflicted; mutations are disabled")
+	case errors.Is(err, platform.ErrNetworkUnavailable):
+		problem(writer, http.StatusServiceUnavailable, "network-unavailable", "The selected network adapter is unavailable")
+	case errors.Is(err, auth.ErrServiceUnavailable):
+		problem(writer, http.StatusBadGateway, "network-service-unavailable", "The privileged network service is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "network-operation-failed", "The network operation failed")
+	}
+}
+
+func decodeFirewallOperation(writer http.ResponseWriter, request *http.Request) (platform.FirewallOperation, bool) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var operation platform.FirewallOperation
+	if err := decoder.Decode(&operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-firewall-operation", "Firewall operation is invalid")
+		return platform.FirewallOperation{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-firewall-operation", "Firewall operation contains trailing data")
+		return platform.FirewallOperation{}, false
+	}
+	return operation, true
+}
+
+func (server *Server) firewallStatus(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before inspecting firewall state")
+		return
+	}
+	state, err := auth.PreviewFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: platform.FirewallOperation{Backend: "firewalld"}})
+	if err != nil {
+		writeFirewallOperationError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, state.Snapshot)
+}
+
+func (server *Server) firewallPreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before previewing firewall changes")
+		return
+	}
+	operation, ok := decodeFirewallOperation(writer, request)
+	if !ok {
+		return
+	}
+	operation.Action = "preview"
+	state, err := auth.PreviewFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeFirewallOperationError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (server *Server) firewallApply(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before changing firewall rules")
+		return
+	}
+	operation, ok := decodeFirewallOperation(writer, request)
+	if !ok {
+		return
+	}
+	startedAt := time.Now().UTC()
+	state, err := auth.ApplyFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeFirewallOperationError(writer, err)
+		server.recordOperation(request.Context(), current.Identity.Username, "firewall/"+operation.Action, startedAt, "failed", err.Error(), true)
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, "firewall/"+operation.Action, startedAt, "succeeded", "", true)
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func writeFirewallOperationError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, platform.ErrInvalidFirewallOperation):
+		problem(writer, http.StatusBadRequest, "invalid-firewall-operation", "Firewall operation is invalid")
+	case errors.Is(err, platform.ErrFirewallConflict):
+		problem(writer, http.StatusConflict, "firewall-conflict", "Firewall state changed; preview again")
+	case errors.Is(err, platform.ErrFirewallOwnership):
+		problem(writer, http.StatusConflict, "firewall-ownership-conflict", "Conflicting firewall ownership detected")
+	case errors.Is(err, platform.ErrFirewallAccessRisk):
+		problem(writer, http.StatusForbidden, "firewall-access-risk", "This change could lock out management access")
+	case errors.Is(err, platform.ErrFirewallUnavailable):
+		problem(writer, http.StatusServiceUnavailable, "firewall-unavailable", "No supported active firewall adapter is available")
+	case errors.Is(err, auth.ErrServiceUnavailable):
+		problem(writer, http.StatusBadGateway, "firewall-service-unavailable", "The privileged firewall service is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "firewall-operation-failed", "The firewall operation failed")
+	}
+}
+
+func decodeSecurityOperation(writer http.ResponseWriter, request *http.Request) (platform.SecurityOperation, bool) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var operation platform.SecurityOperation
+	if err := decoder.Decode(&operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-security-operation", "Security operation is invalid")
+		return platform.SecurityOperation{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-security-operation", "Security operation contains trailing data")
+		return platform.SecurityOperation{}, false
+	}
+	return operation, true
+}
+
+func (server *Server) securityStatus(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before inspecting policy state")
+		return
+	}
+	status, err := auth.PreviewSecurity(request.Context(), server.config.SessionSocket, auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: platform.SecurityOperation{Framework: "SELinux"}})
+	if err != nil {
+		writeSecurityOperationError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, status)
+}
+
+func (server *Server) securityPreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before previewing policy changes")
+		return
+	}
+	operation, ok := decodeSecurityOperation(writer, request)
+	if !ok {
+		return
+	}
+	operation.Action = "inspect"
+	status, err := auth.PreviewSecurity(request.Context(), server.config.SessionSocket, auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeSecurityOperationError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, status)
+}
+
+func (server *Server) securityApply(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before remediating policy findings")
+		return
+	}
+	operation, ok := decodeSecurityOperation(writer, request)
+	if !ok {
+		return
+	}
+	startedAt := time.Now().UTC()
+	status, err := auth.ApplySecurity(request.Context(), server.config.SessionSocket, auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeSecurityOperationError(writer, err)
+		server.recordOperation(request.Context(), current.Identity.Username, "security/"+operation.Action, startedAt, "failed", err.Error(), true)
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, "security/"+operation.Action, startedAt, "succeeded", "", true)
+	writeJSON(writer, http.StatusOK, status)
+}
+
+func writeSecurityOperationError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, platform.ErrInvalidSecurityOperation):
+		problem(writer, http.StatusBadRequest, "invalid-security-operation", "Security operation is invalid")
+	case errors.Is(err, platform.ErrSecurityConflict):
+		problem(writer, http.StatusConflict, "security-conflict", "Security policy state changed; inspect again")
+	case errors.Is(err, platform.ErrSecurityUnsafe):
+		problem(writer, http.StatusForbidden, "security-unsafe", "The requested remediation is outside the narrow safe policy")
+	case errors.Is(err, platform.ErrSecurityUnavailable):
+		problem(writer, http.StatusServiceUnavailable, "security-unavailable", "The selected security framework is unavailable")
+	case errors.Is(err, auth.ErrServiceUnavailable):
+		problem(writer, http.StatusBadGateway, "security-service-unavailable", "The privileged security service is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "security-operation-failed", "The security operation failed")
+	}
 }
 
 func (server *Server) filesList(writer http.ResponseWriter, request *http.Request) {

@@ -64,6 +64,9 @@ import { SSHKeyManager } from "@/components/ssh-key-manager"
 import { UpdateInventory } from "@/components/update-inventory"
 import { FileBrowser } from "@/components/file-browser"
 import type { SessionResponse } from "@/lib/api"
+import { NetworkControls } from "@/components/network-controls"
+import { SecurityControls } from "@/components/security-controls"
+import { FirewallControls } from "@/components/firewall-controls"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -148,6 +151,7 @@ export function ModulePage({ module }: { module: string }) {
   if (module === "storage") return <StoragePage />
   if (module === "network") return <NetworkPage />
   if (module === "files") return <FilesPage />
+  if (module === "security") return <SecurityPage />
   if (module === "logs") return <LogsPage />
   if (module === "settings") return <SettingsPage />
   if (module === "users") return <UsersPage />
@@ -166,6 +170,14 @@ function FilesPage() {
   return (
     <Page description="Browse, preview, and manage files under authenticated UNIX authority.">
       <FileBrowser csrfToken={session.data?.csrfToken ?? ""} />
+    </Page>
+  )
+}
+
+function SecurityPage() {
+  return (
+    <Page description="Inspect and narrowly remediate SELinux and AppArmor policy state.">
+      <SecurityControls />
     </Page>
   )
 }
@@ -622,6 +634,8 @@ function NetworkPage() {
           height="45vh"
         />
       </State>
+      <NetworkControls />
+      <FirewallControls />
       <Card>
         <CardHeader>
           <CardTitle>Network logs</CardTitle>

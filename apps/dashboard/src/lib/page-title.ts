@@ -12,6 +12,9 @@ const titles: Record<string, string> = {
   timers: "Timers",
   storage: "Storage",
   network: "Network",
+  files: "Files",
+  security: "Security",
+  incidents: "Incidents",
   processes: "Processes",
   settings: "Settings",
 }
