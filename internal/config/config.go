@@ -7,24 +7,31 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	Address        string
-	DataDir        string
-	Certificate    string
-	CertificateKey string
-	SessionSocket  string
-	AllowedOrigins []string
-	Development    bool
+	Address            string
+	DataDir            string
+	Certificate        string
+	CertificateKey     string
+	SessionSocket      string
+	AllowedOrigins     []string
+	Development        bool
+	MonitoringInterval time.Duration
+	HistoryRetention   time.Duration
+	AdminIdleTimeout   time.Duration
 }
 
 func Default() Config {
 	return Config{
-		Address:        ":9090",
-		DataDir:        "/var/lib/tako",
-		SessionSocket:  "/run/tako/session.sock",
-		AllowedOrigins: []string{"https://localhost:9090"},
+		Address:            ":9090",
+		DataDir:            "/var/lib/tako",
+		SessionSocket:      "/run/tako/session.sock",
+		AllowedOrigins:     []string{"https://localhost:9090"},
+		MonitoringInterval: time.Minute,
+		HistoryRetention:   24 * time.Hour,
+		AdminIdleTimeout:   5 * time.Minute,
 	}
 }
 
@@ -59,7 +66,7 @@ func Load(path string, development bool) (Config, error) {
 			continue
 		}
 		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 || section != "server" {
+		if len(parts) != 2 {
 			return cfg, errors.New("invalid or unsupported configuration line")
 		}
 		key := strings.TrimSpace(parts[0])
@@ -67,22 +74,39 @@ func Load(path string, development bool) (Config, error) {
 		if err != nil {
 			return cfg, err
 		}
-		switch key {
-		case "address":
+		switch section + "." + key {
+		case "server.address":
 			cfg.Address = value
-		case "data_dir":
+		case "server.data_dir":
 			cfg.DataDir = value
-		case "certificate":
+		case "server.certificate":
 			cfg.Certificate = value
-		case "certificate_key":
+		case "server.certificate_key":
 			cfg.CertificateKey = value
-		case "session_socket":
+		case "server.session_socket":
 			cfg.SessionSocket = value
-		case "allowed_origin":
+		case "server.allowed_origin":
 			cfg.AllowedOrigins = []string{value}
+		case "monitoring.default_interval":
+			cfg.MonitoringInterval, err = parseDuration(value, time.Second, 5*time.Minute)
+		case "monitoring.history_retention":
+			cfg.HistoryRetention, err = parseDuration(value, 15*time.Minute, 24*time.Hour)
+		case "admin.idle_timeout":
+			cfg.AdminIdleTimeout, err = parseDuration(value, time.Minute, time.Hour)
 		default:
-			return cfg, errors.New("unknown server configuration key: " + key)
+			return cfg, errors.New("unknown configuration key: " + section + "." + key)
+		}
+		if err != nil {
+			return cfg, err
 		}
 	}
 	return cfg, scanner.Err()
+}
+
+func parseDuration(value string, minimum, maximum time.Duration) (time.Duration, error) {
+	result, err := time.ParseDuration(value)
+	if err != nil || result < minimum || result > maximum {
+		return 0, errors.New("duration outside allowed range: " + value)
+	}
+	return result, nil
 }

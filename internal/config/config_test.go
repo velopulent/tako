@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadRejectsUnknownKey(t *testing.T) {
@@ -16,6 +17,21 @@ func TestLoadRejectsUnknownKey(t *testing.T) {
 	}
 }
 
+func TestMonitoringAndAdminDurations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	payload := "[monitoring]\ndefault_interval = \"5s\"\nhistory_retention = \"6h\"\n[admin]\nidle_timeout = \"10m\"\n"
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MonitoringInterval != 5*time.Second || cfg.HistoryRetention != 6*time.Hour || cfg.AdminIdleTimeout != 10*time.Minute {
+		t.Fatalf("unexpected durations: %+v", cfg)
+	}
+}
+
 func TestDevelopmentDefaultsUseLoopback(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"), true)
 	if err != nil {
@@ -23,5 +39,15 @@ func TestDevelopmentDefaultsUseLoopback(t *testing.T) {
 	}
 	if cfg.Address != "127.0.0.1:9090" || !cfg.Development {
 		t.Fatalf("unsafe development defaults: %#v", cfg)
+	}
+}
+
+func TestRejectsUnsafeMonitoringInterval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[monitoring]\ndefault_interval = \"100ms\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, false); err == nil {
+		t.Fatal("unsafe interval accepted")
 	}
 }

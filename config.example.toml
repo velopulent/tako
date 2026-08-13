@@ -6,3 +6,9 @@ allowed_origin = "https://localhost:9090"
 # certificate = "/etc/tako/tako.crt"
 # certificate_key = "/etc/tako/tako.key"
 
+[monitoring]
+default_interval = "1m"
+history_retention = "24h"
+
+[admin]
+idle_timeout = "5m"
