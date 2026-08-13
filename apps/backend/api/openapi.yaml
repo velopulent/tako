@@ -720,6 +720,42 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /processes/{pid}/signal/preview:
+    post:
+      operationId: previewProcessSignal
+      parameters:
+        - in: path
+          name: pid
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ProcessSignalRequest' } }
+      responses:
+        '200': { description: Exact process/tree impact preview, content: { application/json: { schema: { $ref: '#/components/schemas/SignalPreview' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /processes/{pid}/signal:
+    post:
+      operationId: signalProcess
+      parameters:
+        - in: path
+          name: pid
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ProcessSignalApplyRequest' } }
+      responses:
+        '200': { description: Signal result, content: { application/json: { schema: { $ref: '#/components/schemas/SignalResult' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
   /terminal:
     get:
       operationId: getTerminalStatus
@@ -1075,11 +1111,12 @@ components:
         updatedAt: { type: string, format: date-time }
     ProcessInfo:
       type: object
-      required: [pid, ppid, started, user, program, command, state, threads, cpuTime, memory, virtualMemory, diskRead, diskWrite]
+      required: [pid, ppid, started, uid, user, program, command, state, threads, cpuTime, memory, virtualMemory, diskRead, diskWrite]
       properties:
         pid: { type: integer, minimum: 1 }
         ppid: { type: integer, minimum: 0 }
         started: { type: integer, minimum: 0, description: Linux process start ticks; zero means metadata was restricted }
+        uid: { type: integer, minimum: 0 }
         user: { type: string }
         program: { type: string }
         command: { type: string, maxLength: 16384 }
@@ -1137,6 +1174,75 @@ components:
           type: array
           maxItems: 16
           items: { type: string, maxLength: 256 }
+    ProcessTarget:
+      type: object
+      required: [pid, started]
+      additionalProperties: false
+      properties:
+        pid: { type: integer, minimum: 1 }
+        started: { type: integer, minimum: 1 }
+    ProcessSignalRequest:
+      type: object
+      required: [signal, started]
+      additionalProperties: false
+      properties:
+        signal: { type: string, enum: [HUP, INT, TERM, KILL, STOP, CONT, USR1, USR2] }
+        tree: { type: boolean, default: false }
+        started: { type: integer, minimum: 1 }
+    ProcessSignalApplyRequest:
+      allOf:
+        - $ref: '#/components/schemas/ProcessSignalRequest'
+        - type: object
+          required: [expectedTargets]
+          properties:
+            expectedTargets:
+              type: array
+              minItems: 1
+              maxItems: 1024
+              items: { $ref: '#/components/schemas/ProcessTarget' }
+    SignalTarget:
+      allOf:
+        - $ref: '#/components/schemas/ProcessTarget'
+        - type: object
+          required: [uid, user, program]
+          properties:
+            uid: { type: integer, minimum: 0 }
+            user: { type: string }
+            program: { type: string }
+    SignalPreview:
+      type: object
+      required: [signal, tree, targets, fingerprint]
+      properties:
+        signal: { type: string }
+        tree: { type: boolean }
+        targets:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/SignalTarget' }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+    SignalResult:
+      type: object
+      required: [signal, tree, targets, signaled]
+      properties:
+        signal: { type: string }
+        tree: { type: boolean }
+        targets:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/SignalTarget' }
+        signaled:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/SignalTarget' }
+        failures:
+          type: array
+          maxItems: 1024
+          items:
+            type: object
+            required: [pid, error]
+            properties:
+              pid: { type: integer, minimum: 1 }
+              error: { type: string, maxLength: 128 }
     MetricSample:
       type: object
       required: [timestamp, cpuPercent, memoryUsed, memoryTotal, networkRx, networkTx, diskRead, diskWrite]

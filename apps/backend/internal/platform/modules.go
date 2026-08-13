@@ -24,6 +24,7 @@ type Process struct {
 	PID              int     `json:"pid"`
 	PPID             int     `json:"ppid"`
 	Started          uint64  `json:"started"`
+	UID              int     `json:"uid"`
 	User             string  `json:"user"`
 	Program          string  `json:"program"`
 	Command          string  `json:"command"`
@@ -86,6 +87,7 @@ func Processes() ([]Process, error) {
 			reason = "command line is not readable"
 		}
 		uid := processUID(entry.Name())
+		uidNumber, _ := strconv.Atoi(uid)
 		username := users[uid]
 		if username == "" {
 			username = uid
@@ -101,7 +103,7 @@ func Processes() ([]Process, error) {
 				reason = "I/O counters are not readable"
 			}
 		}
-		result = append(result, Process{PID: pid, PPID: ppid, Started: started, User: username, Program: program, Command: command, State: fields[0], Threads: threads, CPUTime: float64(utime+stime) / clockTicks, Memory: rss * pageSize, VirtualMemory: virtualMemory, DiskRead: diskRead, DiskWrite: diskWrite, PermissionDenied: permissionDenied, Reason: reason})
+		result = append(result, Process{PID: pid, PPID: ppid, Started: started, UID: uidNumber, User: username, Program: program, Command: command, State: fields[0], Threads: threads, CPUTime: float64(utime+stime) / clockTicks, Memory: rss * pageSize, VirtualMemory: virtualMemory, DiskRead: diskRead, DiskWrite: diskWrite, PermissionDenied: permissionDenied, Reason: reason})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Memory > result[j].Memory })
 	return result, nil

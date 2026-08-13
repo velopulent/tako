@@ -22,6 +22,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ProcessSignal } from "@/components/process-signal"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB"]
@@ -114,6 +115,7 @@ export function ProcessDetails({
                 </div>
               </CardContent>
             </Card>
+            <ProcessSignal process={details.process} />
             <Card>
               <CardHeader>
                 <CardTitle>Resource history</CardTitle>

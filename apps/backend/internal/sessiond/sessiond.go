@@ -196,6 +196,10 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
+	if request.Operation != "signal-process" && request.Signal != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
 	if request.Operation == "conversation" {
 		if request.Token != "" || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
 			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
@@ -478,6 +482,54 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 			return
 		}
 		_ = encoder.Encode(auth.Response{OverrideState: &state})
+		return
+	}
+	if request.Operation == "signal-process" {
+		if request.Signal == nil || request.Signal.Action != "apply" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 {
+			_ = encoder.Encode(auth.Response{Error: "invalid-signal-request"})
+			return
+		}
+		operation := *request.Signal
+		if err := platform.ValidateSignalOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-signal-operation"})
+			return
+		}
+		var identity auth.Identity
+		var administrative bool
+		if request.AdminToken != "" {
+			if request.Token != "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
+				return
+			}
+			var ok bool
+			identity, ok = grants.adminIdentity(request.AdminToken)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+				return
+			}
+			administrative = true
+		} else {
+			if request.Token == "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+				return
+			}
+			var ok bool
+			identity, ok = grants.get(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+				return
+			}
+		}
+		signalCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		result, signalErr := executeProcessSignal(signalCtx, identity, administrative, operation)
+		cancel()
+		if signalErr != nil {
+			logger.Warn("process signal rejected", zap.String("username", identity.Username), zap.String("signal", operation.Signal), zap.Error(signalErr))
+			_ = encoder.Encode(auth.Response{Error: signalErrorCode(signalErr)})
+			return
+		}
+		logger.Info("process signal", zap.String("username", identity.Username), zap.String("signal", operation.Signal), zap.Bool("tree", operation.Tree), zap.Int("targets", len(result.Targets)), zap.Bool("administrative", administrative))
+		_ = encoder.Encode(auth.Response{SignalResult: &result})
 		return
 	}
 	if request.Operation == "host-config" {

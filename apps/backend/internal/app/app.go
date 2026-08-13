@@ -69,6 +69,7 @@ type Server struct {
 	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
 	processTracker        *platform.ProcessTracker
 	readProcessDetails    func(context.Context, int, uint64) (platform.ProcessDetails, error)
+	signalProcesses       func(context.Context, auth.SignalRequest) (platform.SignalResult, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -119,6 +120,9 @@ func New(cfg config.Config) (*Server, error) {
 		queryLogs:          platform.QueryLogs,
 		processTracker:     processTracker,
 		readProcessDetails: processTracker.Inspect,
+		signalProcesses: func(ctx context.Context, request auth.SignalRequest) (platform.SignalResult, error) {
+			return auth.SignalProcesses(ctx, cfg.SessionSocket, request)
+		},
 		followLogs: func(ctx context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
 			return platform.FollowJournal(ctx, query, emit)
 		},
@@ -322,6 +326,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/network", server.network)
 			router.Get("/processes", server.processes)
 			router.Get("/processes/{pid}", server.processDetail)
+			router.With(server.requireCSRF).Post("/processes/{pid}/signal/preview", server.processSignalPreview)
+			router.With(server.requireCSRF).Post("/processes/{pid}/signal", server.processSignal)
 			router.Get("/terminal", server.terminalStatus)
 		})
 	})
@@ -745,6 +751,107 @@ func (server *Server) processDetail(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(writer, http.StatusOK, details)
+}
+
+type processSignalPayload struct {
+	Signal          string                   `json:"signal"`
+	Tree            bool                     `json:"tree,omitempty"`
+	Started         uint64                   `json:"started"`
+	ExpectedTargets []platform.ProcessTarget `json:"expectedTargets,omitempty"`
+}
+
+func decodeProcessSignalPayload(writer http.ResponseWriter, request *http.Request, pid int, action string) (platform.SignalOperation, bool) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var payload processSignalPayload
+	if err := decoder.Decode(&payload); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-signal-operation", "Signal or process identity is invalid")
+		return platform.SignalOperation{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-signal-operation", "Signal request contains trailing data")
+		return platform.SignalOperation{}, false
+	}
+	operation := platform.SignalOperation{Action: action, Signal: platform.SignalName(payload.Signal), Target: platform.ProcessTarget{PID: pid, Started: payload.Started}, Tree: payload.Tree, ExpectedTargets: payload.ExpectedTargets}
+	if err := platform.ValidateSignalOperation(operation); err != nil || (action == "preview" && len(operation.ExpectedTargets) != 0) || (action == "apply" && len(operation.ExpectedTargets) == 0) {
+		problem(writer, http.StatusBadRequest, "invalid-signal-operation", "Signal or process identity is invalid")
+		return platform.SignalOperation{}, false
+	}
+	return operation, true
+}
+
+func (server *Server) processSignalPreview(writer http.ResponseWriter, request *http.Request) {
+	pid, err := strconv.Atoi(chi.URLParam(request, "pid"))
+	if err != nil || pid < 1 {
+		problem(writer, http.StatusBadRequest, "invalid-process", "Process ID is invalid")
+		return
+	}
+	operation, ok := decodeProcessSignalPayload(writer, request, pid, "preview")
+	if !ok {
+		return
+	}
+	preview, err := platform.PreviewSignal(request.Context(), operation)
+	if err != nil {
+		writeProcessSignalError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, preview)
+}
+
+func (server *Server) processSignal(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	pid, err := strconv.Atoi(chi.URLParam(request, "pid"))
+	if err != nil || pid < 1 {
+		problem(writer, http.StatusBadRequest, "invalid-process", "Process ID is invalid")
+		return
+	}
+	operation, ok := decodeProcessSignalPayload(writer, request, pid, "apply")
+	if !ok {
+		return
+	}
+	if server.signalProcesses == nil {
+		problem(writer, http.StatusServiceUnavailable, "process-signal-unavailable", "Process signaling service is unavailable")
+		return
+	}
+	startedAt := time.Now().UTC()
+	signalRequest := auth.SignalRequest{Operation: operation}
+	if current.Identity.AdminToken != "" {
+		signalRequest.AdminToken = current.Identity.AdminToken
+	} else {
+		signalRequest.Token = current.Identity.BridgeToken
+	}
+	result, err := server.signalProcesses(request.Context(), signalRequest)
+	administrative := signalRequest.AdminToken != ""
+	target := fmt.Sprintf("process/%d/%s", pid, operation.Signal)
+	if err != nil {
+		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "process signal failed", administrative)
+		writeProcessSignalError(writer, err)
+		return
+	}
+	if len(result.Failures) > 0 {
+		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "one or more process signals failed", administrative)
+	} else {
+		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", administrative)
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func writeProcessSignalError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, platform.ErrInvalidSignalOperation):
+		problem(writer, http.StatusBadRequest, "invalid-signal-operation", "Signal or process identity is invalid")
+	case errors.Is(err, platform.ErrProcessNotFound):
+		problem(writer, http.StatusNotFound, "process-not-found", "The process no longer exists")
+	case errors.Is(err, platform.ErrProcessReused), errors.Is(err, platform.ErrSignalConflict):
+		problem(writer, http.StatusConflict, "process-signal-conflict", "The process or tree changed; preview again")
+	case errors.Is(err, platform.ErrSignalUnauthorized):
+		problem(writer, http.StatusForbidden, "process-signal-unauthorized", "UNIX authority does not permit signaling this process")
+	case errors.Is(err, auth.ErrServiceUnavailable):
+		problem(writer, http.StatusBadGateway, "process-signal-unavailable", "The process signal service is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "process-signal-failed", "The process signal could not be completed")
+	}
 }
 
 func (server *Server) users(writer http.ResponseWriter, _ *http.Request) {

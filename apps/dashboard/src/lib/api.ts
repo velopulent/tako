@@ -211,6 +211,25 @@ export type ProcessDetails = {
   history: ProcessResourceSample[]
   accessIssues?: string[]
 }
+export type ProcessTarget = { pid: number; started: number }
+export type SignalTarget = ProcessTarget & {
+  uid: number
+  user: string
+  program: string
+}
+export type SignalPreview = {
+  signal: string
+  tree: boolean
+  targets: SignalTarget[]
+  fingerprint: string
+}
+export type SignalResult = {
+  signal: string
+  tree: boolean
+  targets: SignalTarget[]
+  signaled: SignalTarget[]
+  failures?: { pid: number; error: string }[]
+}
 export type UserInfo = {
   username: string
   uid: number

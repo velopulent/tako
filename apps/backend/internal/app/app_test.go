@@ -653,6 +653,32 @@ func TestProcessDetailRouteUsesStartIdentityAndDegradesAccess(t *testing.T) {
 	}
 }
 
+func TestProcessSignalRouteUsesCSRFAndAuthenticatedBridge(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	created, err := server.sessions.Create(auth.Identity{Username: "operator", UID: 1000, BridgeToken: "bridge-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received auth.SignalRequest
+	server.signalProcesses = func(_ context.Context, request auth.SignalRequest) (platform.SignalResult, error) {
+		received = request
+		return platform.SignalResult{Signal: "TERM", Targets: []platform.SignalTarget{{PID: 42, Started: 99}}, Signaled: []platform.SignalTarget{{PID: 42, Started: 99}}}, nil
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/processes/42/signal", strings.NewReader(`{"signal":"term","started":99,"expectedTargets":[{"pid":42,"started":99}]}`))
+	request.AddCookie(&http.Cookie{Name: session.CookieName, Value: created.ID})
+	request.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || received.Token != "bridge-token" || received.Operation.Signal != "TERM" {
+		t.Fatalf("signal route returned %d request=%#v body=%s", recorder.Code, received, recorder.Body.String())
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

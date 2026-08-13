@@ -120,6 +120,7 @@ type Request struct {
 	PowerConfirmation   string                      `json:"powerConfirmation,omitempty"`
 	Timer               *platform.TimerOperation    `json:"timer,omitempty"`
 	Override            *platform.OverrideOperation `json:"override,omitempty"`
+	Signal              *platform.SignalOperation   `json:"signal,omitempty"`
 }
 
 type TimerRequest struct {
@@ -132,6 +133,12 @@ type OverrideRequest struct {
 	Token      string
 	AdminToken string
 	Operation  platform.OverrideOperation
+}
+
+type SignalRequest struct {
+	Token      string
+	AdminToken string
+	Operation  platform.SignalOperation
 }
 
 type HostConfigurationRequest struct {
@@ -214,6 +221,25 @@ func ApplyOverride(ctx context.Context, path string, request OverrideRequest) (p
 		return platform.OverrideState{}, ErrServiceUnavailable
 	}
 	return *response.OverrideState, nil
+}
+
+func SignalProcesses(ctx context.Context, path string, request SignalRequest) (platform.SignalResult, error) {
+	response, err := socketRequest(ctx, path, Request{
+		Operation:  "signal-process",
+		Token:      request.Token,
+		AdminToken: request.AdminToken,
+		Signal:     &request.Operation,
+	})
+	if err != nil {
+		return platform.SignalResult{}, err
+	}
+	if response.Error != "" {
+		return platform.SignalResult{}, errors.New(response.Error)
+	}
+	if response.SignalResult == nil {
+		return platform.SignalResult{}, ErrServiceUnavailable
+	}
+	return *response.SignalResult, nil
 }
 
 func socketRequest(ctx context.Context, path string, request Request) (Response, error) {
@@ -346,6 +372,7 @@ type Response struct {
 	AdminUntil     time.Time               `json:"adminUntil,omitempty"`
 	TimerState     *platform.TimerState    `json:"timerState,omitempty"`
 	OverrideState  *platform.OverrideState `json:"overrideState,omitempty"`
+	SignalResult   *platform.SignalResult  `json:"signalResult,omitempty"`
 }
 
 type Authenticator interface {
