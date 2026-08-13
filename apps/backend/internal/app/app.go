@@ -67,6 +67,10 @@ type Server struct {
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	previewAccountFn      func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
 	applyAccountFn        func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountState, error)
+	previewGroupFn        func(context.Context, auth.GroupMembershipRequest) (platform.GroupMembershipPreview, error)
+	applyGroupFn          func(context.Context, auth.GroupMembershipRequest) (platform.GroupMembershipState, error)
+	previewAdminRoleFn    func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRolePreview, error)
+	applyAdminRoleFn      func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRoleState, error)
 	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
 	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
 	processTracker        *platform.ProcessTracker
@@ -124,6 +128,18 @@ func New(cfg config.Config) (*Server, error) {
 		},
 		applyAccountFn: func(ctx context.Context, request auth.LocalAccountRequest) (platform.LocalAccountState, error) {
 			return auth.ApplyLocalAccount(ctx, cfg.SessionSocket, request)
+		},
+		previewGroupFn: func(ctx context.Context, request auth.GroupMembershipRequest) (platform.GroupMembershipPreview, error) {
+			return auth.PreviewGroupMembership(ctx, cfg.SessionSocket, request)
+		},
+		applyGroupFn: func(ctx context.Context, request auth.GroupMembershipRequest) (platform.GroupMembershipState, error) {
+			return auth.ApplyGroupMembership(ctx, cfg.SessionSocket, request)
+		},
+		previewAdminRoleFn: func(ctx context.Context, request auth.AdministrativeRoleRequest) (platform.AdministrativeRolePreview, error) {
+			return auth.PreviewAdministrativeRole(ctx, cfg.SessionSocket, request)
+		},
+		applyAdminRoleFn: func(ctx context.Context, request auth.AdministrativeRoleRequest) (platform.AdministrativeRoleState, error) {
+			return auth.ApplyAdministrativeRole(ctx, cfg.SessionSocket, request)
 		},
 		queryLogs:          platform.QueryLogs,
 		processTracker:     processTracker,
@@ -323,6 +339,10 @@ func (server *Server) routes() http.Handler {
 			router.Get("/groups", server.groups)
 			router.Post("/users/account/preview", server.previewLocalAccount)
 			router.With(server.requireCSRF).Post("/users/account", server.applyLocalAccount)
+			router.Post("/groups/membership/preview", server.previewGroupMembership)
+			router.With(server.requireCSRF).Post("/groups/membership", server.applyGroupMembership)
+			router.Post("/groups/admin-role/preview", server.previewAdministrativeRole)
+			router.With(server.requireCSRF).Post("/groups/admin-role", server.applyAdministrativeRole)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)

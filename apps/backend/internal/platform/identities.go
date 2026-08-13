@@ -195,6 +195,8 @@ func parseNSSGroups(output string, local map[string]bool) ([]IdentityGroup, erro
 				return nil, errors.New("NSS group membership exceeded bound")
 			}
 		}
+		sort.Strings(members)
+		members = uniqueStrings(members)
 		isLocal := local[fields[0]]
 		groups = append(groups, IdentityGroup{Name: fields[0], GID: gid, Members: members, Source: sourceName(isLocal), Local: isLocal, Mutable: isLocal, Reason: remoteReason(isLocal)})
 		if len(groups) >= maxNSSGroups {

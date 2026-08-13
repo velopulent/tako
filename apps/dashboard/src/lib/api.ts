@@ -281,6 +281,57 @@ export type LocalAccountPreview = {
   reason?: string
   requiresConfirmation: boolean
 }
+export type GroupMembershipOperation = {
+  action: "add" | "remove"
+  username: string
+  group: string
+  expectedFingerprint?: string
+}
+export type GroupMembershipState = {
+  username: string
+  group: GroupInfo
+  member: boolean
+  fingerprint: string
+}
+export type GroupMembershipPreview = {
+  action: GroupMembershipOperation["action"]
+  username: string
+  group: string
+  current: GroupMembershipState
+  changes: string[]
+  warnings: string[]
+  stale: boolean
+  allowed: boolean
+  reason?: string
+  requiresConfirmation: boolean
+}
+export type AdministrativeRoleOperation = {
+  action: "grant" | "revoke"
+  username: string
+  role: "administrator"
+  expectedFingerprint?: string
+  confirmation?: string
+}
+export type AdministrativeRoleState = {
+  username: string
+  role: "administrator"
+  group: string
+  member: boolean
+  members: string[]
+  fingerprint: string
+}
+export type AdministrativeRolePreview = {
+  action: AdministrativeRoleOperation["action"]
+  username: string
+  role: "administrator"
+  current: AdministrativeRoleState
+  changes: string[]
+  warnings: string[]
+  stale: boolean
+  allowed: boolean
+  reason?: string
+  requiresConfirmation: boolean
+}
 export type MountInfo = {
   source: string
   target: string

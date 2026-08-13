@@ -350,6 +350,76 @@ paths:
                     maxItems: 100000
                     items: { $ref: '#/components/schemas/NSSGroup' }
         '503': { $ref: '#/components/responses/Problem' }
+  /groups/membership/preview:
+    post:
+      operationId: previewGroupMembership
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupMembershipOperation' }
+      responses:
+        '200':
+          description: Stale-aware group membership preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupMembershipPreview' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /groups/membership:
+    post:
+      operationId: applyGroupMembership
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupMembershipOperation' }
+      responses:
+        '200':
+          description: Verified group membership state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupMembershipState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /groups/admin-role/preview:
+    post:
+      operationId: previewAdministrativeRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdministrativeRoleOperation' }
+      responses:
+        '200':
+          description: Stale-aware administrator-role preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeRolePreview' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /groups/admin-role:
+    post:
+      operationId: applyAdministrativeRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdministrativeRoleOperation' }
+      responses:
+        '200':
+          description: Verified administrator-role state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeRoleState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /updates:
     get:
       operationId: getUpdateStatus
@@ -1255,6 +1325,86 @@ components:
         action: { type: string, enum: [create, update, lock, unlock, delete] }
         username: { type: string, maxLength: 32 }
         current: { $ref: '#/components/schemas/LocalAccountState' }
+        changes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        warnings:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 512 }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+        requiresConfirmation: { type: boolean }
+    GroupMembershipOperation:
+      type: object
+      required: [action, username, group]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [add, remove] }
+        username: { type: string, minLength: 1, maxLength: 32 }
+        group: { type: string, minLength: 1, maxLength: 256 }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
+    GroupMembershipState:
+      type: object
+      required: [username, group, member, fingerprint]
+      properties:
+        username: { type: string, maxLength: 32 }
+        group: { $ref: '#/components/schemas/NSSGroup' }
+        member: { type: boolean }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+    GroupMembershipPreview:
+      type: object
+      required: [action, username, group, current, changes, warnings, stale, allowed, requiresConfirmation]
+      properties:
+        action: { type: string, enum: [add, remove] }
+        username: { type: string, maxLength: 32 }
+        group: { type: string, maxLength: 256 }
+        current: { $ref: '#/components/schemas/GroupMembershipState' }
+        changes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        warnings:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 512 }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+        requiresConfirmation: { type: boolean }
+    AdministrativeRoleOperation:
+      type: object
+      required: [action, username, role]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [grant, revoke] }
+        username: { type: string, minLength: 1, maxLength: 32 }
+        role: { type: string, enum: [administrator] }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
+        confirmation: { type: string, maxLength: 128 }
+    AdministrativeRoleState:
+      type: object
+      required: [username, role, group, member, members, fingerprint]
+      properties:
+        username: { type: string, maxLength: 32 }
+        role: { type: string, enum: [administrator] }
+        group: { type: string, maxLength: 256 }
+        member: { type: boolean }
+        members:
+          type: array
+          maxItems: 4096
+          items: { type: string, maxLength: 32 }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+    AdministrativeRolePreview:
+      type: object
+      required: [action, username, role, current, changes, warnings, stale, allowed, requiresConfirmation]
+      properties:
+        action: { type: string, enum: [grant, revoke] }
+        username: { type: string, maxLength: 32 }
+        role: { type: string, enum: [administrator] }
+        current: { $ref: '#/components/schemas/AdministrativeRoleState' }
         changes:
           type: array
           maxItems: 16

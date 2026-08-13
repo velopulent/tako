@@ -458,6 +458,78 @@ func TestLocalAccountOperationsRequireAdminAndUseStructuredBackend(t *testing.T)
 	}
 }
 
+type recordingGroupBackend struct {
+	previewed platform.GroupMembershipOperation
+	applied   platform.GroupMembershipOperation
+}
+
+func (backend *recordingGroupBackend) Preview(_ context.Context, operation platform.GroupMembershipOperation, _ auth.Identity) (platform.GroupMembershipPreview, error) {
+	backend.previewed = operation
+	return platform.GroupMembershipPreview{Action: operation.Action, Username: operation.Username, Group: operation.Group, Allowed: true}, nil
+}
+
+func (backend *recordingGroupBackend) Apply(_ context.Context, operation platform.GroupMembershipOperation, _ auth.Identity) (platform.GroupMembershipState, error) {
+	backend.applied = operation
+	return platform.GroupMembershipState{Username: operation.Username, Fingerprint: strings.Repeat("a", 64)}, nil
+}
+
+type recordingRoleBackend struct {
+	previewed platform.AdministrativeRoleOperation
+	applied   platform.AdministrativeRoleOperation
+}
+
+func (backend *recordingRoleBackend) Preview(_ context.Context, operation platform.AdministrativeRoleOperation, _ auth.Identity) (platform.AdministrativeRolePreview, error) {
+	backend.previewed = operation
+	return platform.AdministrativeRolePreview{Action: operation.Action, Username: operation.Username, Role: operation.Role, Allowed: true}, nil
+}
+
+func (backend *recordingRoleBackend) Apply(_ context.Context, operation platform.AdministrativeRoleOperation, _ auth.Identity) (platform.AdministrativeRoleState, error) {
+	backend.applied = operation
+	return platform.AdministrativeRoleState{Username: operation.Username, Role: operation.Role, Fingerprint: strings.Repeat("b", 64)}, nil
+}
+
+func TestGroupAndAdministrativeRoleOperationsUseAdminGrant(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "operator", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, err := store.authorize(context.Background(), bridgeToken, "secret", 300, func(context.Context, auth.Identity, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := &recordingGroupBackend{}
+	roles := &recordingRoleBackend{}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handleWithGroupBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, groups, roles)
+	groupOperation := platform.GroupMembershipOperation{Action: "add", Username: "target", Group: "developers", Preview: true}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "group-membership", AdminToken: adminToken, GroupMembership: &groupOperation}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || response.GroupMembershipPreview == nil || groups.previewed != groupOperation {
+		t.Fatalf("group response=%#v operation=%#v", response, groups.previewed)
+	}
+
+	serverConn, clientConn = net.Pipe()
+	defer clientConn.Close()
+	go handleWithGroupBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, groups, roles)
+	roleOperation := platform.AdministrativeRoleOperation{Action: "grant", Username: "target", Role: "administrator", Preview: true}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "admin-role", AdminToken: adminToken, AdminRole: &roleOperation}); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || response.AdminRolePreview == nil || roles.previewed != roleOperation {
+		t.Fatalf("role response=%#v operation=%#v", response, roles.previewed)
+	}
+}
+
 type recordingServiceBackend struct {
 	mu     sync.Mutex
 	called []serviceOperation

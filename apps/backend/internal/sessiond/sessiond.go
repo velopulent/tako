@@ -154,10 +154,18 @@ func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversati
 }
 
 func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, serviceBackends ...serviceBackend) {
-	handleWithLocalAccountBackend(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemLocalAccountBackend{}, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
 }
 
 func handleWithLocalAccountBackend(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, account localAccountBackend, serviceBackends ...serviceBackend) {
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, account, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+}
+
+func handleWithGroupBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemLocalAccountBackend{}, groups, roles, serviceBackends...)
+}
+
+func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -173,6 +181,12 @@ func handleWithLocalAccountBackend(conn net.Conn, service auth.PAMAuthenticator,
 	}
 	if account == nil {
 		account = systemLocalAccountBackend{}
+	}
+	if groups == nil {
+		groups = systemGroupMembershipBackend{}
+	}
+	if roles == nil {
+		roles = systemAdministrativeRoleBackend{}
 	}
 	serviceBackend := serviceBackend(systemServiceBackend{})
 	if len(serviceBackends) > 0 && serviceBackends[0] != nil {
@@ -208,6 +222,14 @@ func handleWithLocalAccountBackend(conn net.Conn, service auth.PAMAuthenticator,
 		return
 	}
 	if request.Operation != "local-account" && request.Account != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "group-membership" && request.GroupMembership != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "admin-role" && request.AdminRole != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -576,6 +598,76 @@ func handleWithLocalAccountBackend(conn net.Conn, service auth.PAMAuthenticator,
 			return
 		}
 		_ = encoder.Encode(auth.Response{AccountState: &state})
+		return
+	}
+	if request.Operation == "group-membership" {
+		if request.GroupMembership == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.AdminRole != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-group-request"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.GroupMembership
+		if err := platform.ValidateGroupMembershipOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-group-operation"})
+			return
+		}
+		groupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		if operation.Preview {
+			preview, previewErr := groups.Preview(groupCtx, operation, identity)
+			cancel()
+			if previewErr != nil {
+				_ = encoder.Encode(auth.Response{Error: groupErrorCode(previewErr)})
+				return
+			}
+			_ = encoder.Encode(auth.Response{GroupMembershipPreview: &preview})
+			return
+		}
+		state, applyErr := groups.Apply(groupCtx, operation, identity)
+		cancel()
+		if applyErr != nil {
+			_ = encoder.Encode(auth.Response{Error: groupErrorCode(applyErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{GroupMembershipState: &state})
+		return
+	}
+	if request.Operation == "admin-role" {
+		if request.AdminRole == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-role-request"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.AdminRole
+		if err := platform.ValidateAdministrativeRoleOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-role-operation"})
+			return
+		}
+		roleCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		if operation.Preview {
+			preview, previewErr := roles.Preview(roleCtx, operation, identity)
+			cancel()
+			if previewErr != nil {
+				_ = encoder.Encode(auth.Response{Error: groupErrorCode(previewErr)})
+				return
+			}
+			_ = encoder.Encode(auth.Response{AdminRolePreview: &preview})
+			return
+		}
+		state, applyErr := roles.Apply(roleCtx, operation, identity)
+		cancel()
+		if applyErr != nil {
+			_ = encoder.Encode(auth.Response{Error: groupErrorCode(applyErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{AdminRoleState: &state})
 		return
 	}
 	if request.Operation == "host-config" {

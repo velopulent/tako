@@ -59,6 +59,7 @@ import { HostPage } from "@/routes/host"
 import { JournalBrowser } from "@/components/journal-browser"
 import { ProcessDetails } from "@/components/process-details"
 import { UserInventory } from "@/components/user-inventory"
+import { GroupInventory } from "@/components/group-inventory"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -636,6 +637,7 @@ function UsersPage() {
   return (
     <Page description="NSS account inventory. Local entries are explicitly mutable; remote identities remain read-only.">
       <UserInventory />
+      <GroupInventory />
     </Page>
   )
 }

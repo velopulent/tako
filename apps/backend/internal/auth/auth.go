@@ -99,29 +99,31 @@ type UserSession struct {
 type Conversation func(PromptStyle, string) (string, error)
 
 type Request struct {
-	Operation           string                          `json:"operation,omitempty"`
-	Username            string                          `json:"username,omitempty"`
-	Password            string                          `json:"password,omitempty"`
-	ConversationID      string                          `json:"conversationId,omitempty"`
-	Responses           []PromptResponse                `json:"responses,omitempty"`
-	Token               string                          `json:"token,omitempty"`
-	AdminToken          string                          `json:"adminToken,omitempty"`
-	AdminTTL            uint32                          `json:"adminTtlSeconds,omitempty"`
-	Columns             uint16                          `json:"columns,omitempty"`
-	Rows                uint16                          `json:"rows,omitempty"`
-	Action              string                          `json:"action,omitempty"`
-	Unit                string                          `json:"unit,omitempty"`
-	Scope               string                          `json:"scope,omitempty"`
-	Hostname            string                          `json:"hostname,omitempty"`
-	Timezone            string                          `json:"timezone,omitempty"`
-	NTPEnabled          bool                            `json:"ntpEnabled,omitempty"`
-	ExpectedFingerprint string                          `json:"expectedFingerprint,omitempty"`
-	PowerAction         string                          `json:"powerAction,omitempty"`
-	PowerConfirmation   string                          `json:"powerConfirmation,omitempty"`
-	Timer               *platform.TimerOperation        `json:"timer,omitempty"`
-	Override            *platform.OverrideOperation     `json:"override,omitempty"`
-	Signal              *platform.SignalOperation       `json:"signal,omitempty"`
-	Account             *platform.LocalAccountOperation `json:"account,omitempty"`
+	Operation           string                                `json:"operation,omitempty"`
+	Username            string                                `json:"username,omitempty"`
+	Password            string                                `json:"password,omitempty"`
+	ConversationID      string                                `json:"conversationId,omitempty"`
+	Responses           []PromptResponse                      `json:"responses,omitempty"`
+	Token               string                                `json:"token,omitempty"`
+	AdminToken          string                                `json:"adminToken,omitempty"`
+	AdminTTL            uint32                                `json:"adminTtlSeconds,omitempty"`
+	Columns             uint16                                `json:"columns,omitempty"`
+	Rows                uint16                                `json:"rows,omitempty"`
+	Action              string                                `json:"action,omitempty"`
+	Unit                string                                `json:"unit,omitempty"`
+	Scope               string                                `json:"scope,omitempty"`
+	Hostname            string                                `json:"hostname,omitempty"`
+	Timezone            string                                `json:"timezone,omitempty"`
+	NTPEnabled          bool                                  `json:"ntpEnabled,omitempty"`
+	ExpectedFingerprint string                                `json:"expectedFingerprint,omitempty"`
+	PowerAction         string                                `json:"powerAction,omitempty"`
+	PowerConfirmation   string                                `json:"powerConfirmation,omitempty"`
+	Timer               *platform.TimerOperation              `json:"timer,omitempty"`
+	Override            *platform.OverrideOperation           `json:"override,omitempty"`
+	Signal              *platform.SignalOperation             `json:"signal,omitempty"`
+	Account             *platform.LocalAccountOperation       `json:"account,omitempty"`
+	GroupMembership     *platform.GroupMembershipOperation    `json:"groupMembership,omitempty"`
+	AdminRole           *platform.AdministrativeRoleOperation `json:"adminRole,omitempty"`
 }
 
 type TimerRequest struct {
@@ -145,6 +147,16 @@ type SignalRequest struct {
 type LocalAccountRequest struct {
 	AdminToken string
 	Operation  platform.LocalAccountOperation
+}
+
+type GroupMembershipRequest struct {
+	AdminToken string
+	Operation  platform.GroupMembershipOperation
+}
+
+type AdministrativeRoleRequest struct {
+	AdminToken string
+	Operation  platform.AdministrativeRoleOperation
 }
 
 type HostConfigurationRequest struct {
@@ -280,6 +292,70 @@ func ApplyLocalAccount(ctx context.Context, path string, request LocalAccountReq
 	return *response.AccountState, nil
 }
 
+func PreviewGroupMembership(ctx context.Context, path string, request GroupMembershipRequest) (platform.GroupMembershipPreview, error) {
+	operation := request.Operation
+	operation.Preview = true
+	response, err := socketRequest(ctx, path, Request{Operation: "group-membership", AdminToken: request.AdminToken, GroupMembership: &operation})
+	if err != nil {
+		return platform.GroupMembershipPreview{}, err
+	}
+	if response.Error != "" {
+		return platform.GroupMembershipPreview{}, errors.New(response.Error)
+	}
+	if response.GroupMembershipPreview == nil {
+		return platform.GroupMembershipPreview{}, ErrServiceUnavailable
+	}
+	return *response.GroupMembershipPreview, nil
+}
+
+func ApplyGroupMembership(ctx context.Context, path string, request GroupMembershipRequest) (platform.GroupMembershipState, error) {
+	operation := request.Operation
+	operation.Preview = false
+	response, err := socketRequest(ctx, path, Request{Operation: "group-membership", AdminToken: request.AdminToken, GroupMembership: &operation})
+	if err != nil {
+		return platform.GroupMembershipState{}, err
+	}
+	if response.Error != "" {
+		return platform.GroupMembershipState{}, errors.New(response.Error)
+	}
+	if response.GroupMembershipState == nil {
+		return platform.GroupMembershipState{}, ErrServiceUnavailable
+	}
+	return *response.GroupMembershipState, nil
+}
+
+func PreviewAdministrativeRole(ctx context.Context, path string, request AdministrativeRoleRequest) (platform.AdministrativeRolePreview, error) {
+	operation := request.Operation
+	operation.Preview = true
+	response, err := socketRequest(ctx, path, Request{Operation: "admin-role", AdminToken: request.AdminToken, AdminRole: &operation})
+	if err != nil {
+		return platform.AdministrativeRolePreview{}, err
+	}
+	if response.Error != "" {
+		return platform.AdministrativeRolePreview{}, errors.New(response.Error)
+	}
+	if response.AdminRolePreview == nil {
+		return platform.AdministrativeRolePreview{}, ErrServiceUnavailable
+	}
+	return *response.AdminRolePreview, nil
+}
+
+func ApplyAdministrativeRole(ctx context.Context, path string, request AdministrativeRoleRequest) (platform.AdministrativeRoleState, error) {
+	operation := request.Operation
+	operation.Preview = false
+	response, err := socketRequest(ctx, path, Request{Operation: "admin-role", AdminToken: request.AdminToken, AdminRole: &operation})
+	if err != nil {
+		return platform.AdministrativeRoleState{}, err
+	}
+	if response.Error != "" {
+		return platform.AdministrativeRoleState{}, errors.New(response.Error)
+	}
+	if response.AdminRoleState == nil {
+		return platform.AdministrativeRoleState{}, ErrServiceUnavailable
+	}
+	return *response.AdminRoleState, nil
+}
+
 func socketRequest(ctx context.Context, path string, request Request) (Response, error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", path)
@@ -401,18 +477,22 @@ func bridgeTokenRequest(ctx context.Context, path, operation, token string) erro
 }
 
 type Response struct {
-	Identity       *Identity                     `json:"identity,omitempty"`
-	BridgeToken    string                        `json:"bridgeToken,omitempty"`
-	ConversationID string                        `json:"conversationId,omitempty"`
-	Prompts        []Prompt                      `json:"prompts,omitempty"`
-	Error          string                        `json:"error,omitempty"`
-	AdminToken     string                        `json:"adminToken,omitempty"`
-	AdminUntil     time.Time                     `json:"adminUntil,omitempty"`
-	TimerState     *platform.TimerState          `json:"timerState,omitempty"`
-	OverrideState  *platform.OverrideState       `json:"overrideState,omitempty"`
-	SignalResult   *platform.SignalResult        `json:"signalResult,omitempty"`
-	AccountState   *platform.LocalAccountState   `json:"accountState,omitempty"`
-	AccountPreview *platform.LocalAccountPreview `json:"accountPreview,omitempty"`
+	Identity               *Identity                           `json:"identity,omitempty"`
+	BridgeToken            string                              `json:"bridgeToken,omitempty"`
+	ConversationID         string                              `json:"conversationId,omitempty"`
+	Prompts                []Prompt                            `json:"prompts,omitempty"`
+	Error                  string                              `json:"error,omitempty"`
+	AdminToken             string                              `json:"adminToken,omitempty"`
+	AdminUntil             time.Time                           `json:"adminUntil,omitempty"`
+	TimerState             *platform.TimerState                `json:"timerState,omitempty"`
+	OverrideState          *platform.OverrideState             `json:"overrideState,omitempty"`
+	SignalResult           *platform.SignalResult              `json:"signalResult,omitempty"`
+	AccountState           *platform.LocalAccountState         `json:"accountState,omitempty"`
+	AccountPreview         *platform.LocalAccountPreview       `json:"accountPreview,omitempty"`
+	GroupMembershipState   *platform.GroupMembershipState      `json:"groupMembershipState,omitempty"`
+	GroupMembershipPreview *platform.GroupMembershipPreview    `json:"groupMembershipPreview,omitempty"`
+	AdminRoleState         *platform.AdministrativeRoleState   `json:"adminRoleState,omitempty"`
+	AdminRolePreview       *platform.AdministrativeRolePreview `json:"adminRolePreview,omitempty"`
 }
 
 type Authenticator interface {
