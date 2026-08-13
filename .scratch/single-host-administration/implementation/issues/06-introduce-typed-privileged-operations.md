@@ -4,8 +4,8 @@
 
 **Blocked by:** 05 — Secure Administrative access through sudo and Polkit
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] No shell, arbitrary executable, root terminal, or generic privileged RPC is reachable.
-- [ ] Every operation revalidates actor, target, arguments, authority, and limits at root boundary.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] No shell, arbitrary executable, root terminal, or generic privileged RPC is reachable.
+- [x] Every operation revalidates actor, target, arguments, authority, and limits at root boundary.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

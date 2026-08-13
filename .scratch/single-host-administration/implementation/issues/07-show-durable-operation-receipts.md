@@ -4,8 +4,8 @@
 
 **Blocked by:** 01 — Persist server monitoring preference; 06 — Introduce typed privileged operations
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Receipt records actor, target, timing, result, and Administrative access use without secrets.
-- [ ] Journald remains security audit authority and API/UI behavior is tested.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Receipt records actor, target, timing, result, and Administrative access use without secrets.
+- [x] Journald remains security audit authority and API/UI behavior is tested.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

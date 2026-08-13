@@ -53,6 +53,30 @@ func TestStoreNotifiesWhenSessionsClose(t *testing.T) {
 	}
 }
 
+func TestStoreClearsAdministrativeGrantWhenDropped(t *testing.T) {
+	store := NewStore(time.Minute, time.Hour)
+	var deleted auth.Identity
+	store.SetDeleteHook(func(identity auth.Identity) { deleted = identity })
+	created, err := store.Create(auth.Identity{Username: "operator", BridgeToken: "bridge-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.SetAdministrative(created.ID, "admin-token", time.Now().Add(time.Minute)) {
+		t.Fatal("failed to set administrative grant")
+	}
+	if token := store.DropAdministrative(created.ID); token != "admin-token" {
+		t.Fatalf("dropped token = %q", token)
+	}
+	current, ok := store.Get(created.ID)
+	if !ok || current.Identity.AdminToken != "" || !current.AdminUntil.IsZero() {
+		t.Fatalf("administrative state remained after drop: %+v", current)
+	}
+	store.Delete(created.ID)
+	if deleted.AdminToken != "" {
+		t.Fatalf("deleted session retained administrative token: %+v", deleted)
+	}
+}
+
 func TestStoreCreatesOpaqueTokens(t *testing.T) {
 	store := NewStore(time.Minute, time.Hour)
 	created, err := store.Create(auth.Identity{Username: "operator"})

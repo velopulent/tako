@@ -6,4 +6,4 @@ Tako sessions begin with normal UNIX-user privileges. The header exposes Adminis
 
 The network gateway remains unprivileged and cannot execute administrative commands. System service actions cross the authenticated local session boundary and are validated against fixed action, scope, and unit-name allowlists. The privileged session service records actor, unit, action, and result in journald. This narrow interface is intentionally not equivalent to a remote shell.
 
-This release supports password-backed PAM elevation. Sudo askpass, `NOPASSWD`, interactive MFA, long-lived user bridges, and a separately spawned root bridge remain compatibility work before claiming full Cockpit privilege parity.
+Administrative grants are issued by the privileged session service after it evaluates the invoking user's host policy. Sudo password and `NOPASSWD` policy are supported when configured; Polkit is an optional policy adapter. The grant is separate from the user-session token, short-lived, revoked on drop/logout/session loss, and required for system mutations. Interactive PAM/MFA remains governed by the host's configured policy and is not implemented in the network gateway.

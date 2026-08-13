@@ -2,7 +2,9 @@ package sessiond
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
+	"go.uber.org/zap"
 )
 
 func TestGrantStore(t *testing.T) {
@@ -326,5 +329,60 @@ func TestGrantCloseEndsPAMSession(t *testing.T) {
 	store.close(token)
 	if bridge.calls.Load() != 1 {
 		t.Fatal("repeated grant close stopped user bridge twice")
+	}
+}
+
+func TestGrantStoreAdministrativeGrantIsSeparateAndRevocable(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "octopus", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receivedPassword string
+	adminToken, until, err := store.authorize(context.Background(), bridgeToken, "secret", 300, func(_ context.Context, identity auth.Identity, password string) error {
+		if identity.Username != "octopus" {
+			t.Fatalf("policy identity = %+v", identity)
+		}
+		receivedPassword = password
+		return nil
+	})
+	if err != nil || adminToken == "" || until.Before(time.Now()) {
+		t.Fatalf("authorize returned token=%q until=%s err=%v", adminToken, until, err)
+	}
+	if receivedPassword != "secret" {
+		t.Fatalf("policy received password %q", receivedPassword)
+	}
+	if identity, ok := store.adminIdentity(adminToken); !ok || identity.Username != "octopus" {
+		t.Fatalf("administrative grant not usable: %+v, %v", identity, ok)
+	}
+	if !store.revokeAdmin(adminToken) {
+		t.Fatal("administrative grant was not revoked")
+	}
+	if _, ok := store.adminIdentity(adminToken); ok {
+		t.Fatal("revoked administrative grant remained usable")
+	}
+	if _, ok := store.get(bridgeToken); !ok {
+		t.Fatal("revoking administrative access closed the user session")
+	}
+}
+
+func TestSystemServiceActionRequiresAdministrativeGrant(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "octopus", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handle(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop())
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "service-action", Token: bridgeToken, Scope: "system", Unit: "sshd.service", Action: "restart"}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "invalid-administrative-request" {
+		t.Fatalf("system action without admin grant returned %q", response.Error)
 	}
 }

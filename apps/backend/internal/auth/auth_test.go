@@ -22,6 +22,16 @@ func TestIdentityDoesNotExposeBridgeToken(t *testing.T) {
 	}
 }
 
+func TestIdentityDoesNotExposeAdministrativeToken(t *testing.T) {
+	payload, err := json.Marshal(Identity{Username: "octopus", AdminToken: "admin-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "admin-secret") || strings.Contains(string(payload), "AdminToken") {
+		t.Fatalf("administrative token leaked: %s", payload)
+	}
+}
+
 func TestSocketConversationStopsReadingWhenContextIsCanceled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.sock")
 	listener, err := net.Listen("unix", path)
@@ -54,6 +64,40 @@ func TestSocketConversationStopsReadingWhenContextIsCanceled(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("canceled context did not interrupt socket read")
+	}
+}
+
+func TestServiceActionStopsReadingWhenContextIsCanceled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		close(accepted)
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- ServiceAction(ctx, path, "bridge", "user", "shell.service", "restart")
+	}()
+	<-accepted
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled service action unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled service action did not interrupt socket read")
 	}
 }
 

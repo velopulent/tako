@@ -74,6 +74,17 @@ export type Capability = {
   setupGuidance?: string
 }
 
+export type OperationReceipt = {
+  id: string
+  actor: string
+  target: string
+  startedAt: string
+  completedAt: string
+  result: string
+  error?: string
+  administrative: boolean
+}
+
 export type ProcessInfo = {
   pid: number
   ppid: number

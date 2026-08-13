@@ -89,10 +89,12 @@ export function MetricsCharts({
   initialSamples,
   interval = "1m",
   compact = false,
+  scope = "all",
 }: {
   initialSamples: MetricSample[]
   interval?: RefreshInterval
   compact?: boolean
+  scope?: "all" | "storage" | "network"
 }) {
   const [live, setLive] = React.useState<MetricSample[]>([])
   React.useEffect(() => {
@@ -112,6 +114,46 @@ export function MetricsCharts({
     () => transform([...initialSamples, ...live].slice(-1000)),
     [initialSamples, live]
   )
+  if (scope === "storage") {
+    return (
+      <section className="grid gap-4 @4xl/main:grid-cols-2">
+        <ResourceChart
+          title="Storage reads"
+          description="Aggregate block-device read throughput"
+          data={samples}
+          config={configs.disk}
+          keys={["diskReadRate"]}
+        />
+        <ResourceChart
+          title="Storage writes"
+          description="Aggregate block-device write throughput"
+          data={samples}
+          config={configs.disk}
+          keys={["diskWriteRate"]}
+        />
+      </section>
+    )
+  }
+  if (scope === "network") {
+    return (
+      <section className="grid gap-4 @4xl/main:grid-cols-2">
+        <ResourceChart
+          title="Network receiving"
+          description="Aggregate receive throughput excluding loopback"
+          data={samples}
+          config={configs.network}
+          keys={["networkRxRate"]}
+        />
+        <ResourceChart
+          title="Network transmitting"
+          description="Aggregate transmit throughput excluding loopback"
+          data={samples}
+          config={configs.network}
+          keys={["networkTxRate"]}
+        />
+      </section>
+    )
+  }
   return (
     <section
       className={`grid gap-4 ${compact ? "@4xl/main:grid-cols-2" : "xl:grid-cols-2"}`}

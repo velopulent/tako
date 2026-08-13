@@ -86,7 +86,9 @@ func New(cfg config.Config) (*Server, error) {
 		detectCapabilities: platform.Detect,
 	}
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
-	if _, ok := authenticator.(auth.SessionController); ok {
+	_, sessionController := authenticator.(auth.SessionController)
+	_, administrativeController := authenticator.(auth.AdministrativeController)
+	if sessionController || administrativeController {
 		for range 4 {
 			server.workersWG.Add(1)
 			go server.cleanupWorker()
@@ -119,18 +121,26 @@ func New(cfg config.Config) (*Server, error) {
 
 func (server *Server) closeUserSession(identity auth.Identity) {
 	controller, ok := server.authenticator.(auth.SessionController)
-	if !ok || identity.BridgeToken == "" {
-		return
+	if ok && identity.BridgeToken != "" {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := controller.CloseUserSession(closeCtx, identity.BridgeToken); err != nil {
+			server.logger.Warn("user session cleanup failed", zap.String("username", identity.Username), zap.Error(err))
+		}
+		closeCancel()
 	}
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer closeCancel()
-	if err := controller.CloseUserSession(closeCtx, identity.BridgeToken); err != nil {
-		server.logger.Warn("user session cleanup failed", zap.String("username", identity.Username), zap.Error(err))
+	if controller, ok := server.authenticator.(auth.AdministrativeController); ok && identity.AdminToken != "" {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := controller.RevokeAdministrative(closeCtx, identity.AdminToken); err != nil {
+			server.logger.Warn("administrative access cleanup failed", zap.String("username", identity.Username), zap.Error(err))
+		}
+		closeCancel()
 	}
 }
 
 func (server *Server) enqueueUserSessionClose(identity auth.Identity) {
-	if _, ok := server.authenticator.(auth.SessionController); !ok || identity.BridgeToken == "" {
+	_, sessionController := server.authenticator.(auth.SessionController)
+	_, administrativeController := server.authenticator.(auth.AdministrativeController)
+	if (!sessionController && !administrativeController) || (identity.BridgeToken == "" && identity.AdminToken == "") {
 		return
 	}
 	server.cleanupMu.Lock()
@@ -241,6 +251,7 @@ func (server *Server) routes() http.Handler {
 			router.Get("/terminal/ws", server.terminalWebSocket)
 			router.Get("/logs", server.logs)
 			router.Get("/logs/stream", server.logStream)
+			router.Get("/operations", server.operationReceipts)
 			router.Get("/users", server.users)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)
@@ -372,36 +383,75 @@ func (server *Server) adminStatus(writer http.ResponseWriter, request *http.Requ
 }
 func (server *Server) adminElevate(writer http.ResponseWriter, request *http.Request) {
 	current := request.Context().Value(sessionKey{}).(session.Session)
+	controller, ok := server.authenticator.(auth.AdministrativeController)
+	if !ok {
+		problem(writer, http.StatusServiceUnavailable, "administrative-access-unavailable", "Administrative policy service is unavailable")
+		return
+	}
 	var body struct {
 		Password string `json:"password"`
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
-	if json.NewDecoder(request.Body).Decode(&body) != nil {
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF || len(body.Password) > 4096 {
 		problem(writer, 400, "invalid-request", "Password is required")
 		return
 	}
-	var identity auth.Identity
-	var err error
-	if server.config.Development {
-		identity, err = server.authenticator.Authenticate(request.Context(), current.Identity.Username, body.Password)
-	} else {
-		identity, err = auth.VerifyPassword(request.Context(), server.config.SessionSocket, current.Identity.Username, body.Password)
-	}
+	access, err := controller.AuthorizeAdministrative(request.Context(), current.Identity.BridgeToken, body.Password, server.config.AdminIdleTimeout)
 	body.Password = ""
-	if err != nil || identity.UID != current.Identity.UID {
+	if err != nil {
+		if errors.Is(err, auth.ErrServiceUnavailable) {
+			problem(writer, http.StatusServiceUnavailable, "administrative-access-unavailable", "Administrative policy service is unavailable")
+			return
+		}
 		problem(writer, 403, "administrative-access-denied", "Could not gain administrative access")
 		return
 	}
-	until := time.Now().Add(server.config.AdminIdleTimeout)
-	server.sessions.SetAdministrative(current.ID, until)
+	if previous := current.Identity.AdminToken; previous != "" {
+		if revokeErr := controller.RevokeAdministrative(request.Context(), previous); revokeErr != nil {
+			server.logger.Warn("previous administrative grant cleanup failed", zap.String("username", current.Identity.Username), zap.Error(revokeErr))
+		}
+	}
+	if !server.sessions.SetAdministrative(current.ID, access.Token, access.Until) {
+		_ = controller.RevokeAdministrative(request.Context(), access.Token)
+		problem(writer, http.StatusUnauthorized, "session-expired", "Session expired")
+		return
+	}
 	server.logger.Info("administrative access gained", zap.String("username", current.Identity.Username))
-	writeJSON(writer, 200, map[string]any{"administrative": true, "until": until})
+	writeJSON(writer, 200, map[string]any{"administrative": true, "until": access.Until})
 }
 func (server *Server) adminDrop(writer http.ResponseWriter, request *http.Request) {
 	current := request.Context().Value(sessionKey{}).(session.Session)
-	server.sessions.DropAdministrative(current.ID)
+	token := server.sessions.DropAdministrative(current.ID)
+	if controller, ok := server.authenticator.(auth.AdministrativeController); ok && token != "" {
+		closeCtx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+		if err := controller.RevokeAdministrative(closeCtx, token); err != nil {
+			server.logger.Warn("administrative access revoke failed", zap.String("username", current.Identity.Username), zap.Error(err))
+		}
+		cancel()
+	}
 	server.logger.Info("administrative access dropped", zap.String("username", current.Identity.Username))
 	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) operationReceipts(writer http.ResponseWriter, request *http.Request) {
+	limit := 50
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			problem(writer, http.StatusBadRequest, "invalid-limit", "Limit must be a positive integer")
+			return
+		}
+		limit = parsed
+	}
+	items, err := server.preferences.OperationReceipts(request.Context(), limit)
+	if err != nil {
+		server.logger.Error("operation receipts failed", zap.Error(err))
+		problem(writer, http.StatusInternalServerError, "operations-unavailable", "Operation history is unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
 }
 
 func (server *Server) logout(writer http.ResponseWriter, request *http.Request) {
@@ -625,28 +675,56 @@ func (server *Server) serviceDetail(writer http.ResponseWriter, request *http.Re
 }
 func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Request) {
 	current := request.Context().Value(sessionKey{}).(session.Session)
-	if chi.URLParam(request, "scope") == "system" && !time.Now().Before(current.AdminUntil) {
+	scope := chi.URLParam(request, "scope")
+	startedAt := time.Now().UTC()
+	target := scope + "/" + chi.URLParam(request, "unit")
+	if scope == "system" && (current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil)) {
 		problem(writer, 403, "administrative-access-required", "Gain Administrative access first")
 		return
 	}
 	var body struct {
 		Action string `json:"action"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096)).Decode(&body) != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		problem(writer, 400, "invalid-request", "Action is required")
 		return
 	}
-	if err := auth.ServiceAction(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, chi.URLParam(request, "scope"), chi.URLParam(request, "unit"), body.Action); err != nil {
-		problem(writer, 502, "service-action-failed", err.Error())
+	target = scope + "/" + chi.URLParam(request, "unit") + "/" + body.Action
+	var actionErr error
+	if scope == "system" {
+		actionErr = auth.ServiceActionAsAdmin(request.Context(), server.config.SessionSocket, current.Identity.AdminToken, scope, chi.URLParam(request, "unit"), body.Action)
+	} else {
+		actionErr = auth.ServiceAction(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, scope, chi.URLParam(request, "unit"), body.Action)
+	}
+	if actionErr != nil {
+		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "service action failed", scope == "system")
+		problem(writer, 502, "service-action-failed", actionErr.Error())
 		return
 	}
-	server.sessions.SetAdministrative(current.ID, time.Now().Add(server.config.AdminIdleTimeout))
+	server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", scope == "system")
 	item, err := platform.UnitDetails(request.Context(), chi.URLParam(request, "scope"), chi.URLParam(request, "unit"))
 	if err != nil {
 		problem(writer, 502, "service-refresh-failed", err.Error())
 		return
 	}
 	writeJSON(writer, 200, item)
+}
+
+func (server *Server) recordOperation(ctx context.Context, actor, target string, startedAt time.Time, result, failure string, administrative bool) {
+	_, err := server.preferences.RecordOperation(ctx, preferences.OperationReceipt{
+		Actor:          actor,
+		Target:         target,
+		StartedAt:      startedAt,
+		CompletedAt:    time.Now().UTC(),
+		Result:         result,
+		Error:          failure,
+		Administrative: administrative,
+	})
+	if err != nil {
+		server.logger.Warn("operation receipt failed", zap.String("target", target), zap.Error(err))
+	}
 }
 
 func (server *Server) logs(writer http.ResponseWriter, request *http.Request) {

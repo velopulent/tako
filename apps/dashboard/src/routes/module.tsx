@@ -10,6 +10,7 @@ import {
   type LogEntry,
   type MetricSample,
   type MountInfo,
+  type OperationReceipt,
   type ProcessInfo,
   type ServiceInfo,
   type TerminalStatus,
@@ -35,6 +36,10 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { MetricsCharts } from "@/components/metrics-chart"
+import {
+  NetworkMetrics,
+  StorageMetrics,
+} from "@/components/directional-metrics"
 import { Progress } from "@/components/ui/progress"
 import { RefreshSelect } from "@/components/refresh-select"
 import {
@@ -48,9 +53,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
-import {
-  usePreference,
-} from "@/hooks/use-preference"
+import { usePreference } from "@/hooks/use-preference"
 import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
 import { SettingsPage } from "@/routes/settings"
 
@@ -81,12 +84,10 @@ function usePageInterval(page: string) {
   return { value, setValue, milliseconds: intervalMs(value) }
 }
 function Page({
-  title,
   description,
   interval,
   children,
 }: {
-  title: string
   description: string
   interval?: ReturnType<typeof usePageInterval>
   children: React.ReactNode
@@ -94,10 +95,7 @@ function Page({
   return (
     <main className="@container/main flex flex-1 flex-col gap-6 p-4 lg:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
-          <p className="text-sm text-muted-foreground">{description}</p>
-        </div>
+        <p className="text-sm text-muted-foreground">{description}</p>
         {interval && (
           <RefreshSelect value={interval.value} onChange={interval.setValue} />
         )}
@@ -145,6 +143,7 @@ export function ModulePage({ module }: { module: string }) {
   if (module === "settings") return <SettingsPage />
   if (module === "users") return <UsersPage />
   if (module === "updates") return <UpdatesPage />
+  if (module === "operations") return <OperationsPage />
   return <TerminalPage />
 }
 
@@ -157,7 +156,6 @@ function MetricsPage() {
   })
   return (
     <Page
-      title="Metrics"
       description="Live CPU, memory, storage, network, and process telemetry."
       interval={interval}
     >
@@ -316,7 +314,6 @@ function ProcessesPage() {
   const interval = usePageInterval("processes")
   return (
     <Page
-      title="Processes"
       description="Sortable, filterable live process inventory."
       interval={interval}
     >
@@ -365,7 +362,6 @@ function ServicesPage() {
   )
   return (
     <Page
-      title="Services"
       description="systemd units, state, relationships, logs, and lifecycle controls."
       interval={interval}
     >
@@ -489,14 +485,14 @@ function StoragePage() {
   ]
   return (
     <Page
-      title="Storage"
       description="Filesystem capacity and block-device activity."
       interval={interval}
     >
-      <MetricsCharts
-        initialSamples={metrics.data?.samples ?? []}
+      <StorageMetrics
+        samples={metrics.data?.samples ?? []}
         interval={interval.value}
-        compact
+        pending={metrics.isPending}
+        error={metrics.isError}
       />
       <State query={query} empty={!items.length}>
         <DataTable
@@ -581,14 +577,14 @@ function NetworkPage() {
   ]
   return (
     <Page
-      title="Network"
       description="Interface health, traffic, addresses, and detected network manager."
       interval={interval}
     >
-      <MetricsCharts
-        initialSamples={metrics.data?.samples ?? []}
+      <NetworkMetrics
+        samples={metrics.data?.samples ?? []}
         interval={interval.value}
-        compact
+        pending={metrics.isPending}
+        error={metrics.isError}
       />
       <State query={query} empty={!items.length}>
         <DataTable
@@ -664,10 +660,7 @@ function LogsPage() {
     },
   ]
   return (
-    <Page
-      title="System logs"
-      description="Searchable, virtualized live journal with bounded browser memory."
-    >
+    <Page description="Searchable, virtualized live journal with bounded browser memory.">
       <State query={query} empty={!items.length}>
         <DataTable
           data={items}
@@ -707,7 +700,7 @@ function UsersPage() {
     { accessorKey: "shell", header: "Shell" },
   ]
   return (
-    <Page title="Users" description="Local account inventory.">
+    <Page description="Local account inventory.">
       <State query={query} empty={!items.length}>
         <DataTable data={items} columns={columns} />
       </State>
@@ -720,7 +713,7 @@ function UpdatesPage() {
     queryFn: () => api<UpdateStatus>("/updates"),
   })
   return (
-    <Page title="Updates" description="Package backend readiness.">
+    <Page description="Package backend readiness.">
       <Alert>
         <RefreshCwIcon />
         <AlertTitle>{query.data?.backend || "Package updates"}</AlertTitle>
@@ -729,6 +722,54 @@ function UpdatesPage() {
     </Page>
   )
 }
+
+function OperationsPage() {
+  const query = useQuery({
+    queryKey: ["operations"],
+    queryFn: () => api<{ items: OperationReceipt[] }>("/operations?limit=100"),
+  })
+  const columns: ColumnDef<OperationReceipt>[] = [
+    { accessorKey: "actor", header: "Actor" },
+    { accessorKey: "target", header: "Target" },
+    {
+      accessorKey: "completedAt",
+      header: "Completed",
+      cell: ({ row }) => new Date(row.original.completedAt).toLocaleString(),
+    },
+    {
+      accessorKey: "result",
+      header: "Result",
+      cell: ({ row }) => (
+        <Badge
+          variant={
+            row.original.result === "succeeded" ? "secondary" : "destructive"
+          }
+        >
+          {row.original.result}
+        </Badge>
+      ),
+    },
+    {
+      accessorKey: "administrative",
+      header: "Authority",
+      cell: ({ row }) =>
+        row.original.administrative ? "Administrative" : "User",
+    },
+  ]
+  return (
+    <Page description="Sanitized service actions and their outcomes.">
+      <State query={query} empty={!query.data?.items.length}>
+        <DataTable
+          data={query.data?.items ?? []}
+          columns={columns}
+          height="60vh"
+          searchPlaceholder="Search actors, targets, or results"
+        />
+      </State>
+    </Page>
+  )
+}
+
 const SystemTerminal = React.lazy(() =>
   import("@/components/system-terminal").then((value) => ({
     default: value.SystemTerminal,
@@ -740,10 +781,7 @@ function TerminalPage() {
     queryFn: () => api<TerminalStatus>("/terminal"),
   })
   return (
-    <Page
-      title="Terminal"
-      description="Interactive shell under authenticated UNIX identity."
-    >
+    <Page description="Interactive shell under authenticated UNIX identity.">
       {query.data?.available ? (
         <React.Suspense fallback={<Skeleton className="h-[65vh]" />}>
           <SystemTerminal />

@@ -15,6 +15,7 @@ import (
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/platform"
+	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
 )
 
@@ -249,6 +250,38 @@ func TestCapabilitiesExposeRuntimeContractsAndGuidance(t *testing.T) {
 		if capability.State == "conflicted" && capability.Mutable {
 			t.Fatalf("conflicted capability allows mutation: %#v", capability)
 		}
+	}
+}
+
+func TestOperationReceiptsEndpointReturnsSanitizedHistory(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	if _, err := server.preferences.RecordOperation(context.Background(), preferences.OperationReceipt{
+		Actor:          "octopus",
+		Target:         "system/sshd.service/restart",
+		Result:         "succeeded",
+		Administrative: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/operations?limit=1", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte("sshd.service")) {
+		t.Fatalf("operation history returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/operations?limit=0", nil)
+	request.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid operation limit returned %d", recorder.Code)
 	}
 }
 

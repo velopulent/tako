@@ -2,7 +2,9 @@ package preferences
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +21,17 @@ var ErrConflict = errors.New("preference changed")
 type MonitoringPreference struct {
 	DefaultInterval string
 	Revision        int64
+}
+
+type OperationReceipt struct {
+	ID             string    `json:"id"`
+	Actor          string    `json:"actor"`
+	Target         string    `json:"target"`
+	StartedAt      time.Time `json:"startedAt"`
+	CompletedAt    time.Time `json:"completedAt"`
+	Result         string    `json:"result"`
+	Error          string    `json:"error,omitempty"`
+	Administrative bool      `json:"administrative"`
 }
 
 type Store struct {
@@ -109,6 +122,83 @@ func (store *Store) SetMonitoringInterval(ctx context.Context, value string, exp
 	return store.MonitoringInterval(ctx, value)
 }
 
+func (store *Store) RecordOperation(ctx context.Context, receipt OperationReceipt) (OperationReceipt, error) {
+	if receipt.Actor == "" || len(receipt.Actor) > 256 || receipt.Target == "" || len(receipt.Target) > 512 || len(receipt.Result) == 0 || len(receipt.Result) > 64 || len(receipt.Error) > 1024 {
+		return OperationReceipt{}, errors.New("invalid operation receipt")
+	}
+	if receipt.StartedAt.IsZero() {
+		receipt.StartedAt = time.Now().UTC()
+	}
+	if receipt.CompletedAt.IsZero() {
+		receipt.CompletedAt = time.Now().UTC()
+	}
+	if receipt.CompletedAt.Before(receipt.StartedAt) {
+		return OperationReceipt{}, errors.New("invalid operation receipt timing")
+	}
+	id, err := receiptID()
+	if err != nil {
+		return OperationReceipt{}, fmt.Errorf("create operation receipt id: %w", err)
+	}
+	receipt.ID = id
+	_, err = store.database.ExecContext(ctx, `
+		INSERT INTO operation_receipts
+			(id, actor, target, started_at, completed_at, result, error, administrative)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, receipt.ID, receipt.Actor, receipt.Target, receipt.StartedAt.UTC().Format(time.RFC3339Nano), receipt.CompletedAt.UTC().Format(time.RFC3339Nano), receipt.Result, receipt.Error, receipt.Administrative)
+	if err != nil {
+		return OperationReceipt{}, fmt.Errorf("save operation receipt: %w", err)
+	}
+	return receipt, nil
+}
+
+func (store *Store) OperationReceipts(ctx context.Context, limit int) ([]OperationReceipt, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := store.database.QueryContext(ctx, `
+		SELECT id, actor, target, started_at, completed_at, result, error, administrative
+		FROM operation_receipts
+		ORDER BY completed_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list operation receipts: %w", err)
+	}
+	defer rows.Close()
+	items := make([]OperationReceipt, 0, limit)
+	for rows.Next() {
+		var item OperationReceipt
+		var startedAt, completedAt string
+		if err := rows.Scan(&item.ID, &item.Actor, &item.Target, &startedAt, &completedAt, &item.Result, &item.Error, &item.Administrative); err != nil {
+			return nil, fmt.Errorf("read operation receipt: %w", err)
+		}
+		item.StartedAt, err = time.Parse(time.RFC3339Nano, startedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse operation start time: %w", err)
+		}
+		item.CompletedAt, err = time.Parse(time.RFC3339Nano, completedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse operation completion time: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read operation receipts: %w", err)
+	}
+	return items, nil
+}
+
+func receiptID() (string, error) {
+	buffer := make([]byte, 18)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer), nil
+}
+
 func (store *Store) migrate(ctx context.Context) error {
 	for _, statement := range []string{
 		"PRAGMA journal_mode = WAL",
@@ -134,6 +224,16 @@ func (store *Store) migrate(ctx context.Context) error {
 			value TEXT NOT NULL,
 			revision INTEGER NOT NULL,
 			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE operation_receipts (
+			id TEXT PRIMARY KEY,
+			actor TEXT NOT NULL,
+			target TEXT NOT NULL,
+			started_at TEXT NOT NULL,
+			completed_at TEXT NOT NULL,
+			result TEXT NOT NULL,
+			error TEXT NOT NULL,
+			administrative INTEGER NOT NULL CHECK (administrative IN (0, 1))
 		)`,
 	}
 	if _, err := transaction.ExecContext(ctx, migrations[0]); err != nil {

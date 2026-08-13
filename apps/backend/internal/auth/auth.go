@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,12 @@ type Identity struct {
 	UID         int    `json:"uid"`
 	GID         int    `json:"gid"`
 	BridgeToken string `json:"-"`
+	AdminToken  string `json:"-"`
+}
+
+type AdministrativeAccess struct {
+	Token string
+	Until time.Time
 }
 
 type PromptStyle string
@@ -96,6 +104,8 @@ type Request struct {
 	ConversationID string           `json:"conversationId,omitempty"`
 	Responses      []PromptResponse `json:"responses,omitempty"`
 	Token          string           `json:"token,omitempty"`
+	AdminToken     string           `json:"adminToken,omitempty"`
+	AdminTTL       uint32           `json:"adminTtlSeconds,omitempty"`
 	Columns        uint16           `json:"columns,omitempty"`
 	Rows           uint16           `json:"rows,omitempty"`
 	Action         string           `json:"action,omitempty"`
@@ -104,14 +114,35 @@ type Request struct {
 }
 
 func ServiceAction(ctx context.Context, path, token, scope, unit, action string) error {
+	return serviceActionRequest(ctx, path, Request{Operation: "service-action", Token: token, Scope: scope, Unit: unit, Action: action})
+}
+
+func ServiceActionAsAdmin(ctx context.Context, path, adminToken, scope, unit, action string) error {
+	return serviceActionRequest(ctx, path, Request{Operation: "service-action", AdminToken: adminToken, Scope: scope, Unit: unit, Action: action})
+}
+
+func serviceActionRequest(ctx context.Context, path string, request Request) error {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", path)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-	if err := json.NewEncoder(conn).Encode(Request{Operation: "service-action", Token: token, Scope: scope, Unit: unit, Action: action}); err != nil {
+	stopCancelWatch := make(chan struct{})
+	defer close(stopCancelWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopCancelWatch:
+		}
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		return err
 	}
 	var response Response
@@ -145,33 +176,14 @@ func bridgeTokenRequest(ctx context.Context, path, operation, token string) erro
 	return nil
 }
 
-func VerifyPassword(ctx context.Context, path, username, password string) (Identity, error) {
-	dialer := net.Dialer{Timeout: 3 * time.Second}
-	conn, err := dialer.DialContext(ctx, "unix", path)
-	if err != nil {
-		return Identity{}, err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
-	if err := json.NewEncoder(conn).Encode(Request{Operation: "verify", Username: username, Password: password}); err != nil {
-		return Identity{}, err
-	}
-	var response Response
-	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
-		return Identity{}, err
-	}
-	if response.Identity == nil {
-		return Identity{}, ErrAuthenticationFailed
-	}
-	return *response.Identity, nil
-}
-
 type Response struct {
 	Identity       *Identity `json:"identity,omitempty"`
 	BridgeToken    string    `json:"bridgeToken,omitempty"`
 	ConversationID string    `json:"conversationId,omitempty"`
 	Prompts        []Prompt  `json:"prompts,omitempty"`
 	Error          string    `json:"error,omitempty"`
+	AdminToken     string    `json:"adminToken,omitempty"`
+	AdminUntil     time.Time `json:"adminUntil,omitempty"`
 }
 
 type Authenticator interface {
@@ -186,6 +198,11 @@ type ConversationAuthenticator interface {
 type SessionController interface {
 	ConfirmUserSession(context.Context, string) error
 	CloseUserSession(context.Context, string) error
+}
+
+type AdministrativeController interface {
+	AuthorizeAdministrative(context.Context, string, string, time.Duration) (AdministrativeAccess, error)
+	RevokeAdministrative(context.Context, string) error
 }
 
 type PAMAuthenticator struct{ Service string }
@@ -319,6 +336,38 @@ func (auth SocketAuthenticator) CloseUserSession(ctx context.Context, token stri
 	return bridgeTokenRequest(ctx, auth.Path, "close-session", token)
 }
 
+func (auth SocketAuthenticator) AuthorizeAdministrative(ctx context.Context, bridgeToken, password string, ttl time.Duration) (AdministrativeAccess, error) {
+	seconds := ttl / time.Second
+	if seconds < 1 {
+		seconds = 1
+	}
+	if seconds > 24*time.Hour/time.Second {
+		seconds = 24 * time.Hour / time.Second
+	}
+	request := &Request{
+		Operation: "authorize-admin",
+		Token:     bridgeToken,
+		Password:  password,
+		AdminTTL:  uint32(seconds),
+	}
+	response, err := auth.conversationRequest(ctx, request)
+	request.Password = ""
+	if err != nil {
+		return AdministrativeAccess{}, err
+	}
+	if response.Error != "" {
+		return AdministrativeAccess{}, errors.New(response.Error)
+	}
+	if response.AdminToken == "" || response.AdminUntil.IsZero() {
+		return AdministrativeAccess{}, ErrAuthenticationFailed
+	}
+	return AdministrativeAccess{Token: response.AdminToken, Until: response.AdminUntil}, nil
+}
+
+func (auth SocketAuthenticator) RevokeAdministrative(ctx context.Context, token string) error {
+	return adminTokenRequest(ctx, auth.Path, "revoke-admin", token)
+}
+
 func (auth SocketAuthenticator) AdvanceConversation(ctx context.Context, request *ConversationRequest) (ConversationResponse, error) {
 	if request == nil {
 		return ConversationResponse{}, errConversationRequest
@@ -395,6 +444,31 @@ func (auth SocketAuthenticator) conversationRequest(ctx context.Context, request
 	return response, nil
 }
 
+func adminTokenRequest(ctx context.Context, path, operation, token string) error {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return fmt.Errorf("%w: connect to %s: %v", ErrServiceUnavailable, path, err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if err := json.NewEncoder(conn).Encode(Request{Operation: operation, AdminToken: token}); err != nil {
+		return fmt.Errorf("%w: send request: %v", ErrServiceUnavailable, err)
+	}
+	var response Response
+	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+		return fmt.Errorf("%w: read response: %v", ErrServiceUnavailable, err)
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	return nil
+}
+
 func (auth SocketAuthenticator) Authenticate(ctx context.Context, username, password string) (Identity, error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", auth.Path)
@@ -468,6 +542,24 @@ func (DevelopmentAuthenticator) Authenticate(_ context.Context, username, _ stri
 		username = current.Username
 	}
 	return lookupIdentity(username)
+}
+
+func (DevelopmentAuthenticator) AuthorizeAdministrative(_ context.Context, _ string, _ string, ttl time.Duration) (AdministrativeAccess, error) {
+	token, err := opaqueToken(32)
+	if err != nil {
+		return AdministrativeAccess{}, err
+	}
+	return AdministrativeAccess{Token: token, Until: time.Now().Add(ttl)}, nil
+}
+
+func (DevelopmentAuthenticator) RevokeAdministrative(context.Context, string) error { return nil }
+
+func opaqueToken(size int) (string, error) {
+	buffer := make([]byte, size)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
 func lookupIdentity(username string) (Identity, error) {

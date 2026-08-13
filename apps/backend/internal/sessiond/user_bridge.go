@@ -24,6 +24,7 @@ type userBridgeProcess struct {
 	input   io.WriteCloser
 	output  io.ReadCloser
 	done    chan error
+	exited  chan struct{}
 	once    sync.Once
 }
 
@@ -70,8 +71,11 @@ func startUserBridgeExecutable(session auth.UserSession, executable string) (*us
 		_ = output.Close()
 		return nil, err
 	}
-	process := &userBridgeProcess{command: command, input: input, output: output, done: make(chan error, 1)}
-	go func() { process.done <- command.Wait() }()
+	process := &userBridgeProcess{command: command, input: input, output: output, done: make(chan error, 1), exited: make(chan struct{})}
+	go func() {
+		process.done <- command.Wait()
+		close(process.exited)
+	}()
 	if err := process.ready(); err != nil {
 		_ = process.Close()
 		return nil, err

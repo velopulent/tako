@@ -4,8 +4,8 @@
 
 **Blocked by:** 02 — Establish complete PAM user sessions
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
-- [ ] Gateway cannot grant elevation by reauthenticating an otherwise unauthorized user.
-- [ ] Drop, logout, timeout, bridge loss, and session loss independently terminate Administrative access.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Gateway cannot grant elevation by reauthenticating an otherwise unauthorized user.
+- [x] Drop, logout, timeout, bridge loss, and session loss independently terminate Administrative access.
+- [ ] Dedicated browser multi-round MFA elevation UX and VM policy matrix are still pending; the root policy path is covered by unit/integration seams.

@@ -40,12 +40,9 @@ export function SettingsPage() {
 
   return (
     <main className="@container/main flex flex-1 flex-col gap-6 p-4 lg:p-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Settings</h2>
-        <p className="text-sm text-muted-foreground">
-          Server preferences and host integration capabilities.
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground">
+        Server preferences and host integration capabilities.
+      </p>
       <MonitoringSettings
         value={preference.data?.defaultInterval ?? "1m"}
         onChange={(value) => updatePreference.mutate(value)}

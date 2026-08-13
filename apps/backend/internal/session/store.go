@@ -20,7 +20,7 @@ type Session struct {
 	AdminUntil time.Time
 }
 
-func (store *Store) SetAdministrative(id string, until time.Time) bool {
+func (store *Store) SetAdministrative(id, token string, until time.Time) bool {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	current, ok := store.sessions[id]
@@ -28,11 +28,24 @@ func (store *Store) SetAdministrative(id string, until time.Time) bool {
 		return false
 	}
 	current.AdminUntil = until
+	current.Identity.AdminToken = token
 	store.sessions[id] = current
 	return true
 }
 
-func (store *Store) DropAdministrative(id string) { store.SetAdministrative(id, time.Time{}) }
+func (store *Store) DropAdministrative(id string) string {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current, ok := store.sessions[id]
+	if !ok {
+		return ""
+	}
+	token := current.Identity.AdminToken
+	current.AdminUntil = time.Time{}
+	current.Identity.AdminToken = ""
+	store.sessions[id] = current
+	return token
+}
 
 type Store struct {
 	mu       sync.Mutex

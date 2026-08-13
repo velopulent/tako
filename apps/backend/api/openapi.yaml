@@ -181,14 +181,48 @@ paths:
   /admin/elevate:
     post:
       operationId: gainAdministrativeAccess
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdministrativeElevationRequest'
       responses:
-        '200': { description: Administrative access granted }
+        '200':
+          description: Administrative access granted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdministrativeAccess'
+        '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /admin/drop:
     post:
       operationId: dropAdministrativeAccess
       responses:
         '204': { description: Administrative access dropped }
+  /operations:
+    get:
+      operationId: listOperationReceipts
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Sanitized operation receipts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/OperationReceipt' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
   /storage:
     get:
       operationId: listStorage
@@ -240,6 +274,30 @@ components:
         reason: { type: string }
         missingDependency: { type: string }
         setupGuidance: { type: string }
+    AdministrativeElevationRequest:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password: { type: string, maxLength: 4096 }
+    AdministrativeAccess:
+      type: object
+      required: [administrative, until]
+      properties:
+        administrative: { type: boolean, const: true }
+        until: { type: string, format: date-time }
+    OperationReceipt:
+      type: object
+      required: [id, actor, target, startedAt, completedAt, result, administrative]
+      properties:
+        id: { type: string }
+        actor: { type: string }
+        target: { type: string }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        result: { type: string, enum: [succeeded, failed] }
+        error: { type: string }
+        administrative: { type: boolean }
     LoginRequest:
       oneOf:
         - type: object

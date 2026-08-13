@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestOpenMigratesAndSecuresDatabase(t *testing.T) {
@@ -34,8 +35,8 @@ func TestOpenMigratesAndSecuresDatabase(t *testing.T) {
 	if err := store.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
-		t.Fatalf("database version is %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("database version is %d, want 2", version)
 	}
 }
 
@@ -86,5 +87,45 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("migration recorded %d times, want 1", count)
+	}
+	var version int
+	if err := second.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 {
+		t.Fatalf("database version is %d, want 2", version)
+	}
+}
+
+func TestOperationReceiptsAreDurableAndBounded(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	started := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	recorded, err := store.RecordOperation(context.Background(), OperationReceipt{
+		Actor:          "operator",
+		Target:         "system/sshd.service/restart",
+		StartedAt:      started,
+		CompletedAt:    started.Add(time.Second),
+		Result:         "succeeded",
+		Administrative: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded.ID == "" {
+		t.Fatal("receipt has no opaque id")
+	}
+	items, err := store.OperationReceipts(context.Background(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Target != recorded.Target || !items[0].Administrative {
+		t.Fatalf("unexpected receipts: %#v", items)
+	}
+	if _, err := store.RecordOperation(context.Background(), OperationReceipt{Actor: "", Target: "secret", Result: "failed"}); err == nil {
+		t.Fatal("invalid receipt was accepted")
 	}
 }

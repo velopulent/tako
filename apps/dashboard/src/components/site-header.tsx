@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Link, useLocation } from "@tanstack/react-router"
+import { useLocation } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   KeyRoundIcon,
@@ -11,6 +11,7 @@ import {
 
 import type { User } from "@/lib/api"
 import { api } from "@/lib/api"
+import { pageTitle } from "@/lib/page-title"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,14 +23,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb"
 import { Button } from "@/components/ui/button"
 import {
   InputGroup,
@@ -39,20 +32,6 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { useTheme } from "@/components/theme-provider"
-
-const titles: Record<string, string> = {
-  dashboard: "Dashboard",
-  logs: "System logs",
-  users: "Users",
-  updates: "Updates",
-  terminal: "Terminal",
-  metrics: "Metrics",
-  services: "Services",
-  storage: "Storage",
-  network: "Network",
-  processes: "Processes",
-  settings: "Settings",
-}
 
 export function SiteHeader({
   user,
@@ -75,7 +54,7 @@ export function SiteHeader({
       }>("/admin"),
     refetchInterval: 10_000,
   })
-  const segments = location.pathname.split("/").filter(Boolean)
+  const currentPage = pageTitle(location.pathname)
   const remaining = admin.data?.until
     ? Math.max(
         0,
@@ -116,23 +95,9 @@ export function SiteHeader({
           orientation="vertical"
           className="mx-1 h-4 data-vertical:self-auto"
         />
-        <Breadcrumb className="min-w-0 flex-1">
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbLink render={<Link to="/" />}>
-                {segments.length ? titles[segments[0]] || "Tako" : "Dashboard"}
-              </BreadcrumbLink>
-            </BreadcrumbItem>
-            {segments.slice(1).map((segment) => (
-              <React.Fragment key={segment}>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem>
-                  <BreadcrumbPage>{decodeURIComponent(segment)}</BreadcrumbPage>
-                </BreadcrumbItem>
-              </React.Fragment>
-            ))}
-          </BreadcrumbList>
-        </Breadcrumb>
+        <p className="min-w-0 flex-1 truncate text-sm font-medium">
+          {currentPage}
+        </p>
         {admin.data?.administrative ? (
           <Button variant="outline" size="sm" onClick={drop}>
             <KeyRoundIcon data-icon="inline-start" />

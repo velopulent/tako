@@ -4,6 +4,8 @@
 package sessiond
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -28,19 +30,25 @@ import (
 )
 
 type bridgeGrant struct {
-	identity auth.Identity
-	expires  time.Time
-	terminal *os.File
-	bridge   io.Closer
-	active   bool
-	closePAM func()
-	timer    *time.Timer
+	identity     auth.Identity
+	expires      time.Time
+	adminToken   string
+	adminExpires time.Time
+	terminal     *os.File
+	bridge       io.Closer
+	active       bool
+	closePAM     func()
+	timer        *time.Timer
 }
 
 type grantStore struct {
 	mu     sync.Mutex
 	values map[string]bridgeGrant
 }
+
+type administrativePolicy func(context.Context, auth.Identity, string) error
+
+var errAdministrativeUnavailable = errors.New("administrative policy unavailable")
 
 // Run starts the privileged local session service. The caller selects this
 // process mode explicitly; it never shares a process with the web gateway.
@@ -86,6 +94,7 @@ func Run(args []string) error {
 
 	service := auth.PAMAuthenticator{Service: "tako"}
 	grants := &grantStore{values: make(map[string]bridgeGrant)}
+	policy := newAdministrativePolicy()
 	conversations := newConversationStore(service, func(session auth.UserSession) (string, error) {
 		return grants.addUserSession(session)
 	})
@@ -100,7 +109,7 @@ func Run(args []string) error {
 			logger.Warn("connection accept failed", zap.Error(err))
 			continue
 		}
-		go handle(conn, service, conversations, grants, logger)
+		go handle(conn, service, conversations, grants, policy, logger)
 	}
 }
 
@@ -117,19 +126,14 @@ func activatedListener() (net.Listener, bool, error) {
 	return listener, true, err
 }
 
-func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, logger *zap.Logger) {
+func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
-	decoder := json.NewDecoder(io.LimitReader(conn, 16<<10))
-	decoder.DisallowUnknownFields()
+	reader := bufio.NewReaderSize(conn, 16<<10)
 	encoder := json.NewEncoder(conn)
 	var request auth.Request
-	if err := decoder.Decode(&request); err != nil {
+	if err := decodeRequestLine(reader, &request); err != nil {
 		logger.Warn("session request rejected", zap.String("reason", "invalid-request"), zap.Error(err))
-		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
-		return
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -194,8 +198,45 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 		_ = encoder.Encode(auth.Response{})
 		return
 	}
+	if request.Operation == "authorize-admin" {
+		if request.Token == "" || request.AdminToken != "" || request.Username != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.AdminTTL > 3600 || len(request.Password) > 4096 {
+			_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
+			return
+		}
+		if policy == nil {
+			request.Password = ""
+			_ = encoder.Encode(auth.Response{Error: "administrative-policy-unavailable"})
+			return
+		}
+		adminCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		adminToken, until, err := grants.authorize(adminCtx, request.Token, request.Password, request.AdminTTL, policy)
+		cancel()
+		request.Password = ""
+		if err != nil {
+			code := "administrative-access-denied"
+			if errors.Is(err, errAdministrativeUnavailable) {
+				code = "administrative-policy-unavailable"
+			}
+			_ = encoder.Encode(auth.Response{Error: code})
+			return
+		}
+		_ = encoder.Encode(auth.Response{AdminToken: adminToken, AdminUntil: until})
+		return
+	}
+	if request.Operation == "revoke-admin" {
+		if request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.AdminTTL != 0 {
+			_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
+			return
+		}
+		if !grants.revokeAdmin(request.AdminToken) {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		_ = encoder.Encode(auth.Response{})
+		return
+	}
 	if request.Operation == "close-session" {
-		if !grants.close(request.Token) {
+		if request.Token == "" || request.AdminToken != "" || !grants.close(request.Token) {
 			_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
 			return
 		}
@@ -203,7 +244,7 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 		return
 	}
 	if request.Operation == "confirm-session" {
-		if !grants.confirm(request.Token) {
+		if request.Token == "" || request.AdminToken != "" || !grants.confirm(request.Token) {
 			_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
 			return
 		}
@@ -211,6 +252,10 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 		return
 	}
 	if request.Operation == "terminal" {
+		if request.Token == "" || request.AdminToken != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
+			_ = encoder.Encode(auth.Response{Error: "invalid-terminal-request"})
+			return
+		}
 		_ = conn.SetDeadline(time.Time{})
 		identity, ok := grants.claim(request.Token)
 		if !ok {
@@ -219,10 +264,14 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 			return
 		}
 		logger.Info("terminal starting", zap.String("username", identity.Username), zap.Int("uid", identity.UID))
-		runTerminal(conn, identity, request.Columns, request.Rows, grants, request.Token, logger)
+		runTerminal(conn, reader, identity, request.Columns, request.Rows, grants, request.Token, logger)
 		return
 	}
 	if request.Operation == "resize-terminal" {
+		if request.Token == "" || request.AdminToken != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
+			_ = encoder.Encode(auth.Response{Error: "invalid-terminal-request"})
+			return
+		}
 		responseError := grants.resize(request.Token, request.Columns, request.Rows)
 		if responseError != "" {
 			logger.Warn("terminal resize rejected", zap.String("reason", responseError))
@@ -231,24 +280,45 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 		return
 	}
 	if request.Operation == "service-action" {
-		identity, ok := grants.get(request.Token)
-		if !ok {
-			_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+		if request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 {
+			_ = encoder.Encode(auth.Response{Error: "invalid-service-request"})
 			return
 		}
-		errorCode := runServiceAction(request.Scope, request.Unit, request.Action)
+		var identity auth.Identity
+		var ok bool
+		if request.Scope == "system" {
+			if request.Token != "" || request.AdminToken == "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
+				return
+			}
+			identity, ok = grants.adminIdentity(request.AdminToken)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+				return
+			}
+		} else {
+			if request.Token == "" || request.AdminToken != "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-service-request"})
+				return
+			}
+			identity, ok = grants.get(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+				return
+			}
+		}
+		operation, operationErr := parseServiceOperation(request.Scope, request.Unit, request.Action)
+		if operationErr != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-service-operation"})
+			return
+		}
+		errorCode := runServiceAction(operation)
 		logger.Info("service action", zap.String("username", identity.Username), zap.String("scope", request.Scope), zap.String("unit", request.Unit), zap.String("action", request.Action), zap.String("result", errorCode))
 		_ = encoder.Encode(auth.Response{Error: errorCode})
 		return
 	}
-	if request.Operation == "verify" {
-		identity, err := service.Authenticate(context.Background(), request.Username, request.Password)
-		request.Password = ""
-		if err != nil {
-			_ = encoder.Encode(auth.Response{Error: "authentication-failed"})
-			return
-		}
-		_ = encoder.Encode(auth.Response{Identity: &identity})
+	if request.Operation != "authenticate" || request.Token != "" || request.AdminToken != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Username == "" || request.Password == "" {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
 	identity, closePAM, err := service.OpenSession(request.Username, request.Password)
@@ -269,15 +339,11 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 	_ = encoder.Encode(auth.Response{Identity: &identity, BridgeToken: token})
 }
 
-func runServiceAction(scope, unit, action string) string {
-	allowed := map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true, "mask": true, "unmask": true}
-	if (scope != "system" && scope != "user") || !allowed[action] || unit == "" || strings.ContainsAny(unit, "/\x00") {
-		return "unsupported-service-action"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+func runServiceAction(operation serviceOperation) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	arguments := []string{action, "--", unit}
-	if scope == "user" {
+	arguments := []string{operation.Action, "--", operation.Unit}
+	if operation.Scope == "user" {
 		arguments = append([]string{"--user"}, arguments...)
 	}
 	if err := exec.CommandContext(ctx, "systemctl", arguments...).Run(); err != nil {
@@ -404,6 +470,78 @@ func (store *grantStore) get(token string) (auth.Identity, bool) {
 	return grant.identity, true
 }
 
+func (store *grantStore) authorize(ctx context.Context, token, password string, ttl uint32, policy administrativePolicy) (string, time.Time, error) {
+	store.mu.Lock()
+	grant, ok := store.values[token]
+	if !ok || time.Now().After(grant.expires) {
+		store.mu.Unlock()
+		if ok {
+			store.close(token)
+		}
+		return "", time.Time{}, errors.New("invalid-bridge-token")
+	}
+	identity := grant.identity
+	store.mu.Unlock()
+	if err := policy(ctx, identity, password); err != nil {
+		return "", time.Time{}, err
+	}
+	adminToken, err := randomToken(32)
+	if err != nil {
+		return "", time.Time{}, errAdministrativeUnavailable
+	}
+	duration := time.Duration(ttl) * time.Second
+	if duration < time.Minute {
+		duration = 5 * time.Minute
+	}
+	if duration > time.Hour {
+		duration = time.Hour
+	}
+	until := time.Now().Add(duration)
+	store.mu.Lock()
+	grant, ok = store.values[token]
+	if !ok || time.Now().After(grant.expires) {
+		store.mu.Unlock()
+		return "", time.Time{}, errors.New("invalid-bridge-token")
+	}
+	grant.adminToken = adminToken
+	grant.adminExpires = until
+	store.values[token] = grant
+	store.mu.Unlock()
+	return adminToken, until, nil
+}
+
+func (store *grantStore) adminIdentity(token string) (auth.Identity, bool) {
+	if token == "" {
+		return auth.Identity{}, false
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	now := time.Now()
+	for _, grant := range store.values {
+		if grant.adminToken == token && !grant.adminExpires.IsZero() && now.Before(grant.adminExpires) && now.Before(grant.expires) {
+			return grant.identity, true
+		}
+	}
+	return auth.Identity{}, false
+}
+
+func (store *grantStore) revokeAdmin(token string) bool {
+	if token == "" {
+		return false
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for key, grant := range store.values {
+		if grant.adminToken == token {
+			grant.adminToken = ""
+			grant.adminExpires = time.Time{}
+			store.values[key] = grant
+			return true
+		}
+	}
+	return false
+}
+
 func (store *grantStore) claim(token string) (auth.Identity, bool) {
 	store.mu.Lock()
 	grant, ok := store.values[token]
@@ -485,6 +623,10 @@ func (store *grantStore) addUserSession(session auth.UserSession) (string, error
 	if err != nil {
 		return "", err
 	}
+	go func() {
+		<-userBridge.exited
+		store.close(token)
+	}()
 	return token, nil
 }
 
@@ -499,7 +641,37 @@ func (store *grantStore) release(token string) {
 	store.mu.Unlock()
 }
 
-func runTerminal(conn net.Conn, identity auth.Identity, columns, rows uint16, grants *grantStore, token string, logger *zap.Logger) {
+func decodeRequestLine(reader *bufio.Reader, request *auth.Request) error {
+	const maxRequestBytes = 16 << 10
+	var payload []byte
+	for {
+		part, err := reader.ReadSlice('\n')
+		payload = append(payload, part...)
+		if len(payload) > maxRequestBytes {
+			return errors.New("request exceeds limit")
+		}
+		if err == nil {
+			break
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return err
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(request); err != nil {
+		return err
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return errors.New("trailing request data")
+	}
+	return nil
+}
+
+func runTerminal(conn net.Conn, reader io.Reader, identity auth.Identity, columns, rows uint16, grants *grantStore, token string, logger *zap.Logger) {
 	defer grants.release(token)
 	account, err := user.LookupId(strconv.Itoa(identity.UID))
 	if err != nil {
@@ -548,7 +720,7 @@ func runTerminal(conn net.Conn, identity auth.Identity, columns, rows uint16, gr
 	}
 	defer terminal.Close()
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(terminal, conn); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(terminal, reader); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(conn, terminal); done <- struct{}{} }()
 	<-done
 	_ = terminal.Close()

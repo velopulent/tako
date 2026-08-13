@@ -4,8 +4,8 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Storage shows capacity plus separate read/write views; Network shows separate receive/transmit views.
-- [ ] React code is split into focused components and passes typecheck, mobile, and dark-mode checks.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Storage shows capacity plus separate read/write views; Network shows separate receive/transmit views.
+- [x] React code is split into focused components and passes typecheck, mobile, and dark-mode checks.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
