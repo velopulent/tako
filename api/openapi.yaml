@@ -1,0 +1,138 @@
+openapi: 3.1.0
+info:
+  title: Tako Internal API
+  version: 0.1.0
+  description: Internal dashboard contract. Third-party compatibility is not guaranteed during v1.
+servers:
+  - url: /api/v1
+paths:
+  /auth/login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated session
+        '401':
+          $ref: '#/components/responses/Problem'
+  /auth/session:
+    get:
+      operationId: getSession
+      responses:
+        '200':
+          description: Current session
+  /capabilities:
+    get:
+      operationId: listCapabilities
+      responses:
+        '200':
+          description: Runtime module capabilities
+  /dashboard:
+    get:
+      operationId: getDashboard
+      responses:
+        '200':
+          description: Host and current metric snapshot
+  /metrics:
+    get:
+      operationId: getMetricHistory
+      responses:
+        '200':
+          description: Bounded in-memory metric history
+  /metrics/stream:
+    get:
+      operationId: streamMetrics
+      responses:
+        '200':
+          description: text/event-stream of metric events
+  /logs:
+    get:
+      operationId: listLogs
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200': { description: Recent journal entries }
+        '503': { $ref: '#/components/responses/Problem' }
+  /logs/stream:
+    get:
+      operationId: streamLogs
+      responses:
+        '200': { description: text/event-stream of new journal entries }
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        '200': { description: Local users }
+  /updates:
+    get:
+      operationId: getUpdateStatus
+      responses:
+        '200': { description: PackageKit availability }
+  /services:
+    get:
+      operationId: listServices
+      responses:
+        '200': { description: systemd unit snapshot }
+        '503': { $ref: '#/components/responses/Problem' }
+  /storage:
+    get:
+      operationId: listStorage
+      responses:
+        '200': { description: Mounted filesystem inventory }
+  /network:
+    get:
+      operationId: listNetworkInterfaces
+      responses:
+        '200': { description: Network interface inventory }
+  /processes:
+    get:
+      operationId: listProcesses
+      responses:
+        '200': { description: Process inventory }
+  /terminal:
+    get:
+      operationId: getTerminalStatus
+      responses:
+        '200': { description: User bridge readiness }
+  /terminal/ws:
+    get:
+      operationId: openTerminal
+      parameters:
+        - in: query
+          name: columns
+          schema: { type: integer, minimum: 1, maximum: 65535 }
+        - in: query
+          name: rows
+          schema: { type: integer, minimum: 1, maximum: 65535 }
+      responses:
+        '101': { description: Binary PTY WebSocket }
+components:
+  schemas:
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, maxLength: 256 }
+        password: { type: string, maxLength: 4096 }
+    Problem:
+      type: object
+      required: [title, status, code]
+      properties:
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        detail: { type: string }
+  responses:
+    Problem:
+      description: Structured API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'

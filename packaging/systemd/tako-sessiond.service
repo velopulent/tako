@@ -1,0 +1,13 @@
+[Unit]
+Description=Tako PAM session service
+
+[Service]
+ExecStart=/usr/bin/tako sessiond --socket /run/tako/session.sock
+User=root
+Group=tako-session
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native

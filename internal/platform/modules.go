@@ -1,0 +1,357 @@
+package platform
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"net"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/godbus/dbus/v5"
+)
+
+type Process struct {
+	PID     int     `json:"pid"`
+	PPID    int     `json:"ppid"`
+	User    string  `json:"user"`
+	Command string  `json:"command"`
+	State   string  `json:"state"`
+	CPUTime float64 `json:"cpuTime"`
+	Memory  uint64  `json:"memory"`
+}
+
+func Processes() ([]Process, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	clockTicks := float64(100)
+	pageSize := uint64(os.Getpagesize())
+	users := map[string]string{}
+	result := make([]Process, 0, len(entries))
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || !entry.IsDir() {
+			continue
+		}
+		stat, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		line := string(stat)
+		open, close := strings.IndexByte(line, '('), strings.LastIndexByte(line, ')')
+		if open < 0 || close <= open {
+			continue
+		}
+		fields := strings.Fields(line[close+1:])
+		if len(fields) < 22 {
+			continue
+		}
+		ppid, _ := strconv.Atoi(fields[1])
+		utime, _ := strconv.ParseUint(fields[11], 10, 64)
+		stime, _ := strconv.ParseUint(fields[12], 10, 64)
+		rss, _ := strconv.ParseUint(fields[21], 10, 64)
+		command := line[open+1 : close]
+		if cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline")); err == nil && len(cmdline) > 0 {
+			command = strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))
+		}
+		uid := processUID(entry.Name())
+		username := users[uid]
+		if username == "" {
+			username = uid
+			if account, err := user.LookupId(uid); err == nil {
+				username = account.Username
+			}
+			users[uid] = username
+		}
+		result = append(result, Process{PID: pid, PPID: ppid, User: username, Command: command, State: fields[0], CPUTime: float64(utime+stime) / clockTicks, Memory: rss * pageSize})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Memory > result[j].Memory })
+	return result, nil
+}
+
+func processUID(pid string) string {
+	file, err := os.Open(filepath.Join("/proc", pid, "status"))
+	if err != nil {
+		return "?"
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "Uid:") {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) > 1 {
+				return fields[1]
+			}
+		}
+	}
+	return "?"
+}
+
+type User struct {
+	Username string `json:"username"`
+	UID      int    `json:"uid"`
+	GID      int    `json:"gid"`
+	Name     string `json:"name"`
+	Home     string `json:"home"`
+	Shell    string `json:"shell"`
+	System   bool   `json:"system"`
+}
+
+func Users() ([]User, error) {
+	file, err := os.Open("/etc/passwd")
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	result := []User{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), ":")
+		if len(fields) != 7 {
+			continue
+		}
+		uid, err1 := strconv.Atoi(fields[2])
+		gid, err2 := strconv.Atoi(fields[3])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		name := strings.Split(fields[4], ",")[0]
+		result = append(result, User{Username: fields[0], UID: uid, GID: gid, Name: name, Home: fields[5], Shell: fields[6], System: uid < 1000})
+	}
+	return result, scanner.Err()
+}
+
+type Mount struct {
+	Source     string  `json:"source"`
+	Target     string  `json:"target"`
+	Filesystem string  `json:"filesystem"`
+	Total      uint64  `json:"total"`
+	Used       uint64  `json:"used"`
+	Available  uint64  `json:"available"`
+	Percent    float64 `json:"percent"`
+}
+
+func Mounts() ([]Mount, error) {
+	file, err := os.Open("/proc/self/mounts")
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	seen := map[string]bool{}
+	result := []Mount{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 3 || seen[fields[1]] || pseudoFilesystem(fields[2]) {
+			continue
+		}
+		target := strings.ReplaceAll(fields[1], `\040`, " ")
+		var stat syscall.Statfs_t
+		if syscall.Statfs(target, &stat) != nil {
+			continue
+		}
+		seen[target] = true
+		total := stat.Blocks * uint64(stat.Bsize)
+		available := stat.Bavail * uint64(stat.Bsize)
+		used := total - stat.Bfree*uint64(stat.Bsize)
+		percent := float64(0)
+		if total > 0 {
+			percent = 100 * float64(used) / float64(total)
+		}
+		result = append(result, Mount{Source: fields[0], Target: target, Filesystem: fields[2], Total: total, Used: used, Available: available, Percent: percent})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Target < result[j].Target })
+	return result, scanner.Err()
+}
+
+func pseudoFilesystem(name string) bool {
+	switch name {
+	case "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2", "securityfs", "pstore", "debugfs", "tracefs", "configfs", "fusectl", "mqueue", "hugetlbfs", "autofs":
+		return true
+	default:
+		return false
+	}
+}
+
+type Interface struct {
+	Name      string   `json:"name"`
+	Index     int      `json:"index"`
+	MTU       int      `json:"mtu"`
+	Hardware  string   `json:"hardware"`
+	Addresses []string `json:"addresses"`
+	Up        bool     `json:"up"`
+	RX        uint64   `json:"rx"`
+	TX        uint64   `json:"tx"`
+}
+
+func Interfaces() ([]Interface, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Interface, 0, len(interfaces))
+	for _, item := range interfaces {
+		addresses, _ := item.Addrs()
+		values := make([]string, 0, len(addresses))
+		for _, address := range addresses {
+			values = append(values, address.String())
+		}
+		result = append(result, Interface{Name: item.Name, Index: item.Index, MTU: item.MTU, Hardware: item.HardwareAddr.String(), Addresses: values, Up: item.Flags&net.FlagUp != 0, RX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/rx_bytes")), TX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/tx_bytes"))})
+	}
+	return result, nil
+}
+
+func readUint(path string) uint64 {
+	payload, _ := os.ReadFile(path)
+	value, _ := strconv.ParseUint(strings.TrimSpace(string(payload)), 10, 64)
+	return value
+}
+
+type Unit struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	LoadState   string `json:"loadState"`
+	ActiveState string `json:"activeState"`
+	SubState    string `json:"subState"`
+}
+
+func Units(ctx context.Context) ([]Unit, error) {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	var raw []struct {
+		Name, Description, LoadState, ActiveState, SubState, Following string
+		Path                                                           dbus.ObjectPath
+		JobID                                                          uint32
+		JobType                                                        string
+		JobPath                                                        dbus.ObjectPath
+	}
+	err = conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").CallWithContext(ctx, "org.freedesktop.systemd1.Manager.ListUnits", 0).Store(&raw)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Unit, 0, len(raw))
+	for _, item := range raw {
+		if strings.HasSuffix(item.Name, ".service") {
+			result = append(result, Unit{Name: item.Name, Description: item.Description, LoadState: item.LoadState, ActiveState: item.ActiveState, SubState: item.SubState})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ActiveState != result[j].ActiveState {
+			return result[i].ActiveState == "active"
+		}
+		return result[i].Name < result[j].Name
+	})
+	return result, nil
+}
+
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Priority  string `json:"priority"`
+	Unit      string `json:"unit"`
+	Message   string `json:"message"`
+}
+
+func Logs(ctx context.Context, limit int) ([]LogEntry, error) {
+	if limit < 1 || limit > 500 {
+		limit = 200
+	}
+	command := exec.CommandContext(ctx, "journalctl", "--no-pager", "--output=json", "--reverse", "-n", strconv.Itoa(limit))
+	output, err := command.Output()
+	if err != nil {
+		return nil, err
+	}
+	result := []LogEntry{}
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	for scanner.Scan() {
+		entry, ok := parseLogEntry(scanner.Bytes())
+		if !ok {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return result, scanner.Err()
+}
+
+// FollowLogs emits new journal entries until ctx is cancelled. The subprocess
+// inherits cancellation, while the synchronous callback supplies backpressure.
+func FollowLogs(ctx context.Context, emit func(LogEntry) error) error {
+	command := exec.CommandContext(ctx, "journalctl", "--no-pager", "--output=json", "--follow", "--lines=0")
+	pipe, err := command.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(pipe)
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	for scanner.Scan() {
+		entry, ok := parseLogEntry(scanner.Bytes())
+		if ok && emit(entry) != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	err = command.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+func parseLogEntry(payload []byte) (LogEntry, bool) {
+	var row map[string]any
+	if json.Unmarshal(payload, &row) != nil {
+		return LogEntry{}, false
+	}
+	micros, _ := strconv.ParseInt(stringValue(row["__REALTIME_TIMESTAMP"]), 10, 64)
+	return LogEntry{Timestamp: time.UnixMicro(micros).UTC().Format(time.RFC3339Nano), Priority: stringValue(row["PRIORITY"]), Unit: stringValue(row["_SYSTEMD_UNIT"]), Message: stringValue(row["MESSAGE"])}, true
+}
+
+func stringValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case float64:
+		return strconv.FormatInt(int64(typed), 10)
+	default:
+		return ""
+	}
+}
+
+type UpdateStatus struct {
+	Available bool   `json:"available"`
+	Backend   string `json:"backend"`
+	Message   string `json:"message"`
+}
+
+func Updates(ctx context.Context) UpdateStatus {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return UpdateStatus{Message: "System D-Bus unavailable"}
+	}
+	defer conn.Close()
+	var hasOwner bool
+	err = conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.NameHasOwner", 0, "org.freedesktop.PackageKit").Store(&hasOwner)
+	if err != nil || !hasOwner {
+		return UpdateStatus{Backend: "PackageKit", Message: "PackageKit is not running"}
+	}
+	return UpdateStatus{Available: true, Backend: "PackageKit", Message: "PackageKit is ready; update transactions require privileged bridge authorization."}
+}
