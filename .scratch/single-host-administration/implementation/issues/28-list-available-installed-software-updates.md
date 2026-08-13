@@ -4,8 +4,8 @@
 
 **Blocked by:** 03 — Enrich capability reporting
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Adapter selection probes roles/contracts/version and reports external locks.
-- [ ] Updates show versions, severity when available, size, and details without general package management.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Adapter selection probes roles/contracts/version and reports external locks.
+- [x] Updates show versions, severity when available, size, and details without general package management.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

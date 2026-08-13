@@ -2,7 +2,7 @@ import * as React from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
-import { RefreshCwIcon, TerminalIcon } from "lucide-react"
+import { TerminalIcon } from "lucide-react"
 
 import {
   api,
@@ -14,7 +14,6 @@ import {
   type ProcessInfo,
   type ServiceInfo,
   type TerminalStatus,
-  type UpdateStatus,
 } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -62,6 +61,7 @@ import { UserInventory } from "@/components/user-inventory"
 import { GroupInventory } from "@/components/group-inventory"
 import { PasswordManager } from "@/components/password-manager"
 import { SSHKeyManager } from "@/components/ssh-key-manager"
+import { UpdateInventory } from "@/components/update-inventory"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -646,17 +646,9 @@ function UsersPage() {
   )
 }
 function UpdatesPage() {
-  const query = useQuery({
-    queryKey: ["updates"],
-    queryFn: () => api<UpdateStatus>("/updates"),
-  })
   return (
-    <Page description="Package backend readiness.">
-      <Alert>
-        <RefreshCwIcon />
-        <AlertTitle>{query.data?.backend || "Package updates"}</AlertTitle>
-        <AlertDescription>{query.data?.message}</AlertDescription>
-      </Alert>
+    <Page description="Installed-software update inventory without package-management writes.">
+      <UpdateInventory />
     </Page>
   )
 }

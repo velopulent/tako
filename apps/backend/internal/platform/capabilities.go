@@ -261,8 +261,15 @@ func updateCapability(ctx context.Context, probe runtimeProbe, names map[string]
 	if busErr == nil && busAvailable(names, "org.freedesktop.PackageKit") {
 		return Capability{ID: "updates", State: StateReady, Backend: "PackageKit", Readable: true, Contract: "dbus-read-only"}
 	}
-	for _, candidate := range []struct{ command, argument string }{{"apt-get", "--version"}, {"dnf", "--version"}} {
-		if version, ok := probe.CommandVersion(ctx, candidate.command, candidate.argument); ok {
+	for _, candidate := range []struct {
+		command      string
+		argument     string
+		minimumMajor int
+	}{
+		{command: "apt-get", argument: "--version", minimumMajor: 1},
+		{command: "dnf", argument: "--version", minimumMajor: 4},
+	} {
+		if version, ok := probe.CommandVersion(ctx, candidate.command, candidate.argument); ok && versionAtLeast(version, candidate.minimumMajor) {
 			return Capability{ID: "updates", State: StateDegraded, Backend: candidate.command, Version: version, Readable: true, Contract: "bounded-command-read-only", Reason: "PackageKit is unavailable; mutations fail closed", MissingDependency: "org.freedesktop.PackageKit", SetupGuidance: "Install and start PackageKit to enable managed updates."}
 		}
 	}

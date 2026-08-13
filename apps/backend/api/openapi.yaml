@@ -524,7 +524,11 @@ paths:
     get:
       operationId: getUpdateStatus
       responses:
-        '200': { description: PackageKit availability }
+        '200':
+          description: Bounded installed-software update inventory with backend contract and lock state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdateStatus' }
   /services:
     get:
       operationId: listServices
@@ -1026,6 +1030,34 @@ components:
         reason: { type: string }
         missingDependency: { type: string }
         setupGuidance: { type: string }
+    UpdateStatus:
+      type: object
+      required: [available, backend, contract, packages, externalLock, message]
+      properties:
+        available: { type: boolean }
+        backend: { type: string, maxLength: 64 }
+        version: { type: string, maxLength: 128 }
+        contract: { type: string, enum: [dbus-read-only, bounded-command-read-only, unavailable] }
+        packages:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/UpdatePackage' }
+        externalLock: { type: boolean }
+        lockReason: { type: string, maxLength: 512 }
+        message: { type: string, maxLength: 512 }
+        reason: { type: string, maxLength: 512 }
+    UpdatePackage:
+      type: object
+      required: [name, candidateVersion]
+      properties:
+        name: { type: string, maxLength: 256 }
+        architecture: { type: string, maxLength: 32 }
+        currentVersion: { type: string, maxLength: 256 }
+        candidateVersion: { type: string, maxLength: 256 }
+        severity: { type: string, maxLength: 64 }
+        size: { type: integer, minimum: 0 }
+        summary: { type: string, maxLength: 1024 }
+        details: { type: string, maxLength: 4096 }
     AdministrativeElevationRequest:
       type: object
       required: [password]

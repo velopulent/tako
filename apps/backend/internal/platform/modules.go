@@ -566,23 +566,3 @@ func stringValue(value any) string {
 		return ""
 	}
 }
-
-type UpdateStatus struct {
-	Available bool   `json:"available"`
-	Backend   string `json:"backend"`
-	Message   string `json:"message"`
-}
-
-func Updates(ctx context.Context) UpdateStatus {
-	conn, err := dbus.ConnectSystemBus()
-	if err != nil {
-		return UpdateStatus{Message: "System D-Bus unavailable"}
-	}
-	defer conn.Close()
-	var hasOwner bool
-	err = conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.NameHasOwner", 0, "org.freedesktop.PackageKit").Store(&hasOwner)
-	if err != nil || !hasOwner {
-		return UpdateStatus{Backend: "PackageKit", Message: "PackageKit is not running"}
-	}
-	return UpdateStatus{Available: true, Backend: "PackageKit", Message: "PackageKit is ready; update transactions require privileged bridge authorization."}
-}

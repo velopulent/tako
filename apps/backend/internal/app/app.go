@@ -63,6 +63,7 @@ type Server struct {
 	readPowerStatusFn     func(context.Context) (platform.PowerStatus, error)
 	readUnitDetails       func(context.Context, string, string) (platform.UnitDetail, error)
 	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
+	readUpdatesFn         func(context.Context) platform.UpdateStatus
 	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	previewAccountFn      func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
@@ -121,6 +122,7 @@ func New(cfg config.Config) (*Server, error) {
 		readPowerStatusFn:     platform.ReadPowerStatus,
 		readUnitDetails:       platform.UnitDetails,
 		readUnitConfiguration: platform.ReadUnitConfiguration,
+		readUpdatesFn:         platform.Updates,
 		applyTimer: func(ctx context.Context, request auth.TimerRequest) (platform.TimerState, error) {
 			return auth.ApplyTimer(ctx, cfg.SessionSocket, request)
 		},
@@ -1581,7 +1583,11 @@ func (server *Server) logStream(writer http.ResponseWriter, request *http.Reques
 }
 
 func (server *Server) updates(writer http.ResponseWriter, request *http.Request) {
-	writeJSON(writer, http.StatusOK, platform.Updates(request.Context()))
+	if server.readUpdatesFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "The update inventory service is unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, server.readUpdatesFn(request.Context()))
 }
 
 func (server *Server) terminalStatus(writer http.ResponseWriter, request *http.Request) {

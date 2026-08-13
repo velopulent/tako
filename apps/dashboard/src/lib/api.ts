@@ -490,7 +490,23 @@ export type SavedLogView = {
 export type UpdateStatus = {
   available: boolean
   backend: string
+  version?: string
+  contract: string
+  packages: UpdatePackage[]
+  externalLock: boolean
+  lockReason?: string
   message: string
+  reason?: string
+}
+export type UpdatePackage = {
+  name: string
+  architecture?: string
+  currentVersion?: string
+  candidateVersion: string
+  severity?: string
+  size?: number
+  summary?: string
+  details?: string
 }
 export type TerminalStatus = { available: boolean; message: string }
 export type MonitoringPreference = {
