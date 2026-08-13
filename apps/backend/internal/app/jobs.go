@@ -20,6 +20,7 @@ import (
 )
 
 const hostInventoryJob = "host-inventory"
+const softwareUpdateJob = "software-update"
 
 var (
 	ErrJobQueueFull     = errors.New("diagnostic job queue is full")
@@ -31,7 +32,7 @@ type diagnosticJobManager struct {
 	queue   chan string
 	ctx     context.Context
 	cancel  context.CancelFunc
-	execute func(context.Context, string, func(int, string) error) (json.RawMessage, error)
+	execute func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error)
 
 	mu       sync.Mutex
 	closed   bool
@@ -39,7 +40,7 @@ type diagnosticJobManager struct {
 	wg       sync.WaitGroup
 }
 
-func newDiagnosticJobManager(parent context.Context, store *preferences.Store, execute func(context.Context, string, func(int, string) error) (json.RawMessage, error)) *diagnosticJobManager {
+func newDiagnosticJobManager(parent context.Context, store *preferences.Store, execute func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error)) *diagnosticJobManager {
 	ctx, cancel := context.WithCancel(parent)
 	manager := &diagnosticJobManager{
 		store:    store,
@@ -69,6 +70,40 @@ func (manager *diagnosticJobManager) Submit(ctx context.Context, kind, actor str
 	job, err := manager.store.CreateJob(ctx, kind, actor, false)
 	if err != nil {
 		return preferences.Job{}, err
+	}
+	select {
+	case manager.queue <- job.ID:
+		return job, nil
+	default:
+		_ = manager.store.FailJob(context.Background(), job.ID, "Not queued", ErrJobQueueFull)
+		return preferences.Job{}, ErrJobQueueFull
+	}
+}
+
+func (manager *diagnosticJobManager) SubmitParameterized(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage) (preferences.Job, error) {
+	return manager.SubmitParameterizedWithSetup(ctx, kind, actor, dangerous, parameters, nil)
+}
+
+// SubmitParameterizedWithSetup persists a job and runs setup after the job ID
+// exists but before it becomes visible to a worker. Setup is intentionally
+// in-memory only; callers use it for short-lived credentials that must never be
+// persisted with durable job parameters.
+func (manager *diagnosticJobManager) SubmitParameterizedWithSetup(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage, setup func(string)) (preferences.Job, error) {
+	manager.mu.Lock()
+	if manager.closed {
+		manager.mu.Unlock()
+		return preferences.Job{}, ErrJobManagerClosed
+	}
+	manager.mu.Unlock()
+	if kind != softwareUpdateJob {
+		return preferences.Job{}, fmt.Errorf("unsupported parameterized job %q", kind)
+	}
+	job, err := manager.store.CreateParameterizedJob(ctx, kind, actor, dangerous, parameters)
+	if err != nil {
+		return preferences.Job{}, err
+	}
+	if setup != nil {
+		setup(job.ID)
 	}
 	select {
 	case manager.queue <- job.ID:
@@ -111,7 +146,15 @@ func (manager *diagnosticJobManager) run(id string) {
 	if err := manager.store.StartJob(context.Background(), id); err != nil {
 		return
 	}
-	jobCtx, jobCancel := context.WithTimeout(manager.ctx, 45*time.Second)
+	job, err := manager.store.GetJob(context.Background(), id)
+	if err != nil || job.State != preferences.JobRunning || job.CancelRequested {
+		return
+	}
+	timeout := 45 * time.Second
+	if job.Kind == softwareUpdateJob {
+		timeout = 30 * time.Minute
+	}
+	jobCtx, jobCancel := context.WithTimeout(manager.ctx, timeout)
 	manager.mu.Lock()
 	manager.inflight[id] = jobCancel
 	manager.mu.Unlock()
@@ -122,11 +165,7 @@ func (manager *diagnosticJobManager) run(id string) {
 		manager.mu.Unlock()
 	}()
 
-	job, err := manager.store.GetJob(context.Background(), id)
-	if err != nil || job.State != preferences.JobRunning || job.CancelRequested {
-		return
-	}
-	result, runErr := manager.execute(jobCtx, job.Kind, func(progress int, message string) error {
+	result, runErr := manager.execute(jobCtx, job, func(progress int, message string) error {
 		return manager.store.UpdateJobProgress(context.Background(), id, progress, message)
 	})
 	if jobCtx.Err() != nil {
@@ -252,12 +291,16 @@ func (server *Server) cancelJob(writer http.ResponseWriter, request *http.Reques
 		problem(writer, http.StatusInternalServerError, "jobs-unavailable", "Could not cancel diagnostic job")
 		return
 	}
+	server.deleteUpdateToken(id)
 	writeJSON(writer, http.StatusOK, map[string]any{"job": job})
 }
 
-func (server *Server) runDiagnosticJob(ctx context.Context, kind string, update func(int, string) error) (json.RawMessage, error) {
-	if kind != hostInventoryJob {
-		return nil, fmt.Errorf("unsupported diagnostic job %q", kind)
+func (server *Server) runDiagnosticJob(ctx context.Context, job preferences.Job, update func(int, string) error) (json.RawMessage, error) {
+	if job.Kind == softwareUpdateJob {
+		return server.runSoftwareUpdateJob(ctx, job, update)
+	}
+	if job.Kind != hostInventoryJob {
+		return nil, fmt.Errorf("unsupported diagnostic job %q", job.Kind)
 	}
 	if err := update(10, "Reading host identity"); err != nil {
 		return nil, err

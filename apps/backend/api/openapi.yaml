@@ -529,6 +529,48 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UpdateStatus' }
+    post:
+      operationId: startUpdateJob
+      summary: Start a serialized selected or all-software update job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateOperation' }
+      responses:
+        '202':
+          description: Durable update job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: '#/components/schemas/DiagnosticJob' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /updates/preview:
+    post:
+      operationId: previewUpdates
+      summary: Preview a selected or all-software update operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateOperation' }
+      responses:
+        '200':
+          description: Current inventory, changes, warnings, and stale state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdatePreview' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /services:
     get:
       operationId: listServices
@@ -1032,7 +1074,7 @@ components:
         setupGuidance: { type: string }
     UpdateStatus:
       type: object
-      required: [available, backend, contract, packages, externalLock, message]
+      required: [available, backend, contract, packages, fingerprint, externalLock, message]
       properties:
         available: { type: boolean }
         backend: { type: string, maxLength: 64 }
@@ -1042,6 +1084,7 @@ components:
           type: array
           maxItems: 500
           items: { $ref: '#/components/schemas/UpdatePackage' }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         externalLock: { type: boolean }
         lockReason: { type: string, maxLength: 512 }
         message: { type: string, maxLength: 512 }
@@ -1058,6 +1101,47 @@ components:
         size: { type: integer, minimum: 0 }
         summary: { type: string, maxLength: 1024 }
         details: { type: string, maxLength: 4096 }
+    UpdateOperation:
+      type: object
+      additionalProperties: false
+      required: [scope]
+      properties:
+        scope: { type: string, enum: [all, selected] }
+        packages:
+          type: array
+          maxItems: 500
+          items: { type: string, maxLength: 256, pattern: '^[A-Za-z0-9+_.:@-]+$' }
+        expectedFingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        confirmation: { type: string, maxLength: 128, writeOnly: true }
+        preview: { type: boolean, readOnly: true }
+    UpdatePreview:
+      type: object
+      required: [operation, current, selected, changes, warnings, fingerprint, stale, allowed, requiresConfirmation]
+      properties:
+        operation: { $ref: '#/components/schemas/UpdateOperation' }
+        current: { $ref: '#/components/schemas/UpdateStatus' }
+        selected:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/UpdatePackage' }
+        changes: { type: array, maxItems: 16, items: { type: string, maxLength: 256 } }
+        warnings: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        requiresConfirmation: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+    UpdateResult:
+      type: object
+      required: [backend, scope, packages, updated, verified, message, fingerprint]
+      properties:
+        backend: { type: string, maxLength: 64 }
+        scope: { type: string, enum: [all, selected] }
+        packages: { type: array, maxItems: 500, items: { type: string, maxLength: 256 } }
+        updated: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/UpdatePackage' } }
+        verified: { type: boolean }
+        message: { type: string, maxLength: 512 }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
     AdministrativeElevationRequest:
       type: object
       required: [password]
@@ -1087,7 +1171,7 @@ components:
       required: [id, kind, actor, state, progress, message, createdAt, cancelRequested, dangerous]
       properties:
         id: { type: string, maxLength: 64 }
-        kind: { type: string, enum: [host-inventory] }
+        kind: { type: string, enum: [host-inventory, software-update] }
         actor: { type: string, maxLength: 256 }
         state: { type: string, enum: [pending, running, succeeded, failed, canceled, interrupted] }
         progress: { type: integer, minimum: 0, maximum: 100 }

@@ -4,8 +4,8 @@
 
 **Blocked by:** 06 — Introduce typed privileged operations; 08 — Run durable diagnostic inventory jobs; 28 — List available installed-software updates
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Package-manager locks are respected and dangerous interruption never silently retries.
-- [ ] Selected/all workflows verify final state and produce sanitized receipts.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Package-manager locks are respected and dangerous interruption never silently retries.
+- [x] Selected/all workflows verify final state and produce sanitized receipts.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

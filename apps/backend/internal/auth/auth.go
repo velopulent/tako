@@ -132,6 +132,7 @@ type Request struct {
 	AdminRole           *platform.AdministrativeRoleOperation `json:"adminRole,omitempty"`
 	PasswordChange      *PasswordChangeOperation              `json:"passwordChange,omitempty"`
 	SSHKeys             *platform.SSHKeyOperation             `json:"sshKeys,omitempty"`
+	Updates             *platform.UpdateOperation             `json:"updates,omitempty"`
 }
 
 // PasswordChangeOperation is deliberately wire-only. Secret fields are sent
@@ -238,6 +239,11 @@ type SSHKeyRequest struct {
 	AdminToken     string
 	Administrative bool
 	Operation      platform.SSHKeyOperation
+}
+
+type UpdateRequest struct {
+	AdminToken string
+	Operation  platform.UpdateOperation
 }
 
 type HostConfigurationRequest struct {
@@ -500,6 +506,36 @@ func ApplySSHKeys(ctx context.Context, path string, request SSHKeyRequest) (plat
 	return *response.SSHKeyState, nil
 }
 
+func ApplyUpdates(ctx context.Context, path string, request UpdateRequest) (platform.UpdateResult, error) {
+	operation := request.Operation
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "updates", AdminToken: request.AdminToken, Updates: &operation}, 30*time.Minute, 512<<10)
+	if err != nil {
+		return platform.UpdateResult{}, err
+	}
+	if response.Error != "" {
+		switch response.Error {
+		case "invalid-update-operation":
+			return platform.UpdateResult{}, platform.ErrInvalidUpdateOperation
+		case "update-conflict":
+			return platform.UpdateResult{}, platform.ErrUpdateConflict
+		case "update-locked":
+			return platform.UpdateResult{}, platform.ErrUpdateLocked
+		case "update-unavailable":
+			return platform.UpdateResult{}, platform.ErrUpdateUnavailable
+		case "update-verification-failed":
+			return platform.UpdateResult{}, platform.ErrUpdateVerification
+		case "update-apply-failed":
+			return platform.UpdateResult{}, platform.ErrUpdateApply
+		default:
+			return platform.UpdateResult{}, errors.New(response.Error)
+		}
+	}
+	if response.UpdateResult == nil {
+		return platform.UpdateResult{}, ErrServiceUnavailable
+	}
+	return *response.UpdateResult, nil
+}
+
 func sshKeyResponseError(code string) error {
 	switch code {
 	case "invalid-ssh-key-operation":
@@ -524,6 +560,10 @@ func sshKeyResponseError(code string) error {
 }
 
 func socketRequest(ctx context.Context, path string, request Request) (Response, error) {
+	return socketRequestWithLimit(ctx, path, request, 20*time.Second, 16<<10)
+}
+
+func socketRequestWithLimit(ctx context.Context, path string, request Request, maximum time.Duration, responseLimit int64) (Response, error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", path)
 	if err != nil {
@@ -539,7 +579,7 @@ func socketRequest(ctx context.Context, path string, request Request) (Response,
 		case <-stopCancelWatch:
 		}
 	}()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(maximum)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline
 	}
@@ -548,7 +588,7 @@ func socketRequest(ctx context.Context, path string, request Request) (Response,
 		return Response{}, fmt.Errorf("%w: send request: %v", ErrServiceUnavailable, err)
 	}
 	var response Response
-	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+	if err := json.NewDecoder(io.LimitReader(conn, responseLimit)).Decode(&response); err != nil {
 		return Response{}, fmt.Errorf("%w: read response: %v", ErrServiceUnavailable, err)
 	}
 	return response, nil
@@ -662,6 +702,7 @@ type Response struct {
 	AdminRolePreview       *platform.AdministrativeRolePreview `json:"adminRolePreview,omitempty"`
 	SSHKeyState            *platform.SSHKeyState               `json:"sshKeyState,omitempty"`
 	SSHKeyPreview          *platform.SSHKeyPreview             `json:"sshKeyPreview,omitempty"`
+	UpdateResult           *platform.UpdateResult              `json:"updateResult,omitempty"`
 }
 
 type Authenticator interface {

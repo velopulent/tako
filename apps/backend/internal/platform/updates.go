@@ -3,6 +3,9 @@ package platform
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +25,15 @@ const (
 	maxUpdateOutput   = 4 << 20
 )
 
+var (
+	ErrInvalidUpdateOperation = errors.New("invalid update operation")
+	ErrUpdateConflict         = errors.New("update inventory changed")
+	ErrUpdateLocked           = errors.New("package manager lock is held")
+	ErrUpdateUnavailable      = errors.New("update backend unavailable")
+	ErrUpdateVerification     = errors.New("update verification failed")
+	ErrUpdateApply            = errors.New("update command failed")
+)
+
 type UpdatePackage struct {
 	Name             string `json:"name"`
 	Architecture     string `json:"architecture,omitempty"`
@@ -39,6 +51,7 @@ type UpdateStatus struct {
 	Version      string          `json:"version,omitempty"`
 	Contract     string          `json:"contract"`
 	Packages     []UpdatePackage `json:"packages"`
+	Fingerprint  string          `json:"fingerprint"`
 	ExternalLock bool            `json:"externalLock"`
 	LockReason   string          `json:"lockReason,omitempty"`
 	Message      string          `json:"message"`
@@ -64,7 +77,9 @@ type updateDependencies struct {
 func Updates(ctx context.Context) UpdateStatus {
 	deadline, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	return updatesWithDependencies(deadline, defaultUpdateDependencies())
+	status := updatesWithDependencies(deadline, defaultUpdateDependencies())
+	status.Fingerprint = UpdateFingerprint(status)
+	return status
 }
 
 func defaultUpdateDependencies() updateDependencies {
@@ -252,6 +267,336 @@ func pluralSuffix(count int) string {
 		return ""
 	}
 	return "s"
+}
+
+type UpdateOperation struct {
+	Scope               string   `json:"scope"`
+	Packages            []string `json:"packages,omitempty"`
+	ExpectedFingerprint string   `json:"expectedFingerprint,omitempty"`
+	Confirmation        string   `json:"confirmation,omitempty"`
+	Preview             bool     `json:"preview,omitempty"`
+}
+
+type UpdatePreview struct {
+	Operation            UpdateOperation `json:"operation"`
+	Current              UpdateStatus    `json:"current"`
+	Selected             []UpdatePackage `json:"selected"`
+	Changes              []string        `json:"changes"`
+	Warnings             []string        `json:"warnings"`
+	Fingerprint          string          `json:"fingerprint"`
+	Stale                bool            `json:"stale"`
+	Allowed              bool            `json:"allowed"`
+	RequiresConfirmation bool            `json:"requiresConfirmation"`
+	Reason               string          `json:"reason,omitempty"`
+}
+
+type UpdateResult struct {
+	Backend     string          `json:"backend"`
+	Scope       string          `json:"scope"`
+	Packages    []string        `json:"packages"`
+	Updated     []UpdatePackage `json:"updated"`
+	Verified    bool            `json:"verified"`
+	Message     string          `json:"message"`
+	Fingerprint string          `json:"fingerprint"`
+}
+
+func ValidateUpdateOperation(operation UpdateOperation) error {
+	if operation.Scope != "all" && operation.Scope != "selected" {
+		return ErrInvalidUpdateOperation
+	}
+	if len(operation.Packages) > MaxUpdatePackages {
+		return ErrInvalidUpdateOperation
+	}
+	seen := make(map[string]struct{}, len(operation.Packages))
+	for _, name := range operation.Packages {
+		if !validPackageName(name) || len(name) > 256 {
+			return ErrInvalidUpdateOperation
+		}
+		if _, exists := seen[name]; exists {
+			return ErrInvalidUpdateOperation
+		}
+		seen[name] = struct{}{}
+	}
+	if operation.Scope == "all" && len(operation.Packages) != 0 {
+		return ErrInvalidUpdateOperation
+	}
+	if operation.Scope == "selected" && len(operation.Packages) == 0 {
+		return ErrInvalidUpdateOperation
+	}
+	if operation.ExpectedFingerprint != "" {
+		if len(operation.ExpectedFingerprint) != sha256.Size*2 {
+			return ErrInvalidUpdateOperation
+		}
+		if _, err := hex.DecodeString(operation.ExpectedFingerprint); err != nil {
+			return ErrInvalidUpdateOperation
+		}
+	}
+	if len(operation.Confirmation) > 128 || strings.ContainsAny(operation.Confirmation, "\x00\r\n") {
+		return ErrInvalidUpdateOperation
+	}
+	if !operation.Preview && operation.Confirmation != "APPLY UPDATES" {
+		return ErrInvalidUpdateOperation
+	}
+	return nil
+}
+
+func UpdateFingerprint(status UpdateStatus) string {
+	packages := append([]UpdatePackage(nil), status.Packages...)
+	sort.Slice(packages, func(left, right int) bool {
+		if packages[left].Name != packages[right].Name {
+			return packages[left].Name < packages[right].Name
+		}
+		if packages[left].Architecture != packages[right].Architecture {
+			return packages[left].Architecture < packages[right].Architecture
+		}
+		return packages[left].CandidateVersion < packages[right].CandidateVersion
+	})
+	payload, _ := json.Marshal(struct {
+		Backend      string
+		Version      string
+		Packages     []UpdatePackage
+		ExternalLock bool
+	}{status.Backend, status.Version, packages, status.ExternalLock})
+	hash := sha256.Sum256(payload)
+	return hex.EncodeToString(hash[:])
+}
+
+func PreviewUpdates(ctx context.Context, operation UpdateOperation, statusFn func(context.Context) UpdateStatus) (UpdatePreview, error) {
+	operation.Preview = true
+	if err := ValidateUpdateOperation(operation); err != nil {
+		return UpdatePreview{}, err
+	}
+	if statusFn == nil {
+		return UpdatePreview{}, ErrUpdateUnavailable
+	}
+	current := statusFn(ctx)
+	preview := UpdatePreview{Operation: operation, Current: current, Selected: make([]UpdatePackage, 0), Changes: []string{}, Warnings: []string{}, Fingerprint: UpdateFingerprint(current)}
+	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != preview.Fingerprint {
+		preview.Stale = true
+		preview.Reason = "The available update inventory changed; refresh before applying."
+		return preview, nil
+	}
+	if !current.Available {
+		preview.Reason = current.Reason
+		if preview.Reason == "" {
+			preview.Reason = "No supported update backend is available."
+		}
+		return preview, nil
+	}
+	if current.ExternalLock {
+		preview.Reason = current.LockReason
+		if preview.Reason == "" {
+			preview.Reason = "Another package operation currently holds a lock."
+		}
+		preview.Warnings = append(preview.Warnings, preview.Reason)
+		return preview, nil
+	}
+	if operation.Scope == "all" {
+		preview.Selected = append(preview.Selected, current.Packages...)
+	} else {
+		for _, requested := range operation.Packages {
+			found := false
+			for _, available := range current.Packages {
+				if available.Name == requested {
+					preview.Selected = append(preview.Selected, available)
+					found = true
+				}
+			}
+			if !found {
+				preview.Stale = true
+				preview.Reason = "One or more selected packages are no longer available."
+				return preview, nil
+			}
+		}
+	}
+	if len(preview.Selected) == 0 {
+		preview.Reason = "No updates are available for the selected scope."
+		return preview, nil
+	}
+	preview.Allowed = true
+	preview.RequiresConfirmation = true
+	preview.Changes = append(preview.Changes, fmt.Sprintf("update %d package%s", len(preview.Selected), pluralSuffix(len(preview.Selected))))
+	preview.Warnings = append(preview.Warnings, "Updates can restart services or require a host reboot.", "An interrupted package operation will not be retried automatically.")
+	return preview, nil
+}
+
+func ApplyUpdates(ctx context.Context, operation UpdateOperation) (UpdateResult, error) {
+	if err := ValidateUpdateOperation(operation); err != nil {
+		return UpdateResult{}, err
+	}
+	if operation.Preview {
+		return UpdateResult{}, ErrInvalidUpdateOperation
+	}
+	current := Updates(ctx)
+	if !current.Available {
+		return UpdateResult{}, ErrUpdateUnavailable
+	}
+	fingerprint := UpdateFingerprint(current)
+	if operation.ExpectedFingerprint == "" || operation.ExpectedFingerprint != fingerprint {
+		return UpdateResult{}, ErrUpdateConflict
+	}
+	if current.ExternalLock {
+		return UpdateResult{}, ErrUpdateLocked
+	}
+	selected := make([]UpdatePackage, 0, len(current.Packages))
+	if operation.Scope == "all" {
+		selected = append(selected, current.Packages...)
+	} else {
+		for _, requested := range operation.Packages {
+			found := false
+			for _, available := range current.Packages {
+				if available.Name == requested {
+					selected = append(selected, available)
+					found = true
+				}
+			}
+			if !found {
+				return UpdateResult{}, ErrUpdateConflict
+			}
+		}
+	}
+	if len(selected) == 0 {
+		return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: []string{}, Updated: []UpdatePackage{}, Verified: true, Message: "No updates were available.", Fingerprint: fingerprint}, nil
+	}
+	arguments, err := updateApplyArguments(current.Backend, operation.Scope, operation.Packages)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	result := runLongUpdateCommand(ctx, arguments[0], arguments[1:]...)
+	if result.Err != nil || result.ExitCode != 0 {
+		return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(result.Err, result.Output))
+	}
+	final := Updates(ctx)
+	if !final.Available {
+		return UpdateResult{}, ErrUpdateVerification
+	}
+	remaining := make(map[string]struct{}, len(final.Packages))
+	for _, item := range final.Packages {
+		remaining[item.Name] = struct{}{}
+	}
+	for _, item := range selected {
+		if _, exists := remaining[item.Name]; exists {
+			return UpdateResult{}, ErrUpdateVerification
+		}
+	}
+	packages := make([]string, 0, len(selected))
+	updated := make([]UpdatePackage, 0, len(selected))
+	for _, item := range selected {
+		packages = append(packages, item.Name)
+		updated = append(updated, UpdatePackage{
+			Name:             item.Name,
+			Architecture:     item.Architecture,
+			CurrentVersion:   item.CurrentVersion,
+			CandidateVersion: item.CandidateVersion,
+			Severity:         item.Severity,
+			Size:             item.Size,
+		})
+	}
+	return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: packages, Updated: updated, Verified: true, Message: "Updates applied and verified.", Fingerprint: UpdateFingerprint(final)}, nil
+}
+
+func updateApplyArguments(backend, scope string, packages []string) ([]string, error) {
+	if backend == "PackageKit" {
+		arguments := []string{"pkcon", "--noninteractive", "update"}
+		if scope == "selected" {
+			arguments = append(arguments, packages...)
+		}
+		return arguments, nil
+	}
+	if backend == "apt-get" {
+		arguments := []string{"apt-get", "-y", "--no-remove", "--only-upgrade"}
+		if scope == "all" {
+			return append(arguments, "upgrade"), nil
+		}
+		return append(arguments, append([]string{"install", "--"}, packages...)...), nil
+	}
+	if backend == "dnf" {
+		arguments := []string{"dnf", "-y", "upgrade"}
+		if scope == "selected" {
+			arguments = append(arguments, "--")
+			arguments = append(arguments, packages...)
+		}
+		return arguments, nil
+	}
+	return nil, ErrUpdateUnavailable
+}
+
+func validPackageName(value string) bool {
+	if !validPackageField(value) {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && !strings.ContainsRune("+_.:@-", character) {
+			return false
+		}
+	}
+	return true
+}
+
+func runLongUpdateCommand(ctx context.Context, name string, arguments ...string) updateCommandResult {
+	if err := ctx.Err(); err != nil {
+		return updateCommandResult{Err: err, ExitCode: -1}
+	}
+	command := exec.Command(name, arguments...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return updateCommandResult{Err: err, ExitCode: -1}
+	}
+	if err := command.Start(); err != nil {
+		return updateCommandResult{Err: err, ExitCode: -1}
+	}
+	processDone := make(chan struct{})
+	go func(pid int) {
+		select {
+		case <-ctx.Done():
+			if pid > 0 {
+				_ = syscall.Kill(-pid, syscall.SIGTERM)
+				timer := time.NewTimer(time.Second)
+				select {
+				case <-timer.C:
+					_ = syscall.Kill(-pid, syscall.SIGKILL)
+				case <-processDone:
+					_ = timer.Stop()
+				}
+			}
+		case <-processDone:
+		}
+	}(command.Process.Pid)
+	output, readErr := readBounded(stdout, 8<<20)
+	if readErr != nil && ctx.Err() == nil && command.Process != nil {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+	}
+	waitErr := command.Wait()
+	close(processDone)
+	if ctx.Err() != nil {
+		return updateCommandResult{Err: ctx.Err(), ExitCode: -1, Output: string(output)}
+	}
+	result := updateCommandResult{Output: string(output), ExitCode: 0, Err: readErr}
+	if waitErr != nil {
+		result.Err = waitErr
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = -1
+		}
+	}
+	return result
+}
+
+func boundedUpdateError(err error, output string) string {
+	message := strings.TrimSpace(output)
+	if message == "" && err != nil {
+		message = err.Error()
+	}
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	if message == "" {
+		return "package manager rejected the update request"
+	}
+	return message
 }
 
 func parseAPTUpdates(output string) []UpdatePackage {

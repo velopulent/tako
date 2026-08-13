@@ -72,6 +72,7 @@ type Job struct {
 	ID              string          `json:"id"`
 	Kind            string          `json:"kind"`
 	Actor           string          `json:"actor"`
+	Parameters      json.RawMessage `json:"-"`
 	State           string          `json:"state"`
 	Progress        int             `json:"progress"`
 	Message         string          `json:"message"`
@@ -397,8 +398,15 @@ func (store *Store) OperationReceipts(ctx context.Context, limit int) ([]Operati
 }
 
 func (store *Store) CreateJob(ctx context.Context, kind, actor string, dangerous bool) (Job, error) {
+	return store.CreateParameterizedJob(ctx, kind, actor, dangerous, nil)
+}
+
+func (store *Store) CreateParameterizedJob(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage) (Job, error) {
 	if kind == "" || len(kind) > 64 || actor == "" || len(actor) > 256 {
 		return Job{}, errors.New("invalid job")
+	}
+	if len(parameters) > 64<<10 || (len(parameters) > 0 && !json.Valid(parameters)) {
+		return Job{}, errors.New("invalid job parameters")
 	}
 	id, err := receiptID()
 	if err != nil {
@@ -407,23 +415,23 @@ func (store *Store) CreateJob(ctx context.Context, kind, actor string, dangerous
 	now := time.Now().UTC()
 	_, err = store.database.ExecContext(ctx, `
 		INSERT INTO diagnostic_jobs
-			(id, kind, actor, state, progress, message, result, error, created_at, started_at, completed_at, cancel_requested, dangerous)
-		VALUES (?, ?, ?, ?, 0, ?, '', '', ?, '', '', 0, ?)
-	`, id, kind, actor, JobPending, "Queued", now.Format(time.RFC3339Nano), dangerous)
+			(id, kind, actor, parameters, state, progress, message, result, error, created_at, started_at, completed_at, cancel_requested, dangerous)
+		VALUES (?, ?, ?, ?, ?, 0, ?, '', '', ?, '', '', 0, ?)
+	`, id, kind, actor, string(parameters), JobPending, "Queued", now.Format(time.RFC3339Nano), dangerous)
 	if err != nil {
 		return Job{}, fmt.Errorf("create diagnostic job: %w", err)
 	}
-	return Job{ID: id, Kind: kind, Actor: actor, State: JobPending, Message: "Queued", CreatedAt: now, Dangerous: dangerous}, nil
+	return Job{ID: id, Kind: kind, Actor: actor, Parameters: append(json.RawMessage(nil), parameters...), State: JobPending, Message: "Queued", CreatedAt: now, Dangerous: dangerous}, nil
 }
 
 func (store *Store) GetJob(ctx context.Context, id string) (Job, error) {
 	var job Job
-	var result, startedAt, completedAt, createdAt string
+	var parameters, result, startedAt, completedAt, createdAt string
 	var cancelRequested, dangerous int
 	err := store.database.QueryRowContext(ctx, `
-		SELECT id, kind, actor, state, progress, message, result, error, created_at, started_at, completed_at, cancel_requested, dangerous
+		SELECT id, kind, actor, parameters, state, progress, message, result, error, created_at, started_at, completed_at, cancel_requested, dangerous
 		FROM diagnostic_jobs WHERE id = ?
-	`, id).Scan(&job.ID, &job.Kind, &job.Actor, &job.State, &job.Progress, &job.Message, &result, &job.Error, &createdAt, &startedAt, &completedAt, &cancelRequested, &dangerous)
+	`, id).Scan(&job.ID, &job.Kind, &job.Actor, &parameters, &job.State, &job.Progress, &job.Message, &result, &job.Error, &createdAt, &startedAt, &completedAt, &cancelRequested, &dangerous)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, ErrJobNotFound
 	}
@@ -435,6 +443,9 @@ func (store *Store) GetJob(ctx context.Context, id string) (Job, error) {
 	}
 	if result != "" {
 		job.Result = json.RawMessage(result)
+	}
+	if parameters != "" {
+		job.Parameters = json.RawMessage(parameters)
 	}
 	job.CancelRequested = cancelRequested != 0
 	job.Dangerous = dangerous != 0
@@ -449,7 +460,7 @@ func (store *Store) Jobs(ctx context.Context, limit int) ([]Job, error) {
 		limit = 100
 	}
 	rows, err := store.database.QueryContext(ctx, `
-		SELECT id, kind, actor, state, progress, message, result, error, created_at, started_at, completed_at, cancel_requested, dangerous
+		SELECT id, kind, actor, parameters, state, progress, message, result, error, created_at, started_at, completed_at, cancel_requested, dangerous
 		FROM diagnostic_jobs ORDER BY created_at DESC LIMIT ?
 	`, limit)
 	if err != nil {
@@ -459,9 +470,9 @@ func (store *Store) Jobs(ctx context.Context, limit int) ([]Job, error) {
 	items := make([]Job, 0, limit)
 	for rows.Next() {
 		var job Job
-		var result, startedAt, completedAt, createdAt string
+		var parameters, result, startedAt, completedAt, createdAt string
 		var cancelRequested, dangerous int
-		if err := rows.Scan(&job.ID, &job.Kind, &job.Actor, &job.State, &job.Progress, &job.Message, &result, &job.Error, &createdAt, &startedAt, &completedAt, &cancelRequested, &dangerous); err != nil {
+		if err := rows.Scan(&job.ID, &job.Kind, &job.Actor, &parameters, &job.State, &job.Progress, &job.Message, &result, &job.Error, &createdAt, &startedAt, &completedAt, &cancelRequested, &dangerous); err != nil {
 			return nil, fmt.Errorf("read diagnostic job: %w", err)
 		}
 		if err := decodeJobTimes(&job, createdAt, startedAt, completedAt); err != nil {
@@ -469,6 +480,9 @@ func (store *Store) Jobs(ctx context.Context, limit int) ([]Job, error) {
 		}
 		if result != "" {
 			job.Result = json.RawMessage(result)
+		}
+		if parameters != "" {
+			job.Parameters = json.RawMessage(parameters)
 		}
 		job.CancelRequested = cancelRequested != 0
 		job.Dangerous = dangerous != 0
@@ -717,6 +731,7 @@ func (store *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL,
 			UNIQUE(owner, name)
 		)`,
+		`ALTER TABLE diagnostic_jobs ADD COLUMN parameters TEXT NOT NULL DEFAULT ''`,
 	}
 	if _, err := transaction.ExecContext(ctx, migrations[0]); err != nil {
 		return fmt.Errorf("create migration ledger: %w", err)

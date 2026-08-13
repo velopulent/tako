@@ -36,8 +36,8 @@ func TestOpenMigratesAndSecuresDatabase(t *testing.T) {
 	if err := store.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("database version is %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("database version is %d, want 5", version)
 	}
 }
 
@@ -93,8 +93,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := second.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("database version is %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("database version is %d, want 5", version)
 	}
 }
 

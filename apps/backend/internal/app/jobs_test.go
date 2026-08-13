@@ -37,7 +37,7 @@ func TestDiagnosticJobManagerPersistsProgressAndResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	manager := newDiagnosticJobManager(context.Background(), store, func(_ context.Context, _ string, update func(int, string) error) (json.RawMessage, error) {
+	manager := newDiagnosticJobManager(context.Background(), store, func(_ context.Context, _ preferences.Job, update func(int, string) error) (json.RawMessage, error) {
 		if err := update(45, "Collecting"); err != nil {
 			return nil, err
 		}
@@ -65,7 +65,7 @@ func TestDiagnosticJobCancellationStopsExecution(t *testing.T) {
 	}
 	defer store.Close()
 	started := make(chan struct{})
-	manager := newDiagnosticJobManager(context.Background(), store, func(ctx context.Context, _ string, _ func(int, string) error) (json.RawMessage, error) {
+	manager := newDiagnosticJobManager(context.Background(), store, func(ctx context.Context, _ preferences.Job, _ func(int, string) error) (json.RawMessage, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()

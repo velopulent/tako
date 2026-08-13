@@ -64,6 +64,11 @@ type Server struct {
 	readUnitDetails       func(context.Context, string, string) (platform.UnitDetail, error)
 	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
 	readUpdatesFn         func(context.Context) platform.UpdateStatus
+	previewUpdatesFn      func(context.Context, platform.UpdateOperation) (platform.UpdatePreview, error)
+	applyUpdatesFn        func(context.Context, auth.UpdateRequest) (platform.UpdateResult, error)
+	updateTokensMu        sync.Mutex
+	updateTokens          map[string]string
+	updateSlots           chan struct{}
 	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	previewAccountFn      func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
@@ -123,6 +128,14 @@ func New(cfg config.Config) (*Server, error) {
 		readUnitDetails:       platform.UnitDetails,
 		readUnitConfiguration: platform.ReadUnitConfiguration,
 		readUpdatesFn:         platform.Updates,
+		previewUpdatesFn: func(ctx context.Context, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
+			return platform.PreviewUpdates(ctx, operation, platform.Updates)
+		},
+		applyUpdatesFn: func(ctx context.Context, request auth.UpdateRequest) (platform.UpdateResult, error) {
+			return auth.ApplyUpdates(ctx, cfg.SessionSocket, request)
+		},
+		updateTokens: make(map[string]string),
+		updateSlots:  make(chan struct{}, 1),
 		applyTimer: func(ctx context.Context, request auth.TimerRequest) (platform.TimerState, error) {
 			return auth.ApplyTimer(ctx, cfg.SessionSocket, request)
 		},
@@ -306,6 +319,7 @@ func (server *Server) Shutdown(ctx context.Context) error {
 		shutdownErr = errors.Join(shutdownErr, ctx.Err())
 	}
 	jobErr := server.jobs.Close(ctx)
+	server.clearUpdateTokens()
 	closeErr := server.preferences.Close()
 	return errors.Join(shutdownErr, closeErr, jobErr)
 }
@@ -365,6 +379,8 @@ func (server *Server) routes() http.Handler {
 			router.Post("/groups/admin-role/preview", server.previewAdministrativeRole)
 			router.With(server.requireCSRF).Post("/groups/admin-role", server.applyAdministrativeRole)
 			router.Get("/updates", server.updates)
+			router.Post("/updates/preview", server.previewUpdates)
+			router.With(server.requireCSRF).Post("/updates", server.startUpdateJob)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)
 			router.Get("/services/{scope}/{unit}/configuration", server.serviceConfiguration)
@@ -1587,7 +1603,11 @@ func (server *Server) updates(writer http.ResponseWriter, request *http.Request)
 		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "The update inventory service is unavailable")
 		return
 	}
-	writeJSON(writer, http.StatusOK, server.readUpdatesFn(request.Context()))
+	status := server.readUpdatesFn(request.Context())
+	if status.Fingerprint == "" {
+		status.Fingerprint = platform.UpdateFingerprint(status)
+	}
+	writeJSON(writer, http.StatusOK, status)
 }
 
 func (server *Server) terminalStatus(writer http.ResponseWriter, request *http.Request) {

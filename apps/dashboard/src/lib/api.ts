@@ -110,7 +110,7 @@ export type DiagnosticJobState =
 
 export type DiagnosticJob = {
   id: string
-  kind: "host-inventory"
+  kind: "host-inventory" | "software-update"
   actor: string
   state: DiagnosticJobState
   progress: number
@@ -493,10 +493,39 @@ export type UpdateStatus = {
   version?: string
   contract: string
   packages: UpdatePackage[]
+  fingerprint: string
   externalLock: boolean
   lockReason?: string
   message: string
   reason?: string
+}
+export type UpdateOperation = {
+  scope: "all" | "selected"
+  packages?: string[]
+  expectedFingerprint?: string
+  confirmation?: string
+  preview?: boolean
+}
+export type UpdatePreview = {
+  operation: UpdateOperation
+  current: UpdateStatus
+  selected: UpdatePackage[]
+  changes: string[]
+  warnings: string[]
+  fingerprint: string
+  stale: boolean
+  allowed: boolean
+  requiresConfirmation: boolean
+  reason?: string
+}
+export type UpdateResult = {
+  backend: string
+  scope: "all" | "selected"
+  packages: string[]
+  updated: UpdatePackage[]
+  verified: boolean
+  message: string
+  fingerprint: string
 }
 export type UpdatePackage = {
   name: string

@@ -174,6 +174,10 @@ func handleWithSSHKeysBackend(conn net.Conn, service auth.PAMAuthenticator, conv
 }
 
 func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
+	handleWithAllBackendsAndUpdates(conn, service, conversations, grants, policy, logger, backend, power, timer, override, password, sshKeys, account, groups, roles, systemUpdateBackend{}, serviceBackends...)
+}
+
+func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, updates updateBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -201,6 +205,9 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 	}
 	if roles == nil {
 		roles = systemAdministrativeRoleBackend{}
+	}
+	if updates == nil {
+		updates = systemUpdateBackend{}
 	}
 	serviceBackend := serviceBackend(systemServiceBackend{})
 	if len(serviceBackends) > 0 && serviceBackends[0] != nil {
@@ -252,6 +259,10 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 		return
 	}
 	if request.Operation != "ssh-keys" && request.SSHKeys != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "updates" && request.Updates != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -795,6 +806,35 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 			return
 		}
 		_ = encoder.Encode(auth.Response{SSHKeyState: &state})
+		return
+	}
+	if request.Operation == "updates" {
+		if request.Updates == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-update-operation"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.Updates
+		request.Updates = nil
+		if err := platform.ValidateUpdateOperation(operation); err != nil || operation.Preview {
+			_ = encoder.Encode(auth.Response{Error: "invalid-update-operation"})
+			return
+		}
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Minute))
+		updateCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		result, applyErr := updates.Apply(updateCtx, operation, identity)
+		cancel()
+		if applyErr != nil {
+			_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+			_ = encoder.Encode(auth.Response{Error: updateErrorCode(applyErr)})
+			return
+		}
+		_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+		_ = encoder.Encode(auth.Response{UpdateResult: &result})
 		return
 	}
 	if request.Operation == "host-config" {

@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { UpdateInventory } from "@/components/update-inventory"
@@ -87,5 +88,92 @@ describe("UpdateInventory", () => {
     expect(
       await screen.findByText("No installed-software updates")
     ).toBeTruthy()
+  })
+
+  it("previews selected packages and starts a reconnectable job", async () => {
+    const fingerprint = "a".repeat(64)
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith("/auth/session")) {
+        return Promise.resolve(jsonResponse({ csrfToken: "csrf-token" }))
+      }
+      if (url.endsWith("/updates/preview")) {
+        return Promise.resolve(
+          jsonResponse({
+            operation: { scope: "selected", packages: ["openssl"] },
+            current: {
+              available: true,
+              backend: "apt-get",
+              contract: "bounded-command-read-only",
+              packages: [],
+              fingerprint,
+              externalLock: false,
+              message: "",
+            },
+            selected: [{ name: "openssl", candidateVersion: "3.0.14" }],
+            changes: ["update 1 package"],
+            warnings: [],
+            fingerprint,
+            stale: false,
+            allowed: true,
+            requiresConfirmation: true,
+          })
+        )
+      }
+      if (url.endsWith("/updates") && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              job: {
+                id: "job-1",
+                state: "pending",
+                progress: 0,
+                message: "Queued",
+              },
+            },
+            202
+          )
+        )
+      }
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          backend: "apt-get",
+          version: "apt 3.0",
+          contract: "bounded-command-read-only",
+          fingerprint,
+          packages: [{ name: "openssl", candidateVersion: "3.0.14" }],
+          externalLock: false,
+          message: "1 installed-software update available.",
+        })
+      )
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const user = userEvent.setup()
+    renderInventory()
+    await user.click(
+      await screen.findByRole("button", { name: "Selected packages" })
+    )
+    await user.click(screen.getByRole("checkbox", { name: "Select openssl" }))
+    await user.click(screen.getByRole("button", { name: "Preview updates" }))
+    expect(await screen.findByText("Update preview")).toBeTruthy()
+    await user.type(
+      screen.getByLabelText("Update confirmation"),
+      "APPLY UPDATES"
+    )
+    await user.click(screen.getByRole("button", { name: "Apply updates" }))
+    await vi.waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([input, init]) =>
+          String(input).endsWith("/updates") && init?.method === "POST"
+      )
+      expect(call).toBeTruthy()
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+        scope: "selected",
+        packages: ["openssl"],
+        confirmation: "APPLY UPDATES",
+        expectedFingerprint: fingerprint,
+      })
+    })
   })
 })

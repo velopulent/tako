@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUpdateParsersStayBoundedAndExposeVersions(t *testing.T) {
@@ -108,6 +109,54 @@ func TestUpdatesAcceptDNFCheckUpdateExitCodeAndFailClosed(t *testing.T) {
 	})
 	if unavailable.Available || unavailable.Contract != "unavailable" || unavailable.Backend != "none" {
 		t.Fatalf("unsupported backend did not fail closed: %#v", unavailable)
+	}
+}
+
+func TestUpdateOperationsRejectUnsafeInputsAndDetectStaleInventory(t *testing.T) {
+	if err := ValidateUpdateOperation(UpdateOperation{Scope: "all", Packages: []string{"unexpected"}, Preview: true}); !errors.Is(err, ErrInvalidUpdateOperation) {
+		t.Fatalf("all-scope packages accepted: %v", err)
+	}
+	if err := ValidateUpdateOperation(UpdateOperation{Scope: "selected", Packages: []string{"bad/name"}, Preview: true}); !errors.Is(err, ErrInvalidUpdateOperation) {
+		t.Fatalf("unsafe package name accepted: %v", err)
+	}
+	status := UpdateStatus{Available: true, Backend: "apt-get", Version: "apt 3.0", Contract: "bounded-command-read-only", Packages: []UpdatePackage{{Name: "vim", CandidateVersion: "9.0"}}}
+	preview, err := PreviewUpdates(context.Background(), UpdateOperation{Scope: "selected", Packages: []string{"vim"}, ExpectedFingerprint: strings.Repeat("a", 64)}, func(context.Context) UpdateStatus { return status })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.Stale || preview.Allowed || preview.Reason == "" {
+		t.Fatalf("stale preview was allowed: %#v", preview)
+	}
+	if len(UpdateFingerprint(status)) != 64 {
+		t.Fatalf("unexpected update fingerprint: %q", UpdateFingerprint(status))
+	}
+}
+
+func TestUpdateApplyArgumentsAreBackendSpecificAndBounded(t *testing.T) {
+	cases := []struct {
+		backend string
+		scope   string
+		want    []string
+	}{
+		{"PackageKit", "selected", []string{"pkcon", "--noninteractive", "update", "vim"}},
+		{"apt-get", "all", []string{"apt-get", "-y", "--no-remove", "--only-upgrade", "upgrade"}},
+		{"dnf", "selected", []string{"dnf", "-y", "upgrade", "--", "vim"}},
+	}
+	for _, item := range cases {
+		got, err := updateApplyArguments(item.backend, item.scope, []string{"vim"})
+		if err != nil || strings.Join(got, " ") != strings.Join(item.want, " ") {
+			t.Fatalf("%s/%s args=%v err=%v, want %v", item.backend, item.scope, got, err, item.want)
+		}
+	}
+}
+
+func TestLongUpdateCommandStopsItsProcessGroupOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result := runLongUpdateCommand(ctx, "sh", "-c", "sleep 10")
+	if !errors.Is(result.Err, context.DeadlineExceeded) || time.Since(started) > 2*time.Second {
+		t.Fatalf("canceled update command was not bounded: result=%#v elapsed=%s", result, time.Since(started))
 	}
 }
 
