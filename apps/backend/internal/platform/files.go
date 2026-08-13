@@ -59,6 +59,7 @@ type FileEntry struct {
 	SymlinkTarget    string    `json:"symlinkTarget,omitempty"`
 	Mime             string    `json:"mime,omitempty"`
 	Reason           string    `json:"reason,omitempty"`
+	PreviewToken     string    `json:"previewToken,omitempty"`
 }
 
 type FileDirectory struct {
@@ -214,9 +215,21 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 	if err != nil {
 		return FileResult{}, err
 	}
+	if operation.ExpectedFingerprint != "" && (operation.Action == "read" || operation.Action == "read-window" || operation.Action == "stat") {
+		info, statErr := os.Stat(path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return FileResult{}, ErrFileNotFound
+		}
+		if statErr != nil {
+			return FileResult{}, statErr
+		}
+		if statFingerprint(info) != operation.ExpectedFingerprint {
+			return FileResult{}, ErrFileConflict
+		}
+	}
 	switch operation.Action {
 	case "list":
-		return listDirectory(path, operation.ShowHidden)
+		return listDirectory(path, operation.Path, operation.ShowHidden)
 	case "stat":
 		entry, err := fileEntry(path, operation.Path)
 		return FileResult{Entry: &entry}, err
@@ -302,7 +315,7 @@ func resolveFilePath(root, value string, privileged bool) (string, error) {
 	return path, nil
 }
 
-func listDirectory(path string, showHidden bool) (FileResult, error) {
+func listDirectory(path, displayPath string, showHidden bool) (FileResult, error) {
 	entries, err := os.ReadDir(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return FileResult{}, ErrFileNotFound
@@ -321,10 +334,10 @@ func listDirectory(path string, showHidden bool) (FileResult, error) {
 		if !showHidden && strings.HasPrefix(item.Name(), ".") {
 			continue
 		}
-		entry, entryErr := fileEntry(filepath.Join(path, item.Name()), item.Name())
+		entry, entryErr := fileEntry(filepath.Join(path, item.Name()), filepath.Join(displayPath, item.Name()))
 		if entryErr != nil {
 			if errors.Is(entryErr, os.ErrPermission) {
-				result = append(result, FileEntry{Name: item.Name(), Path: item.Name(), Hidden: strings.HasPrefix(item.Name(), "."), PermissionDenied: true, Reason: "metadata is not readable"})
+				result = append(result, FileEntry{Name: item.Name(), Path: filepath.Join(displayPath, item.Name()), Hidden: strings.HasPrefix(item.Name(), "."), PermissionDenied: true, Reason: "metadata is not readable"})
 				continue
 			}
 			continue
@@ -338,7 +351,7 @@ func listDirectory(path string, showHidden bool) (FileResult, error) {
 		return strings.ToLower(result[left].Name) < strings.ToLower(result[right].Name)
 	})
 	stat, _ := os.Stat(path)
-	return FileResult{Directory: &FileDirectory{Path: path, Entries: result, ShowHidden: showHidden, Fingerprint: statFingerprint(stat)}}, nil
+	return FileResult{Directory: &FileDirectory{Path: displayPath, Entries: result, ShowHidden: showHidden, Fingerprint: statFingerprint(stat)}}, nil
 }
 
 func fileEntry(path, displayPath string) (FileEntry, error) {

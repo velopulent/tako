@@ -46,6 +46,25 @@ func TestFileWriteConflictAndChunkChecksum(t *testing.T) {
 	}
 }
 
+func TestFileReadRejectsStalePreviewFingerprint(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := fileEntry(path, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := "0" + entry.Fingerprint[1:]
+	if stale == entry.Fingerprint {
+		stale = "1" + entry.Fingerprint[1:]
+	}
+	if _, err := applyFileOperation(context.Background(), FileOperation{Action: "read", Path: "note.txt", ExpectedFingerprint: stale}, root, true); !errors.Is(err, ErrFileConflict) {
+		t.Fatalf("stale preview read error = %v", err)
+	}
+}
+
 func TestArchiveRejectsUnsafeEntriesAndBounds(t *testing.T) {
 	if safeArchiveName("../etc/passwd") || safeArchiveName("/etc/passwd") || safeArchiveName("a/../../b") {
 		t.Fatal("unsafe archive path accepted")

@@ -13,7 +13,10 @@ export function MediaPreview({
   csrfToken: string
 }) {
   if (!entry || entry.kind !== "file") return null
-  const source = `/api/v1/files/content?path=${encodeURIComponent(entry.path)}`
+  const token = entry.previewToken
+    ? `&token=${encodeURIComponent(entry.previewToken)}`
+    : ""
+  const source = `/api/v1/files/content?path=${encodeURIComponent(entry.path)}${token}`
   const mime = entry.mime ?? "application/octet-stream"
   return (
     <Card>
@@ -58,7 +61,11 @@ export function MediaPreview({
         {(mime.startsWith("text/") ||
           mime === "application/json" ||
           mime === "application/javascript") && (
-          <TextEditor path={entry.path} csrfToken={csrfToken} />
+          <TextEditor
+            path={entry.path}
+            previewToken={entry.previewToken}
+            csrfToken={csrfToken}
+          />
         )}
         {!mime.startsWith("image/") &&
           !mime.startsWith("video/") &&

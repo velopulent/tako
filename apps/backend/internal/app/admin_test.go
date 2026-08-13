@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/platform"
 )
 
 type administrativeTestAuthenticator struct {
@@ -160,5 +161,24 @@ func TestParseFileRangeSupportsSuffixAndOpenEndedRanges(t *testing.T) {
 				t.Fatalf("parseFileRange(%q) = (%d, %d, %v)", test.rangeValue, start, end, valid)
 			}
 		})
+	}
+}
+
+func TestFilePreviewGrantIsSessionBoundAndVersionBound(t *testing.T) {
+	server := &Server{previewGrants: make(map[string]filePreviewGrant)}
+	directory := &platform.FileDirectory{Entries: []platform.FileEntry{{Kind: "file", Path: "notes.txt", Fingerprint: "fingerprint"}}}
+	server.issueFilePreviewTokens("session-1", directory)
+	token := directory.Entries[0].PreviewToken
+	if token == "" {
+		t.Fatal("file preview token was not issued")
+	}
+	if fingerprint, ok := server.validateFilePreviewToken("session-1", token, "notes.txt"); !ok || fingerprint != "fingerprint" {
+		t.Fatalf("valid preview grant rejected: %q, %v", fingerprint, ok)
+	}
+	if _, ok := server.validateFilePreviewToken("session-2", token, "notes.txt"); ok {
+		t.Fatal("preview grant crossed session boundary")
+	}
+	if _, ok := server.validateFilePreviewToken("session-1", token, "other.txt"); ok {
+		t.Fatal("preview grant crossed path boundary")
 	}
 }

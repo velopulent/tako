@@ -30,6 +30,7 @@ export type FileEntry = {
   symlinkTarget?: string
   mime?: string
   reason?: string
+  previewToken?: string
 }
 
 export type FileResult = {

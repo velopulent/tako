@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"encoding/pem"
@@ -88,6 +89,17 @@ type Server struct {
 	signalProcesses       func(context.Context, auth.SignalRequest) (platform.SignalResult, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 	notifications         *notificationStore
+	previewMu             sync.Mutex
+	previewGrants         map[string]filePreviewGrant
+}
+
+const filePreviewGrantTTL = 15 * time.Minute
+
+type filePreviewGrant struct {
+	SessionID   string
+	Path        string
+	Fingerprint string
+	ExpiresAt   time.Time
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -125,6 +137,7 @@ func New(cfg config.Config) (*Server, error) {
 		pruneDone:             make(chan struct{}),
 		detectCapabilities:    platform.Detect,
 		notifications:         newNotificationStore(),
+		previewGrants:         make(map[string]filePreviewGrant),
 		readHostConfiguration: platform.ReadHostConfiguration,
 		readPowerStatusFn:     platform.ReadPowerStatus,
 		readUnitDetails:       platform.UnitDetails,
@@ -1253,8 +1266,60 @@ func (server *Server) filesList(writer http.ResponseWriter, request *http.Reques
 	}
 	result, ok := server.applyFileOperation(writer, request, operation)
 	if ok {
+		if current, sessionOK := request.Context().Value(sessionKey{}).(session.Session); sessionOK && result.Directory != nil {
+			server.issueFilePreviewTokens(current.ID, result.Directory)
+		}
 		writeJSON(writer, http.StatusOK, result)
 	}
+}
+
+func (server *Server) issueFilePreviewTokens(sessionID string, directory *platform.FileDirectory) {
+	if sessionID == "" || directory == nil {
+		return
+	}
+	server.previewMu.Lock()
+	defer server.previewMu.Unlock()
+	now := time.Now()
+	for token, grant := range server.previewGrants {
+		if !now.Before(grant.ExpiresAt) {
+			delete(server.previewGrants, token)
+		}
+	}
+	for index := range directory.Entries {
+		entry := &directory.Entries[index]
+		if entry.Kind != "file" || entry.Fingerprint == "" {
+			continue
+		}
+		var random [24]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			continue
+		}
+		token := base64.RawURLEncoding.EncodeToString(random[:])
+		if len(server.previewGrants) >= 4096 {
+			for oldToken := range server.previewGrants {
+				delete(server.previewGrants, oldToken)
+				break
+			}
+		}
+		server.previewGrants[token] = filePreviewGrant{SessionID: sessionID, Path: entry.Path, Fingerprint: entry.Fingerprint, ExpiresAt: now.Add(filePreviewGrantTTL)}
+		entry.PreviewToken = token
+	}
+}
+
+func (server *Server) validateFilePreviewToken(sessionID, token, path string) (string, bool) {
+	if token == "" || sessionID == "" || path == "" {
+		return "", false
+	}
+	server.previewMu.Lock()
+	defer server.previewMu.Unlock()
+	grant, ok := server.previewGrants[token]
+	if !ok || grant.SessionID != sessionID || grant.Path != path || !time.Now().Before(grant.ExpiresAt) {
+		if ok && !time.Now().Before(grant.ExpiresAt) {
+			delete(server.previewGrants, token)
+		}
+		return "", false
+	}
+	return grant.Fingerprint, true
 }
 
 func (server *Server) filesSearch(writer http.ResponseWriter, request *http.Request) {
@@ -1284,6 +1349,20 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 		problem(writer, http.StatusBadRequest, "invalid-file-operation", "A file path is required")
 		return
 	}
+	expectedFingerprint := ""
+	if token := request.URL.Query().Get("token"); token != "" {
+		current, ok := request.Context().Value(sessionKey{}).(session.Session)
+		if !ok {
+			problem(writer, http.StatusUnauthorized, "no-session", "Authentication required")
+			return
+		}
+		var valid bool
+		expectedFingerprint, valid = server.validateFilePreviewToken(current.ID, token, path)
+		if !valid {
+			problem(writer, http.StatusForbidden, "file-preview-expired", "The file preview expired or no longer matches this session")
+			return
+		}
+	}
 	offset, limit := int64(0), int64(platform.MaxFileChunk)
 	if raw := request.URL.Query().Get("offset"); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
@@ -1303,7 +1382,7 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 	}
 	status := http.StatusOK
 	if rangeValue := request.Header.Get("Range"); rangeValue != "" {
-		statResult, statOK := server.applyFileOperation(writer, request, platform.FileOperation{Action: "stat", Path: path})
+		statResult, statOK := server.applyFileOperation(writer, request, platform.FileOperation{Action: "stat", Path: path, ExpectedFingerprint: expectedFingerprint})
 		if !statOK || statResult.Entry == nil {
 			return
 		}
@@ -1322,7 +1401,7 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 			status = http.StatusPartialContent
 		}
 	}
-	result, ok := server.applyFileOperation(writer, request, platform.FileOperation{Action: "read", Path: path, Offset: offset, Limit: limit})
+	result, ok := server.applyFileOperation(writer, request, platform.FileOperation{Action: "read", Path: path, Offset: offset, Limit: limit, ExpectedFingerprint: expectedFingerprint})
 	if !ok {
 		return
 	}

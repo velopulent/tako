@@ -17,17 +17,22 @@ function encodeContent(value: string) {
 
 export function TextEditor({
   path,
+  previewToken,
   csrfToken,
 }: {
   path: string
+  previewToken?: string
   csrfToken: string
 }) {
   const [draft, setDraft] = React.useState<string | undefined>(undefined)
   const content = useQuery({
-    queryKey: ["file-content", path],
+    queryKey: ["file-content", path, previewToken],
     queryFn: async () => {
+      const token = previewToken
+        ? `&token=${encodeURIComponent(previewToken)}`
+        : ""
       const response = await fetch(
-        `/api/v1/files/content?path=${encodeURIComponent(path)}`,
+        `/api/v1/files/content?path=${encodeURIComponent(path)}${token}`,
         { credentials: "same-origin" }
       )
       if (!response.ok) throw new Error("file read failed")

@@ -1534,6 +1534,7 @@ components:
         symlinkTarget: { type: string }
         mime: { type: string }
         reason: { type: string }
+        previewToken: { type: string, maxLength: 128, readOnly: true }
     FileDirectory:
       type: object
       required: [path, entries, showHidden, fingerprint]

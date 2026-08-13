@@ -92,7 +92,10 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
   }
   const download = (entry: FileEntry) => {
     const anchor = document.createElement("a")
-    anchor.href = `/api/v1/files/content?path=${encodePath(entry.path)}`
+    const token = entry.previewToken
+      ? `&token=${encodePath(entry.previewToken)}`
+      : ""
+    anchor.href = `/api/v1/files/content?path=${encodePath(entry.path)}${token}`
     anchor.download = entry.name
     anchor.click()
   }
