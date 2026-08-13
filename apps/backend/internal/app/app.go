@@ -32,7 +32,7 @@ import (
 	"github.com/velopulent/tako/internal/metrics"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
-	"github.com/velopulent/tako/internal/webui"
+	"github.com/velopulent/tako/internal/dashboard"
 	"go.uber.org/zap"
 )
 
@@ -154,7 +154,7 @@ func (server *Server) routes() http.Handler {
 			router.Get("/terminal", server.terminalStatus)
 		})
 	})
-	router.Handle("/*", spaHandler(webui.Files()))
+	router.Handle("/*", spaHandler(dashboard.Files()))
 	return router
 }
 

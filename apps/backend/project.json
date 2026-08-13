@@ -1,0 +1,82 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "backend",
+  "projectType": "application",
+  "sourceRoot": "apps/backend",
+  "implicitDependencies": ["dashboard"],
+  "tags": ["type:app", "scope:backend"],
+  "targets": {
+    "dev": {
+      "executor": "nx:run-commands",
+      "continuous": true,
+      "options": {
+        "command": "go run ./cmd/tako serve --dev",
+        "cwd": "apps/backend",
+        "env": {
+          "GOCACHE": "/tmp/tako-go-cache"
+        }
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["^build"],
+      "cache": true,
+      "inputs": ["production", "^production"],
+      "outputs": ["{workspaceRoot}/bin/tako"],
+      "options": {
+        "commands": [
+          "mkdir -p ../../bin",
+          "go build -buildvcs=false -trimpath -ldflags='-s -w' -o ../../bin/tako ./cmd/tako"
+        ],
+        "cwd": "apps/backend",
+        "env": {
+          "GOCACHE": "/tmp/tako-go-cache"
+        },
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": ["default", "^production"],
+      "options": {
+        "command": "go test ./...",
+        "cwd": "apps/backend",
+        "env": {
+          "GOCACHE": "/tmp/tako-go-cache"
+        }
+      }
+    },
+    "race": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": ["default", "^production"],
+      "options": {
+        "command": "go test -race ./...",
+        "cwd": "apps/backend",
+        "env": {
+          "GOCACHE": "/tmp/tako-go-cache"
+        }
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": ["default", "^production"],
+      "options": {
+        "command": "go vet ./...",
+        "cwd": "apps/backend",
+        "env": {
+          "GOCACHE": "/tmp/tako-go-cache"
+        }
+      }
+    },
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "go fmt ./...",
+        "cwd": "apps/backend"
+      }
+    }
+  }
+}

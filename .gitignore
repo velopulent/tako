@@ -1,11 +1,10 @@
 /bin/
 /dist/
 /coverage/
-/internal/webui/dist/*
-!/internal/webui/dist/index.html
-/web/node_modules/
-/web/dist/
-/web/.git/
+/apps/backend/internal/dashboard/dist/*
+!/apps/backend/internal/dashboard/dist/index.html
+node_modules/
+/apps/dashboard/dist/
+/.nx/
 *.prof
 *.test
-

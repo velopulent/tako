@@ -1,0 +1,24 @@
+{
+  "name": "tako",
+  "private": true,
+  "version": "0.0.1",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "nx run-many -t dev --projects=backend,dashboard --parallel=2",
+    "build": "nx build backend",
+    "test": "nx run-many -t test,typecheck",
+    "lint": "nx run-many -t lint",
+    "format": "nx run-many -t format",
+    "typecheck": "nx typecheck dashboard",
+    "race": "nx race backend",
+    "graph": "nx graph"
+  },
+  "devDependencies": {
+    "@nx/eslint": "^23.1.0",
+    "@nx/vite": "^23.1.0",
+    "nx": "^23.1.0"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "extends": "nx/presets/npm.json",
+  "defaultBase": "main",
+  "namedInputs": {
+    "production": [
+      "default"
+    ]
+  },
+  "plugins": [
+    {
+      "plugin": "@nx/vite/plugin",
+      "include": [
+        "apps/dashboard/**/*"
+      ],
+      "options": {
+        "buildTargetName": "build",
+        "serveTargetName": "dev",
+        "previewTargetName": "preview",
+        "testTargetName": "test",
+        "serveStaticTargetName": "serve-static"
+      }
+    },
+    {
+      "plugin": "@nx/eslint/plugin",
+      "include": [
+        "apps/dashboard/**/*"
+      ],
+      "options": {
+        "targetName": "lint"
+      }
+    }
+  ],
+  "analytics": false
+}

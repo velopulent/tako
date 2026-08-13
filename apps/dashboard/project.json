@@ -1,0 +1,28 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "dashboard",
+  "projectType": "application",
+  "sourceRoot": "apps/dashboard/src",
+  "tags": ["type:app", "scope:dashboard"],
+  "targets": {
+    "build": {
+      "dependsOn": ["typecheck"]
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": ["default", "^production"],
+      "options": {
+        "command": "tsc -b --pretty false",
+        "cwd": "apps/dashboard"
+      }
+    },
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "prettier --write .",
+        "cwd": "apps/dashboard"
+      }
+    }
+  }
+}

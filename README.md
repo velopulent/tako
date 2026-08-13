@@ -1,19 +1,30 @@
 # Tako
 
-Tako is a lightweight, modern Linux administration dashboard written in Go and React.
+Tako is a lightweight, modern Linux administration dashboard written in Go and React. The repository is an Nx monorepo managed with Bun.
 
 ## Development
 
-Requirements: Go 1.26+, Bun, Linux procfs, and optional system D-Bus services.
+Requirements: Go 1.26+, Bun 1.3+, Linux procfs, and optional system D-Bus services.
 
 ```bash
-cd web && bun install
-cd ..
-make build-web
-go run ./cmd/tako serve --dev
+bun install
+bun run dev
 ```
 
-Open `http://127.0.0.1:9090`. Development mode accepts a local UNIX username without a password and is restricted to loopback HTTP. Production mode uses HTTPS and `/run/tako/session.sock` for PAM authentication.
+Open `http://127.0.0.1:5173`. Nx runs the Vite dashboard and Go backend together; Vite proxies `/api` requests to the backend on `http://127.0.0.1:9090`. Development mode accepts a local UNIX username without a password and is restricted to loopback HTTP. Production mode uses HTTPS and `/run/tako/session.sock` for PAM authentication.
+
+Common workspace commands:
+
+```bash
+bun run build
+bun run test
+bun run lint
+bun run typecheck
+bun run race
+bun run graph
+```
+
+`bun run build` builds `apps/dashboard` first, embeds its output in `apps/backend`, and writes the multicall executable to `bin/tako`.
 
 For local production-mode PAM testing, run both process modes in separate terminals:
 
@@ -22,7 +33,7 @@ sudo -g "$(id -gn)" ./bin/tako sessiond
 ./bin/tako serve --config ./local-config.toml
 ```
 
-Set `data_dir` in `local-config.toml` to a directory writable only by your user; other server values can follow `config.example.toml`. Running `sudo ./bin/tako serve` alone does not start the privileged PAM service. Keep the network gateway unprivileged. Logs are JSON on stderr; set `TAKO_LOG_LEVEL=debug` for more detail.
+Set `data_dir` in `local-config.toml` to a directory writable only by your user; other server values can follow `apps/backend/config.example.toml`. Running `sudo ./bin/tako serve` alone does not start the privileged PAM service. Keep the network gateway unprivileged. Logs are JSON on stderr; set `TAKO_LOG_LEVEL=debug` for more detail.
 
 ## Implemented
 
@@ -38,4 +49,4 @@ Other destructive administration actions remain adapter boundaries: Tako does no
 
 ## Production layout
 
-Install the single `bin/tako` multicall executable, systemd units from `packaging/systemd`, and PAM policy from `packaging/pam`. Systemd launches `tako serve` as the unprivileged network gateway and `tako sessiond` as the socket-activated PAM/PTY boundary. `tako bridge` is launched per user when module mutations need it. These remain isolated processes with distinct users and sandboxes; no gateway process retains root privileges.
+Install the single `bin/tako` multicall executable, systemd units from `apps/backend/packaging/systemd`, and PAM policy from `apps/backend/packaging/pam`. Systemd launches `tako serve` as the unprivileged network gateway and `tako sessiond` as the socket-activated PAM/PTY boundary. `tako bridge` is launched per user when module mutations need it. These remain isolated processes with distinct users and sandboxes; no gateway process retains root privileges.
