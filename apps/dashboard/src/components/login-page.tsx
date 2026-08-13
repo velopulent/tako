@@ -6,7 +6,13 @@ import {
   UserIcon,
 } from "lucide-react"
 
-import { APIError, api, type SessionResponse } from "@/lib/api"
+import {
+  APIError,
+  api,
+  type LoginChallenge,
+  type SessionResponse,
+} from "@/lib/api"
+import { LoginPromptFields } from "@/components/login-prompt-fields"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -35,6 +41,7 @@ export function LoginPage({
   onAuthenticated: (session: SessionResponse) => void
 }) {
   const [error, setError] = React.useState("")
+  const [challenge, setChallenge] = React.useState<LoginChallenge | null>(null)
   const [pending, startTransition] = React.useTransition()
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -43,15 +50,33 @@ export function LoginPage({
     setError("")
     startTransition(async () => {
       try {
-        const session = await api<SessionResponse>("/auth/login", {
-          method: "POST",
-          body: JSON.stringify({
-            username: String(form.get("username") ?? ""),
-            password: String(form.get("password") ?? ""),
-          }),
-        })
-        onAuthenticated(session)
+        const result = await api<SessionResponse | LoginChallenge>(
+          "/auth/login",
+          {
+            method: "POST",
+            body: JSON.stringify(
+              challenge
+                ? {
+                    conversationId: challenge.conversationId,
+                    responses: challenge.prompts.map((prompt) => ({
+                      id: prompt.id,
+                      value: String(form.get(prompt.id) ?? ""),
+                    })),
+                  }
+                : {
+                    username: String(form.get("username") ?? ""),
+                    password: String(form.get("password") ?? ""),
+                  }
+            ),
+          }
+        )
+        if ("prompts" in result) {
+          setChallenge(result)
+        } else {
+          onAuthenticated(result)
+        }
       } catch (caught) {
+        setChallenge(null)
         if (
           caught instanceof APIError &&
           caught.code === "authentication-unavailable"
@@ -60,10 +85,26 @@ export function LoginPage({
             "Authentication service is unavailable. Start tako sessiond, then try again."
           )
         } else {
-          setError("Check your username and password, then try again.")
+          setError(
+            challenge
+              ? "The authentication response was rejected. Start again."
+              : "Check your username and password, then try again."
+          )
         }
       }
     })
+  }
+
+  function cancelConversation() {
+    const conversationId = challenge?.conversationId
+    setChallenge(null)
+    setError("")
+    if (conversationId) {
+      void api<void>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ conversationId, cancel: true }),
+      }).catch(() => {})
+    }
   }
 
   return (
@@ -87,38 +128,44 @@ export function LoginPage({
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}
-              <Field>
-                <FieldLabel htmlFor="username">Username</FieldLabel>
-                <InputGroup>
-                  <InputGroupAddon>
-                    <UserIcon aria-hidden="true" />
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    id="username"
-                    name="username"
-                    autoComplete="username"
-                    required
-                    autoFocus
-                  />
-                </InputGroup>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="password">Password</FieldLabel>
-                <InputGroup>
-                  <InputGroupAddon>
-                    <LockKeyholeIcon aria-hidden="true" />
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    id="password"
-                    name="password"
-                    type="password"
-                    autoComplete="current-password"
-                  />
-                </InputGroup>
-                <FieldDescription>
-                  Authentication follows this host&apos;s PAM policy.
-                </FieldDescription>
-              </Field>
+              {challenge ? (
+                <LoginPromptFields prompts={challenge.prompts} />
+              ) : (
+                <>
+                  <Field>
+                    <FieldLabel htmlFor="username">Username</FieldLabel>
+                    <InputGroup>
+                      <InputGroupAddon>
+                        <UserIcon aria-hidden="true" />
+                      </InputGroupAddon>
+                      <InputGroupInput
+                        id="username"
+                        name="username"
+                        autoComplete="username"
+                        required
+                        autoFocus
+                      />
+                    </InputGroup>
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="password">Password</FieldLabel>
+                    <InputGroup>
+                      <InputGroupAddon>
+                        <LockKeyholeIcon aria-hidden="true" />
+                      </InputGroupAddon>
+                      <InputGroupInput
+                        id="password"
+                        name="password"
+                        type="password"
+                        autoComplete="current-password"
+                      />
+                    </InputGroup>
+                    <FieldDescription>
+                      Authentication follows this host&apos;s PAM policy.
+                    </FieldDescription>
+                  </Field>
+                </>
+              )}
             </FieldGroup>
           </CardContent>
           <CardFooter className="mt-6 flex-col gap-3">
@@ -129,8 +176,19 @@ export function LoginPage({
                   className="animate-spin"
                 />
               )}
-              {pending ? "Signing in…" : "Sign in"}
+              {pending ? "Signing in…" : challenge ? "Continue" : "Sign in"}
             </Button>
+            {challenge ? (
+              <Button
+                className="w-full"
+                type="button"
+                variant="ghost"
+                onClick={cancelConversation}
+                disabled={pending}
+              >
+                Start over
+              </Button>
+            ) : null}
             <p className="text-center text-xs text-muted-foreground">
               Credentials are passed to PAM and never stored by Tako.
             </p>

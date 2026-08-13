@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
@@ -18,6 +21,138 @@ type unavailableAuthenticator struct{}
 
 func (unavailableAuthenticator) Authenticate(context.Context, string, string) (auth.Identity, error) {
 	return auth.Identity{}, auth.ErrServiceUnavailable
+}
+
+type conversationalAuthenticator struct {
+	canceled  atomic.Bool
+	confirmed atomic.Bool
+	closed    atomic.Bool
+}
+
+func (authenticator *conversationalAuthenticator) ConfirmUserSession(_ context.Context, token string) error {
+	authenticator.confirmed.Store(token == "bridge-token")
+	return nil
+}
+
+func (authenticator *conversationalAuthenticator) CloseUserSession(_ context.Context, token string) error {
+	authenticator.closed.Store(token == "bridge-token")
+	return nil
+}
+
+func (*conversationalAuthenticator) Authenticate(context.Context, string, string) (auth.Identity, error) {
+	return auth.Identity{}, errors.New("one-shot authentication should not be used")
+}
+
+func (*conversationalAuthenticator) AdvanceConversation(_ context.Context, request *auth.ConversationRequest) (auth.ConversationResponse, error) {
+	if request.ConversationID == "" {
+		if request.Username != "octopus" || request.Password != "secret" {
+			return auth.ConversationResponse{Error: "authentication-failed"}, nil
+		}
+		return auth.ConversationResponse{
+			ConversationID: "conversation-token",
+			Prompts:        []auth.Prompt{{ID: "otp", Style: auth.PromptText, Message: "Verification code:"}},
+		}, nil
+	}
+	if request.ConversationID == "conversation-token" && len(request.Responses) == 1 && request.Responses[0].ID == "otp" && request.Responses[0].Value == "123456" {
+		return auth.ConversationResponse{
+			Identity:    &auth.Identity{Username: "octopus", UID: 1000, GID: 1000},
+			BridgeToken: "bridge-token",
+		}, nil
+	}
+	return auth.ConversationResponse{Error: "invalid-conversation"}, nil
+}
+
+func (authenticator *conversationalAuthenticator) CancelConversation(_ context.Context, id string) error {
+	authenticator.canceled.Store(id == "conversation-token")
+	return nil
+}
+
+func TestLoginRelaysMultiplePAMRounds(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	authenticator := &conversationalAuthenticator{}
+	server.authenticator = authenticator
+	handler := server.routes()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"octopus","password":"secret"}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("first round returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"conversationId":"conversation-token"`)) || bytes.Contains(recorder.Body.Bytes(), []byte("secret")) {
+		t.Fatalf("unsafe or incomplete challenge: %s", recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"conversationId":"conversation-token","responses":[{"id":"otp","value":"123456"}]}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("second round returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(recorder.Result().Cookies()) == 0 || !authenticator.confirmed.Load() || bytes.Contains(recorder.Body.Bytes(), []byte("bridge-token")) || bytes.Contains(recorder.Body.Bytes(), []byte("123456")) {
+		t.Fatalf("session response leaked secrets or omitted cookie: %s", recorder.Body.String())
+	}
+	var sessionResponse struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &sessionResponse); err != nil {
+		t.Fatal(err)
+	}
+	logout := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	logout.AddCookie(recorder.Result().Cookies()[0])
+	logout.Header.Set("X-CSRF-Token", sessionResponse.CSRFToken)
+	logoutRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(logoutRecorder, logout)
+	for deadline := time.Now().Add(time.Second); !authenticator.closed.Load() && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if logoutRecorder.Code != http.StatusNoContent || !authenticator.closed.Load() {
+		t.Fatalf("logout returned %d, user session closed=%v", logoutRecorder.Code, authenticator.closed.Load())
+	}
+}
+
+func TestLoginConversationCanBeCanceled(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	authenticator := &conversationalAuthenticator{}
+	server.authenticator = authenticator
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"conversationId":"conversation-token","cancel":true}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || !authenticator.canceled.Load() {
+		t.Fatalf("cancel returned %d, canceled=%v", recorder.Code, authenticator.canceled.Load())
+	}
+}
+
+func TestLoginRejectsMixedConversationShape(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	server.config.Development = false
+	server.authenticator = &conversationalAuthenticator{}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"octopus","conversationId":"conversation-token","responses":[{"id":"otp","value":"123456"}]}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	request.Header.Set("Origin", server.config.AllowedOrigins[0])
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("mixed request returned %d: %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestDevelopmentLoginAndDashboard(t *testing.T) {

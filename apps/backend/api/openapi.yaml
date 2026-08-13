@@ -18,7 +18,20 @@ paths:
       responses:
         '200':
           description: Authenticated session
+        '202':
+          description: PAM requires another bounded conversation round
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginChallenge' }
+        '204':
+          description: Pending PAM conversation canceled
+        '400':
+          $ref: '#/components/responses/Problem'
         '401':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /auth/session:
     get:
@@ -202,11 +215,51 @@ paths:
 components:
   schemas:
     LoginRequest:
+      oneOf:
+        - type: object
+          required: [username]
+          additionalProperties: false
+          properties:
+            username: { type: string, minLength: 1, maxLength: 256 }
+            password: { type: string, maxLength: 4096 }
+        - type: object
+          required: [conversationId, responses]
+          additionalProperties: false
+          properties:
+            conversationId: { type: string, minLength: 1, maxLength: 64 }
+            responses:
+              type: array
+              minItems: 1
+              maxItems: 1
+              items:
+                type: object
+                required: [id, value]
+                additionalProperties: false
+                properties:
+                  id: { type: string, minLength: 1, maxLength: 64 }
+                  value: { type: string, maxLength: 4096 }
+        - type: object
+          required: [conversationId, cancel]
+          additionalProperties: false
+          properties:
+            conversationId: { type: string, minLength: 1, maxLength: 64 }
+            cancel: { type: boolean, const: true }
+    LoginChallenge:
       type: object
-      required: [username, password]
+      required: [conversationId, prompts]
       properties:
-        username: { type: string, maxLength: 256 }
-        password: { type: string, maxLength: 4096 }
+        conversationId: { type: string }
+        prompts:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: object
+            required: [id, style, message]
+            properties:
+              id: { type: string }
+              style: { type: string, enum: [hidden, text, info, error] }
+              message: { type: string, maxLength: 1024 }
     Problem:
       type: object
       required: [title, status, code]

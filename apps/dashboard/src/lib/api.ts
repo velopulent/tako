@@ -15,6 +15,17 @@ export type SessionResponse = {
   adminIdleTimeoutSeconds?: number
 }
 
+export type LoginPrompt = {
+  id: string
+  style: "hidden" | "text" | "info" | "error"
+  message: string
+}
+
+export type LoginChallenge = {
+  conversationId: string
+  prompts: LoginPrompt[]
+}
+
 export type HostInfo = {
   hostname: string
   operatingSystem: string

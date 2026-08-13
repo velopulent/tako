@@ -28,16 +28,79 @@ type Identity struct {
 	BridgeToken string `json:"-"`
 }
 
+type PromptStyle string
+
+const (
+	PromptHidden PromptStyle = "hidden"
+	PromptText   PromptStyle = "text"
+	PromptInfo   PromptStyle = "info"
+	PromptError  PromptStyle = "error"
+)
+
+type Prompt struct {
+	ID      string      `json:"id"`
+	Style   PromptStyle `json:"style"`
+	Message string      `json:"message"`
+}
+
+type PromptResponse struct {
+	ID    string `json:"id"`
+	Value string `json:"value"`
+}
+
+type ConversationRequest struct {
+	ConversationID string           `json:"conversationId,omitempty"`
+	Username       string           `json:"username,omitempty"`
+	Password       string           `json:"password,omitempty"`
+	Responses      []PromptResponse `json:"responses,omitempty"`
+	Cancel         bool             `json:"cancel,omitempty"`
+}
+
+func (request ConversationRequest) Valid() bool {
+	if len(request.ConversationID) > 64 || len(request.Username) > 256 || len(request.Password) > 4096 {
+		return false
+	}
+	if request.Cancel {
+		return request.ConversationID != "" && request.Username == "" && request.Password == "" && len(request.Responses) == 0
+	}
+	if request.ConversationID == "" {
+		return request.Username != "" && len(request.Responses) == 0
+	}
+	if request.Username != "" || request.Password != "" || len(request.Responses) != 1 {
+		return false
+	}
+	response := request.Responses[0]
+	return response.ID != "" && len(response.ID) <= 64 && len(response.Value) <= 4096
+}
+
+type ConversationResponse struct {
+	ConversationID string    `json:"conversationId,omitempty"`
+	Prompts        []Prompt  `json:"prompts,omitempty"`
+	Identity       *Identity `json:"identity,omitempty"`
+	BridgeToken    string    `json:"bridgeToken,omitempty"`
+	Error          string    `json:"error,omitempty"`
+}
+
+type UserSession struct {
+	Identity    Identity
+	Environment map[string]string
+	Close       func()
+}
+
+type Conversation func(PromptStyle, string) (string, error)
+
 type Request struct {
-	Operation string `json:"operation,omitempty"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	Token     string `json:"token,omitempty"`
-	Columns   uint16 `json:"columns,omitempty"`
-	Rows      uint16 `json:"rows,omitempty"`
-	Action    string `json:"action,omitempty"`
-	Unit      string `json:"unit,omitempty"`
-	Scope     string `json:"scope,omitempty"`
+	Operation      string           `json:"operation,omitempty"`
+	Username       string           `json:"username,omitempty"`
+	Password       string           `json:"password,omitempty"`
+	ConversationID string           `json:"conversationId,omitempty"`
+	Responses      []PromptResponse `json:"responses,omitempty"`
+	Token          string           `json:"token,omitempty"`
+	Columns        uint16           `json:"columns,omitempty"`
+	Rows           uint16           `json:"rows,omitempty"`
+	Action         string           `json:"action,omitempty"`
+	Unit           string           `json:"unit,omitempty"`
+	Scope          string           `json:"scope,omitempty"`
 }
 
 func ServiceAction(ctx context.Context, path, token, scope, unit, action string) error {
@@ -49,6 +112,27 @@ func ServiceAction(ctx context.Context, path, token, scope, unit, action string)
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 	if err := json.NewEncoder(conn).Encode(Request{Operation: "service-action", Token: token, Scope: scope, Unit: unit, Action: action}); err != nil {
+		return err
+	}
+	var response Response
+	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+		return err
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	return nil
+}
+
+func bridgeTokenRequest(ctx context.Context, path, operation, token string) error {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(conn).Encode(Request{Operation: operation, Token: token}); err != nil {
 		return err
 	}
 	var response Response
@@ -83,97 +167,233 @@ func VerifyPassword(ctx context.Context, path, username, password string) (Ident
 }
 
 type Response struct {
-	Identity    *Identity `json:"identity,omitempty"`
-	BridgeToken string    `json:"bridgeToken,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	Identity       *Identity `json:"identity,omitempty"`
+	BridgeToken    string    `json:"bridgeToken,omitempty"`
+	ConversationID string    `json:"conversationId,omitempty"`
+	Prompts        []Prompt  `json:"prompts,omitempty"`
+	Error          string    `json:"error,omitempty"`
 }
 
 type Authenticator interface {
 	Authenticate(context.Context, string, string) (Identity, error)
 }
 
+type ConversationAuthenticator interface {
+	AdvanceConversation(context.Context, *ConversationRequest) (ConversationResponse, error)
+	CancelConversation(context.Context, string) error
+}
+
+type SessionController interface {
+	ConfirmUserSession(context.Context, string) error
+	CloseUserSession(context.Context, string) error
+}
+
 type PAMAuthenticator struct{ Service string }
 
 func (auth PAMAuthenticator) Authenticate(_ context.Context, username, password string) (Identity, error) {
-	transaction, clear, err := auth.authenticate(username, password)
-	if clear != nil {
-		defer clear()
-	}
-	if err != nil {
-		return Identity{}, err
-	}
-	_ = transaction
-	return lookupIdentity(username)
-}
-
-// OpenSession authenticates and keeps the PAM session/credentials alive until
-// the returned close function is called by the privileged session service.
-func (auth PAMAuthenticator) OpenSession(username, password string) (Identity, func(), error) {
-	transaction, clear, err := auth.authenticate(username, password)
-	if err != nil {
-		if clear != nil {
-			clear()
-		}
-		return Identity{}, nil, err
-	}
-	if err := transaction.SetCred(pam.EstablishCred); err != nil {
-		clear()
-		return Identity{}, nil, err
-	}
-	if err := transaction.OpenSession(0); err != nil {
-		_ = transaction.SetCred(pam.DeleteCred)
-		clear()
-		return Identity{}, nil, err
-	}
-	identity, err := lookupIdentity(username)
-	clear()
-	if err != nil {
-		_ = transaction.CloseSession(0)
-		_ = transaction.SetCred(pam.DeleteCred)
-		return Identity{}, nil, err
-	}
-	var once sync.Once
-	closeSession := func() {
-		once.Do(func() {
-			_ = transaction.CloseSession(0)
-			_ = transaction.SetCred(pam.DeleteCred)
-		})
-	}
-	return identity, closeSession, nil
-}
-
-func (auth PAMAuthenticator) authenticate(username, password string) (*pam.Transaction, func(), error) {
-	if username == "" || password == "" {
-		return nil, nil, errors.New("missing credentials")
-	}
 	secret := password
-	clear := func() { secret = "" }
-	transaction, err := pam.StartFunc(auth.Service, username, func(style pam.Style, _ string) (string, error) {
+	defer func() { secret = "" }()
+	transaction, err := auth.authenticate(username, func(style PromptStyle, _ string) (string, error) {
 		switch style {
-		case pam.PromptEchoOff:
+		case PromptHidden:
 			return secret, nil
-		case pam.PromptEchoOn:
+		case PromptText:
 			return username, nil
 		default:
 			return "", nil
 		}
 	})
 	if err != nil {
-		clear()
-		return nil, nil, err
+		return Identity{}, err
+	}
+	defer transaction.End()
+	canonical, err := transaction.GetItem(pam.User)
+	if err != nil {
+		return Identity{}, err
+	}
+	return lookupIdentity(canonical)
+}
+
+// OpenSession authenticates and keeps the PAM session/credentials alive until
+// the returned close function is called by the privileged session service.
+func (auth PAMAuthenticator) OpenSession(username, password string) (Identity, func(), error) {
+	secret := password
+	session, err := auth.OpenSessionWithConversation(username, func(style PromptStyle, _ string) (string, error) {
+		switch style {
+		case PromptHidden:
+			return secret, nil
+		case PromptText:
+			return username, nil
+		default:
+			return "", nil
+		}
+	})
+	secret = ""
+	if err != nil {
+		return Identity{}, nil, err
+	}
+	return session.Identity, session.Close, nil
+}
+
+func (auth PAMAuthenticator) OpenSessionWithConversation(username string, conversation Conversation) (UserSession, error) {
+	transaction, err := auth.authenticate(username, conversation)
+	if err != nil {
+		return UserSession{}, err
+	}
+	if err := transaction.SetCred(pam.EstablishCred); err != nil {
+		_ = transaction.End()
+		return UserSession{}, err
+	}
+	if err := transaction.OpenSession(0); err != nil {
+		_ = transaction.SetCred(pam.DeleteCred)
+		_ = transaction.End()
+		return UserSession{}, err
+	}
+	canonical, err := transaction.GetItem(pam.User)
+	if err != nil {
+		_ = transaction.CloseSession(0)
+		_ = transaction.SetCred(pam.DeleteCred)
+		_ = transaction.End()
+		return UserSession{}, err
+	}
+	identity, err := lookupIdentity(canonical)
+	if err != nil {
+		_ = transaction.CloseSession(0)
+		_ = transaction.SetCred(pam.DeleteCred)
+		_ = transaction.End()
+		return UserSession{}, err
+	}
+	environment, err := transaction.GetEnvList()
+	if err != nil {
+		environment = make(map[string]string)
+	}
+	var once sync.Once
+	closeSession := func() {
+		once.Do(func() {
+			_ = transaction.CloseSession(0)
+			_ = transaction.SetCred(pam.DeleteCred)
+			_ = transaction.End()
+		})
+	}
+	return UserSession{Identity: identity, Environment: environment, Close: closeSession}, nil
+}
+
+func (auth PAMAuthenticator) authenticate(username string, conversation Conversation) (*pam.Transaction, error) {
+	if username == "" || conversation == nil {
+		return nil, errors.New("missing credentials")
+	}
+	transaction, err := pam.StartFunc(auth.Service, username, func(style pam.Style, message string) (string, error) {
+		switch style {
+		case pam.PromptEchoOff:
+			return conversation(PromptHidden, message)
+		case pam.PromptEchoOn:
+			return conversation(PromptText, message)
+		case pam.TextInfo:
+			return conversation(PromptInfo, message)
+		case pam.ErrorMsg:
+			return conversation(PromptError, message)
+		}
+		return "", errors.New("unsupported PAM conversation style")
+	})
+	if err != nil {
+		return nil, err
 	}
 	if err := transaction.Authenticate(0); err != nil {
-		clear()
-		return nil, nil, err
+		_ = transaction.End()
+		return nil, err
 	}
 	if err := transaction.AcctMgmt(0); err != nil {
-		clear()
-		return nil, nil, err
+		_ = transaction.End()
+		return nil, err
 	}
-	return transaction, clear, nil
+	return transaction, nil
 }
 
 type SocketAuthenticator struct{ Path string }
+
+func (auth SocketAuthenticator) ConfirmUserSession(ctx context.Context, token string) error {
+	return bridgeTokenRequest(ctx, auth.Path, "confirm-session", token)
+}
+
+func (auth SocketAuthenticator) CloseUserSession(ctx context.Context, token string) error {
+	return bridgeTokenRequest(ctx, auth.Path, "close-session", token)
+}
+
+func (auth SocketAuthenticator) AdvanceConversation(ctx context.Context, request *ConversationRequest) (ConversationResponse, error) {
+	if request == nil {
+		return ConversationResponse{}, errConversationRequest
+	}
+	wireRequest := &Request{
+		Operation:      "conversation",
+		Username:       request.Username,
+		Password:       request.Password,
+		ConversationID: request.ConversationID,
+		Responses:      request.Responses,
+	}
+	request.Password = ""
+	for index := range request.Responses {
+		request.Responses[index].Value = ""
+	}
+	response, err := auth.conversationRequest(ctx, wireRequest)
+	if err != nil {
+		return ConversationResponse{}, err
+	}
+	return ConversationResponse{
+		ConversationID: response.ConversationID,
+		Prompts:        response.Prompts,
+		Identity:       response.Identity,
+		BridgeToken:    response.BridgeToken,
+		Error:          response.Error,
+	}, nil
+}
+
+func (auth SocketAuthenticator) CancelConversation(ctx context.Context, id string) error {
+	response, err := auth.conversationRequest(ctx, &Request{Operation: "cancel-conversation", ConversationID: id})
+	if err != nil {
+		return err
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	return nil
+}
+
+var errConversationRequest = errors.New("invalid conversation request")
+
+func (auth SocketAuthenticator) conversationRequest(ctx context.Context, request *Request) (Response, error) {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", auth.Path)
+	if err != nil {
+		return Response{}, fmt.Errorf("%w: connect to %s: %v", ErrServiceUnavailable, auth.Path, err)
+	}
+	defer conn.Close()
+	stopCancelWatch := make(chan struct{})
+	defer close(stopCancelWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopCancelWatch:
+		}
+	}()
+	deadline := time.Now().Add(time.Minute)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
+		return Response{}, fmt.Errorf("%w: send conversation request: %v", ErrServiceUnavailable, err)
+	}
+	request.Password = ""
+	for index := range request.Responses {
+		request.Responses[index].Value = ""
+	}
+	var response Response
+	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+		return Response{}, fmt.Errorf("%w: read conversation response: %v", ErrServiceUnavailable, err)
+	}
+	return response, nil
+}
 
 func (auth SocketAuthenticator) Authenticate(ctx context.Context, username, password string) (Identity, error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}

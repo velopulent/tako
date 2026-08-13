@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/big"
 	"net"
@@ -47,6 +48,11 @@ type Server struct {
 	loginAttempts *loginLimiter
 	logger        *zap.Logger
 	cancel        context.CancelFunc
+	cleanupQueue  chan auth.Identity
+	pruneDone     chan struct{}
+	workersWG     sync.WaitGroup
+	cleanupMu     sync.Mutex
+	cleanupClosed bool
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -63,17 +69,40 @@ func New(cfg config.Config) (*Server, error) {
 		cancel()
 		return nil, err
 	}
+	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
 	go sampler.Run(ctx, cfg.MonitoringInterval)
 	server := &Server{
 		config:        cfg,
-		sessions:      session.NewStore(15*time.Minute, 12*time.Hour),
+		sessions:      sessions,
 		authenticator: authenticator,
 		metrics:       sampler,
 		preferences:   preferenceStore,
 		loginAttempts: newLoginLimiter(5, time.Minute),
 		logger:        zap.L().Named("gateway"),
 		cancel:        cancel,
+		cleanupQueue:  make(chan auth.Identity, 64),
+		pruneDone:     make(chan struct{}),
 	}
+	sessions.SetDeleteHook(server.enqueueUserSessionClose)
+	if _, ok := authenticator.(auth.SessionController); ok {
+		for range 4 {
+			server.workersWG.Add(1)
+			go server.cleanupWorker()
+		}
+	}
+	go func() {
+		defer close(server.pruneDone)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sessions.Prune()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	server.http = &http.Server{
 		Addr:              cfg.Address,
 		Handler:           server.routes(),
@@ -84,6 +113,41 @@ func New(cfg config.Config) (*Server, error) {
 		MaxHeaderBytes:    1 << 20,
 	}
 	return server, nil
+}
+
+func (server *Server) closeUserSession(identity auth.Identity) {
+	controller, ok := server.authenticator.(auth.SessionController)
+	if !ok || identity.BridgeToken == "" {
+		return
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	if err := controller.CloseUserSession(closeCtx, identity.BridgeToken); err != nil {
+		server.logger.Warn("user session cleanup failed", zap.String("username", identity.Username), zap.Error(err))
+	}
+}
+
+func (server *Server) enqueueUserSessionClose(identity auth.Identity) {
+	if _, ok := server.authenticator.(auth.SessionController); !ok || identity.BridgeToken == "" {
+		return
+	}
+	server.cleanupMu.Lock()
+	defer server.cleanupMu.Unlock()
+	if server.cleanupClosed {
+		return
+	}
+	select {
+	case server.cleanupQueue <- identity:
+	default:
+		server.logger.Error("user session cleanup queue full; sessiond grant will expire automatically", zap.String("username", identity.Username))
+	}
+}
+
+func (server *Server) cleanupWorker() {
+	defer server.workersWG.Done()
+	for identity := range server.cleanupQueue {
+		server.closeUserSession(identity)
+	}
 }
 
 func (server *Server) ListenAndServe() error {
@@ -128,13 +192,33 @@ func (server *Server) Serve(listener net.Listener) error {
 func (server *Server) Shutdown(ctx context.Context) error {
 	server.cancel()
 	shutdownErr := server.http.Shutdown(ctx)
+	<-server.pruneDone
+	server.sessions.Close()
+	server.cleanupMu.Lock()
+	if !server.cleanupClosed {
+		server.cleanupClosed = true
+		close(server.cleanupQueue)
+	}
+	server.cleanupMu.Unlock()
+	cleaned := make(chan struct{})
+	go func() {
+		server.workersWG.Wait()
+		close(cleaned)
+	}()
+	select {
+	case <-cleaned:
+	case <-ctx.Done():
+		shutdownErr = errors.Join(shutdownErr, ctx.Err())
+	}
 	closeErr := server.preferences.Close()
 	return errors.Join(shutdownErr, closeErr)
 }
 
 func (server *Server) routes() http.Handler {
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer, server.logRequest)
+	// Do not trust forwarding headers until an explicit trusted-proxy policy is
+	// configured; RemoteAddr feeds authentication rate limits and audit logs.
+	router.Use(middleware.RequestID, middleware.Recoverer, server.logRequest)
 	router.Use(server.securityHeaders)
 
 	router.Route("/api/v1", func(router chi.Router) {
@@ -176,20 +260,67 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 		problem(writer, http.StatusForbidden, "origin-not-allowed", "Request origin is not allowed")
 		return
 	}
-	if !server.loginAttempts.Allow(request.RemoteAddr) {
-		server.logger.Warn("login rejected", zap.String("reason", "rate-limited"), zap.String("remote_ip", request.RemoteAddr))
-		problem(writer, http.StatusTooManyRequests, "rate-limited", "Too many sign-in attempts")
-		return
-	}
 	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
-	var credentials auth.Request
-	if err := json.NewDecoder(request.Body).Decode(&credentials); err != nil {
+	var credentials auth.ConversationRequest
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&credentials); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		server.logger.Warn("login rejected", zap.String("reason", "invalid-request"), zap.Error(err))
 		problem(writer, http.StatusBadRequest, "invalid-request", "Invalid login request")
 		return
 	}
-	identity, err := server.authenticator.Authenticate(request.Context(), credentials.Username, credentials.Password)
-	credentials.Password = ""
+	developmentStart := server.config.Development && credentials.ConversationID == "" && len(credentials.Responses) == 0 && !credentials.Cancel
+	if !credentials.Valid() && !developmentStart {
+		problem(writer, http.StatusBadRequest, "invalid-request", "Invalid login request")
+		return
+	}
+	conversationAuthenticator, conversational := server.authenticator.(auth.ConversationAuthenticator)
+	if credentials.Cancel {
+		if !conversational {
+			problem(writer, http.StatusBadRequest, "invalid-request", "Invalid login cancellation")
+			return
+		}
+		if err := conversationAuthenticator.CancelConversation(request.Context(), credentials.ConversationID); err != nil {
+			problem(writer, http.StatusServiceUnavailable, "authentication-unavailable", "Authentication service is unavailable")
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if credentials.ConversationID == "" && !server.loginAttempts.Allow(request.RemoteAddr) {
+		server.logger.Warn("login rejected", zap.String("reason", "rate-limited"), zap.String("remote_ip", request.RemoteAddr))
+		problem(writer, http.StatusTooManyRequests, "rate-limited", "Too many sign-in attempts")
+		return
+	}
+	var identity auth.Identity
+	var err error
+	if conversational {
+		result, conversationErr := conversationAuthenticator.AdvanceConversation(request.Context(), &credentials)
+		if conversationErr != nil {
+			err = conversationErr
+		} else if result.Error != "" {
+			if result.Error == "invalid-conversation" {
+				problem(writer, http.StatusBadRequest, "invalid-conversation", "Authentication conversation is invalid or expired")
+				return
+			}
+			if result.Error == "authentication-busy" {
+				problem(writer, http.StatusServiceUnavailable, "authentication-busy", "Authentication service is busy; try again shortly")
+				return
+			}
+			err = auth.ErrAuthenticationFailed
+		} else if len(result.Prompts) > 0 {
+			writeJSON(writer, http.StatusAccepted, map[string]any{"conversationId": result.ConversationID, "prompts": result.Prompts})
+			return
+		} else if result.Identity != nil {
+			identity = *result.Identity
+			identity.BridgeToken = result.BridgeToken
+		} else {
+			err = auth.ErrAuthenticationFailed
+		}
+	} else {
+		identity, err = server.authenticator.Authenticate(request.Context(), credentials.Username, credentials.Password)
+		credentials.Password = ""
+	}
 	if err != nil {
 		time.Sleep(300 * time.Millisecond)
 		if errors.Is(err, auth.ErrServiceUnavailable) {
@@ -205,9 +336,23 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 	server.loginAttempts.Reset(request.RemoteAddr)
 	created, err := server.sessions.Create(identity)
 	if err != nil {
+		server.closeUserSession(identity)
 		server.logger.Error("session creation failed", zap.String("username", identity.Username), zap.Error(err))
 		problem(writer, http.StatusInternalServerError, "session-failed", "Could not create session")
 		return
+	}
+	if controller, ok := server.authenticator.(auth.SessionController); ok && identity.BridgeToken != "" {
+		confirmCtx, confirmCancel := context.WithTimeout(request.Context(), 5*time.Second)
+		confirmErr := controller.ConfirmUserSession(confirmCtx, identity.BridgeToken)
+		confirmCancel()
+		if confirmErr != nil {
+			if failedIdentity, ok := server.sessions.DeleteWithoutNotify(created.ID); ok {
+				server.closeUserSession(failedIdentity)
+			}
+			server.logger.Error("user session confirmation failed", zap.String("username", identity.Username), zap.Error(confirmErr))
+			problem(writer, http.StatusServiceUnavailable, "authentication-unavailable", "Authentication service is unavailable")
+			return
+		}
 	}
 	http.SetCookie(writer, &http.Cookie{Name: session.CookieName, Value: created.ID, Path: "/", HttpOnly: true, Secure: !server.config.Development, SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds())})
 	server.logger.Info("login succeeded", zap.String("username", identity.Username), zap.Int("uid", identity.UID))
@@ -259,7 +404,10 @@ func (server *Server) adminDrop(writer http.ResponseWriter, request *http.Reques
 
 func (server *Server) logout(writer http.ResponseWriter, request *http.Request) {
 	current := request.Context().Value(sessionKey{}).(session.Session)
-	server.sessions.Delete(current.ID)
+	identity, deleted := server.sessions.DeleteWithoutNotify(current.ID)
+	if deleted {
+		server.closeUserSession(identity)
+	}
 	server.logger.Info("logout succeeded", zap.String("username", current.Identity.Username))
 	http.SetCookie(writer, &http.Cookie{Name: session.CookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: !server.config.Development, SameSite: http.SameSiteStrictMode})
 	writer.WriteHeader(http.StatusNoContent)

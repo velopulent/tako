@@ -31,8 +31,10 @@ type bridgeGrant struct {
 	identity auth.Identity
 	expires  time.Time
 	terminal *os.File
+	bridge   io.Closer
 	active   bool
 	closePAM func()
+	timer    *time.Timer
 }
 
 type grantStore struct {
@@ -84,6 +86,10 @@ func Run(args []string) error {
 
 	service := auth.PAMAuthenticator{Service: "tako"}
 	grants := &grantStore{values: make(map[string]bridgeGrant)}
+	conversations := newConversationStore(service, func(session auth.UserSession) (string, error) {
+		return grants.addUserSession(session)
+	})
+	defer conversations.closeAll()
 	defer grants.closeAll()
 	for {
 		conn, err := listener.Accept()
@@ -94,7 +100,7 @@ func Run(args []string) error {
 			logger.Warn("connection accept failed", zap.Error(err))
 			continue
 		}
-		go handle(conn, service, grants, logger)
+		go handle(conn, service, conversations, grants, logger)
 	}
 }
 
@@ -111,15 +117,97 @@ func activatedListener() (net.Listener, bool, error) {
 	return listener, true, err
 }
 
-func handle(conn net.Conn, service auth.PAMAuthenticator, grants *grantStore, logger *zap.Logger) {
+func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, logger *zap.Logger) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	decoder := json.NewDecoder(io.LimitReader(conn, 16<<10))
+	decoder.DisallowUnknownFields()
 	encoder := json.NewEncoder(conn)
 	var request auth.Request
 	if err := decoder.Decode(&request); err != nil {
 		logger.Warn("session request rejected", zap.String("reason", "invalid-request"), zap.Error(err))
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation == "conversation" {
+		if request.Token != "" || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
+			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
+			return
+		}
+		conversationRequest := auth.ConversationRequest{
+			ConversationID: request.ConversationID,
+			Username:       request.Username,
+			Password:       request.Password,
+			Responses:      request.Responses,
+		}
+		if !conversationRequest.Valid() || conversationRequest.Cancel {
+			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
+			return
+		}
+		_ = conn.SetDeadline(time.Now().Add(time.Minute))
+		conversationCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		response, err := conversations.advance(conversationCtx, conversationRequest)
+		request.Password = ""
+		conversationRequest.Password = ""
+		for index := range request.Responses {
+			request.Responses[index].Value = ""
+		}
+		for index := range conversationRequest.Responses {
+			conversationRequest.Responses[index].Value = ""
+		}
+		if err != nil {
+			code := "authentication-failed"
+			if errors.Is(err, errConversationBusy) {
+				code = "authentication-busy"
+			}
+			if errors.Is(err, errConversationInvalid) || errors.Is(err, errConversationBounds) {
+				code = "invalid-conversation"
+			}
+			_ = encoder.Encode(auth.Response{Error: code})
+			return
+		}
+		if err := encoder.Encode(auth.Response{
+			Identity:       response.Identity,
+			BridgeToken:    response.BridgeToken,
+			ConversationID: response.ConversationID,
+			Prompts:        response.Prompts,
+		}); err != nil && response.ConversationID != "" {
+			conversations.cancel(response.ConversationID)
+		}
+		return
+	}
+	if request.Operation == "cancel-conversation" {
+		if request.Username != "" || request.Password != "" || len(request.Responses) != 0 || request.Token != "" || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
+			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
+			return
+		}
+		if !(auth.ConversationRequest{ConversationID: request.ConversationID, Cancel: true}).Valid() {
+			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
+			return
+		}
+		conversations.cancel(request.ConversationID)
+		_ = encoder.Encode(auth.Response{})
+		return
+	}
+	if request.Operation == "close-session" {
+		if !grants.close(request.Token) {
+			_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+			return
+		}
+		_ = encoder.Encode(auth.Response{})
+		return
+	}
+	if request.Operation == "confirm-session" {
+		if !grants.confirm(request.Token) {
+			_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+			return
+		}
+		_ = encoder.Encode(auth.Response{})
 		return
 	}
 	if request.Operation == "terminal" {
@@ -205,10 +293,12 @@ func (store *grantStore) resize(token string, columns, rows uint16) string {
 	store.mu.Lock()
 	grant, ok := store.values[token]
 	if !ok || time.Now().After(grant.expires) {
-		delete(store.values, token)
+		if ok {
+			delete(store.values, token)
+		}
 		store.mu.Unlock()
-		if grant.closePAM != nil {
-			grant.closePAM()
+		if ok {
+			cleanupGrant(grant)
 		}
 		return "invalid-bridge-token"
 	}
@@ -228,7 +318,7 @@ func (store *grantStore) resize(token string, columns, rows uint16) string {
 	return ""
 }
 
-func (store *grantStore) setTerminal(token string, terminal *os.File) {
+func (store *grantStore) setTerminal(token string, terminal *os.File) bool {
 	store.mu.Lock()
 	grant, ok := store.values[token]
 	if ok {
@@ -236,22 +326,67 @@ func (store *grantStore) setTerminal(token string, terminal *os.File) {
 		store.values[token] = grant
 	}
 	store.mu.Unlock()
+	return ok
 }
 
 func (store *grantStore) add(identity auth.Identity, closePAM ...func()) (string, error) {
-	buffer := make([]byte, 32)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", err
-	}
-	token := base64.RawURLEncoding.EncodeToString(buffer)
-	store.mu.Lock()
 	var closeSession func()
 	if len(closePAM) > 0 {
 		closeSession = closePAM[0]
 	}
-	store.values[token] = bridgeGrant{identity: identity, expires: time.Now().Add(12 * time.Hour), closePAM: closeSession}
+	return store.addGrant(identity, nil, closeSession)
+}
+
+func (store *grantStore) addGrant(identity auth.Identity, bridge io.Closer, closeSession func()) (string, error) {
+	var once sync.Once
+	closeResources := func() {
+		once.Do(func() {
+			if bridge != nil {
+				_ = bridge.Close()
+			}
+			if closeSession != nil {
+				closeSession()
+			}
+		})
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		closeResources()
+		return "", err
+	}
+	store.mu.Lock()
+	grant := bridgeGrant{identity: identity, expires: time.Now().Add(30 * time.Second), bridge: bridge, closePAM: closeResources}
+	grant.timer = time.AfterFunc(30*time.Second, func() { store.expire(token) })
+	store.values[token] = grant
 	store.mu.Unlock()
 	return token, nil
+}
+
+func (store *grantStore) expire(token string) {
+	store.mu.Lock()
+	grant, ok := store.values[token]
+	if !ok {
+		store.mu.Unlock()
+		return
+	}
+	remaining := time.Until(grant.expires)
+	if remaining > 0 {
+		grant.timer = time.AfterFunc(remaining, func() { store.expire(token) })
+		store.values[token] = grant
+		store.mu.Unlock()
+		return
+	}
+	delete(store.values, token)
+	store.mu.Unlock()
+	cleanupGrant(grant)
+}
+
+func randomToken(size int) (string, error) {
+	buffer := make([]byte, size)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
 func (store *grantStore) get(token string) (auth.Identity, bool) {
@@ -260,8 +395,8 @@ func (store *grantStore) get(token string) (auth.Identity, bool) {
 	if !ok || time.Now().After(grant.expires) {
 		delete(store.values, token)
 		store.mu.Unlock()
-		if grant.closePAM != nil {
-			grant.closePAM()
+		if ok {
+			cleanupGrant(grant)
 		}
 		return auth.Identity{}, false
 	}
@@ -273,12 +408,13 @@ func (store *grantStore) claim(token string) (auth.Identity, bool) {
 	store.mu.Lock()
 	grant, ok := store.values[token]
 	if !ok || grant.active || time.Now().After(grant.expires) {
-		if ok && time.Now().After(grant.expires) {
+		expired := ok && time.Now().After(grant.expires)
+		if expired {
 			delete(store.values, token)
 		}
 		store.mu.Unlock()
-		if ok && time.Now().After(grant.expires) && grant.closePAM != nil {
-			grant.closePAM()
+		if expired {
+			cleanupGrant(grant)
 		}
 		return auth.Identity{}, false
 	}
@@ -294,13 +430,62 @@ func (store *grantStore) closeAll() {
 	store.values = make(map[string]bridgeGrant)
 	store.mu.Unlock()
 	for _, grant := range values {
-		if grant.terminal != nil {
-			_ = grant.terminal.Close()
-		}
-		if grant.closePAM != nil {
-			grant.closePAM()
-		}
+		cleanupGrant(grant)
 	}
+}
+
+func (store *grantStore) close(token string) bool {
+	store.mu.Lock()
+	grant, ok := store.values[token]
+	if ok {
+		delete(store.values, token)
+	}
+	store.mu.Unlock()
+	if !ok {
+		return false
+	}
+	cleanupGrant(grant)
+	return true
+}
+
+func cleanupGrant(grant bridgeGrant) {
+	if grant.timer != nil {
+		grant.timer.Stop()
+	}
+	if grant.terminal != nil {
+		_ = grant.terminal.Close()
+	}
+	if grant.closePAM != nil {
+		grant.closePAM()
+	}
+}
+
+func (store *grantStore) confirm(token string) bool {
+	store.mu.Lock()
+	grant, ok := store.values[token]
+	if !ok || time.Now().After(grant.expires) {
+		store.mu.Unlock()
+		if ok {
+			store.close(token)
+		}
+		return false
+	}
+	grant.expires = time.Now().Add(12 * time.Hour)
+	store.values[token] = grant
+	store.mu.Unlock()
+	return true
+}
+
+func (store *grantStore) addUserSession(session auth.UserSession) (string, error) {
+	userBridge, err := startUserBridge(session)
+	if err != nil {
+		return "", err
+	}
+	token, err := store.addGrant(session.Identity, userBridge, session.Close)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func (store *grantStore) release(token string) {
@@ -355,7 +540,12 @@ func runTerminal(conn net.Conn, identity auth.Identity, columns, rows uint16, gr
 		logger.Error("terminal launch failed", zap.String("username", identity.Username), zap.Error(err))
 		return
 	}
-	grants.setTerminal(token, terminal)
+	if !grants.setTerminal(token, terminal) {
+		_ = terminal.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return
+	}
 	defer terminal.Close()
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(terminal, conn); done <- struct{}{} }()
