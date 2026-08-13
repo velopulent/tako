@@ -392,6 +392,10 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/timers", server.timerAction)
 			router.Get("/storage", server.storage)
 			router.Get("/network", server.network)
+			router.Get("/files", server.filesList)
+			router.Get("/files/content", server.fileContent)
+			router.Get("/files/text-window", server.fileTextWindow)
+			router.With(server.requireCSRF).Post("/files", server.fileOperation)
 			router.Get("/processes", server.processes)
 			router.Get("/processes/{pid}", server.processDetail)
 			router.With(server.requireCSRF).Post("/processes/{pid}/signal/preview", server.processSignalPreview)
@@ -940,6 +944,183 @@ func (server *Server) storage(writer http.ResponseWriter, _ *http.Request) {
 func (server *Server) network(writer http.ResponseWriter, _ *http.Request) {
 	items, err := platform.Interfaces()
 	server.writeModule(writer, "network", items, err)
+}
+
+func (server *Server) filesList(writer http.ResponseWriter, request *http.Request) {
+	operation := platform.FileOperation{Action: "list", Path: request.URL.Query().Get("path"), ShowHidden: request.URL.Query().Get("hidden") == "true"}
+	if operation.Path == "" {
+		operation.Path = "."
+	}
+	result, ok := server.applyFileOperation(writer, request, operation)
+	if ok {
+		writeJSON(writer, http.StatusOK, result)
+	}
+}
+
+func (server *Server) fileContent(writer http.ResponseWriter, request *http.Request) {
+	path := request.URL.Query().Get("path")
+	if path == "" {
+		problem(writer, http.StatusBadRequest, "invalid-file-operation", "A file path is required")
+		return
+	}
+	offset, limit := int64(0), int64(platform.MaxFileChunk)
+	if raw := request.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			problem(writer, http.StatusBadRequest, "invalid-file-range", "The file offset is invalid")
+			return
+		}
+		offset = parsed
+	}
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > platform.MaxFileChunk {
+			problem(writer, http.StatusBadRequest, "invalid-file-range", "The file range is invalid")
+			return
+		}
+		limit = parsed
+	}
+	status := http.StatusOK
+	if rangeValue := request.Header.Get("Range"); rangeValue != "" {
+		start, end, valid := parseFileRange(rangeValue)
+		if !valid {
+			problem(writer, http.StatusRequestedRangeNotSatisfiable, "invalid-file-range", "Only a single byte range is supported")
+			return
+		}
+		offset, limit = start, end-start+1
+		status = http.StatusPartialContent
+	}
+	result, ok := server.applyFileOperation(writer, request, platform.FileOperation{Action: "read", Path: path, Offset: offset, Limit: limit})
+	if !ok {
+		return
+	}
+	writer.Header().Set("Accept-Ranges", "bytes")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	if result.Mime != "" {
+		writer.Header().Set("Content-Type", result.Mime)
+	} else {
+		writer.Header().Set("Content-Type", http.DetectContentType(result.Content))
+	}
+	if status == http.StatusPartialContent {
+		end := result.Offset + int64(len(result.Content)) - 1
+		if len(result.Content) == 0 {
+			end = result.Offset
+		}
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", result.Offset, end, result.Total))
+	}
+	writer.Header().Set("Content-Length", strconv.Itoa(len(result.Content)))
+	writer.WriteHeader(status)
+	_, _ = writer.Write(result.Content)
+}
+
+func (server *Server) fileTextWindow(writer http.ResponseWriter, request *http.Request) {
+	path := request.URL.Query().Get("path")
+	lineOffset, lineLimit := 0, 200
+	var err error
+	if raw := request.URL.Query().Get("offset"); raw != "" {
+		lineOffset, err = strconv.Atoi(raw)
+	}
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		lineLimit, err = strconv.Atoi(raw)
+	}
+	if path == "" || err != nil || lineOffset < 0 || lineLimit < 1 || lineLimit > 1000 {
+		problem(writer, http.StatusBadRequest, "invalid-text-window", "The text window is invalid")
+		return
+	}
+	result, ok := server.applyFileOperation(writer, request, platform.FileOperation{Action: "read-window", Path: path, LineOffset: lineOffset, LineLimit: lineLimit})
+	if !ok {
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) fileOperation(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 8<<20)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var operation platform.FileOperation
+	if err := decoder.Decode(&operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-file-operation", "File operation is invalid")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-file-operation", "File operation contains trailing data")
+		return
+	}
+	if result, ok := server.applyFileOperation(writer, request, operation); ok {
+		writeJSON(writer, http.StatusOK, result)
+	}
+}
+
+func (server *Server) applyFileOperation(writer http.ResponseWriter, request *http.Request, operation platform.FileOperation) (platform.FileResult, bool) {
+	current, ok := request.Context().Value(sessionKey{}).(session.Session)
+	if !ok {
+		problem(writer, http.StatusUnauthorized, "no-session", "Authentication required")
+		return platform.FileResult{}, false
+	}
+	fileRequest := auth.FileRequest{Operation: operation}
+	administrative := current.Identity.AdminToken != "" && time.Now().Before(current.AdminUntil)
+	if administrative {
+		fileRequest.AdminToken = current.Identity.AdminToken
+		fileRequest.Administrative = true
+	} else if current.Identity.BridgeToken != "" {
+		fileRequest.Token = current.Identity.BridgeToken
+	} else {
+		problem(writer, http.StatusForbidden, "user-session-required", "A live UNIX user session is required for file access")
+		return platform.FileResult{}, false
+	}
+	startedAt := time.Now().UTC()
+	result, err := auth.ApplyFileOperation(request.Context(), server.config.SessionSocket, fileRequest)
+	if err != nil {
+		writeFileOperationError(writer, err)
+		server.recordOperation(request.Context(), current.Identity.Username, "file/"+operation.Action, startedAt, "failed", err.Error(), administrative)
+		return platform.FileResult{}, false
+	}
+	if operation.Action != "list" && operation.Action != "stat" && operation.Action != "read" && operation.Action != "read-window" && operation.Action != "search" {
+		server.recordOperation(request.Context(), current.Identity.Username, "file/"+operation.Action, startedAt, "succeeded", "", administrative)
+	}
+	return result, true
+}
+
+func writeFileOperationError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, platform.ErrInvalidFileOperation):
+		problem(writer, http.StatusBadRequest, "invalid-file-operation", "File operation is invalid")
+	case errors.Is(err, platform.ErrFileNotFound):
+		problem(writer, http.StatusNotFound, "file-not-found", "The file was not found")
+	case errors.Is(err, platform.ErrFilePermission):
+		problem(writer, http.StatusForbidden, "file-permission-denied", "UNIX authority denied this file operation")
+	case errors.Is(err, platform.ErrFileConflict):
+		problem(writer, http.StatusConflict, "file-conflict", "The file changed; preview the operation again")
+	case errors.Is(err, platform.ErrFileTooLarge):
+		problem(writer, http.StatusRequestEntityTooLarge, "file-too-large", "The file exceeds the bounded operation limit")
+	case errors.Is(err, platform.ErrUnsafeArchive):
+		problem(writer, http.StatusBadRequest, "unsafe-archive", "The archive contains an unsafe path or link")
+	case errors.Is(err, platform.ErrArchiveLimit):
+		problem(writer, http.StatusRequestEntityTooLarge, "archive-limit", "The archive exceeds the bounded operation limit")
+	case errors.Is(err, auth.ErrServiceUnavailable):
+		problem(writer, http.StatusBadGateway, "file-service-unavailable", "The file service is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "file-operation-failed", "The file operation failed")
+	}
+}
+
+func parseFileRange(value string) (int64, int64, bool) {
+	if !strings.HasPrefix(value, "bytes=") || strings.Contains(value, ",") {
+		return 0, 0, false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(value, "bytes="), "-", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return 0, 0, false
+	}
+	start, startErr := strconv.ParseInt(parts[0], 10, 64)
+	end, endErr := strconv.ParseInt(parts[1], 10, 64)
+	if startErr != nil || endErr != nil || start < 0 || end < start || end-start+1 > platform.MaxFileChunk {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 func (server *Server) services(writer http.ResponseWriter, request *http.Request) {

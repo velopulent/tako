@@ -133,6 +133,7 @@ type Request struct {
 	PasswordChange      *PasswordChangeOperation              `json:"passwordChange,omitempty"`
 	SSHKeys             *platform.SSHKeyOperation             `json:"sshKeys,omitempty"`
 	Updates             *platform.UpdateOperation             `json:"updates,omitempty"`
+	File                *platform.FileOperation               `json:"file,omitempty"`
 }
 
 // PasswordChangeOperation is deliberately wire-only. Secret fields are sent
@@ -244,6 +245,13 @@ type SSHKeyRequest struct {
 type UpdateRequest struct {
 	AdminToken string
 	Operation  platform.UpdateOperation
+}
+
+type FileRequest struct {
+	Token          string
+	AdminToken     string
+	Administrative bool
+	Operation      platform.FileOperation
 }
 
 type HostConfigurationRequest struct {
@@ -536,6 +544,47 @@ func ApplyUpdates(ctx context.Context, path string, request UpdateRequest) (plat
 	return *response.UpdateResult, nil
 }
 
+func ApplyFileOperation(ctx context.Context, path string, request FileRequest) (platform.FileResult, error) {
+	operation := request.Operation
+	response, err := socketRequestWithLimit(ctx, path, Request{
+		Operation:  "file",
+		Token:      request.Token,
+		AdminToken: request.AdminToken,
+		File:       &operation,
+	}, 2*time.Minute, 8<<20)
+	if err != nil {
+		return platform.FileResult{}, err
+	}
+	if response.Error != "" {
+		return platform.FileResult{}, fileResponseError(response.Error)
+	}
+	if response.FileResult == nil {
+		return platform.FileResult{}, ErrServiceUnavailable
+	}
+	return *response.FileResult, nil
+}
+
+func fileResponseError(code string) error {
+	switch code {
+	case "invalid-file-operation":
+		return platform.ErrInvalidFileOperation
+	case "file-not-found":
+		return platform.ErrFileNotFound
+	case "file-permission-denied":
+		return platform.ErrFilePermission
+	case "file-conflict":
+		return platform.ErrFileConflict
+	case "file-too-large":
+		return platform.ErrFileTooLarge
+	case "unsafe-archive":
+		return platform.ErrUnsafeArchive
+	case "archive-limit":
+		return platform.ErrArchiveLimit
+	default:
+		return errors.New(code)
+	}
+}
+
 func sshKeyResponseError(code string) error {
 	switch code {
 	case "invalid-ssh-key-operation":
@@ -703,6 +752,7 @@ type Response struct {
 	SSHKeyState            *platform.SSHKeyState               `json:"sshKeyState,omitempty"`
 	SSHKeyPreview          *platform.SSHKeyPreview             `json:"sshKeyPreview,omitempty"`
 	UpdateResult           *platform.UpdateResult              `json:"updateResult,omitempty"`
+	FileResult             *platform.FileResult                `json:"fileResult,omitempty"`
 }
 
 type Authenticator interface {

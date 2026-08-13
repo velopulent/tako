@@ -69,6 +69,7 @@ const moduleNames = [
   "services",
   "storage",
   "network",
+  "files",
   "processes",
   "settings",
 ] as const

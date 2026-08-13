@@ -56,6 +56,18 @@ type UpdateStatus struct {
 	LockReason   string          `json:"lockReason,omitempty"`
 	Message      string          `json:"message"`
 	Reason       string          `json:"reason,omitempty"`
+	Recovery     UpdateRecovery  `json:"recovery"`
+}
+
+// UpdateRecovery describes post-update work without pretending that every
+// package backend can authoritatively determine restart requirements.
+type UpdateRecovery struct {
+	Authoritative   bool     `json:"authoritative"`
+	RebootRequired  bool     `json:"rebootRequired"`
+	RestartServices []string `json:"restartServices"`
+	Hints           []string `json:"hints"`
+	Source          string   `json:"source"`
+	Reason          string   `json:"reason,omitempty"`
 }
 
 type updateCommandResult struct {
@@ -79,7 +91,34 @@ func Updates(ctx context.Context) UpdateStatus {
 	defer cancel()
 	status := updatesWithDependencies(deadline, defaultUpdateDependencies())
 	status.Fingerprint = UpdateFingerprint(status)
+	status.Recovery = UpdateRecoveryForBackend(deadline, status.Backend)
 	return status
+}
+
+func UpdateRecoveryForBackend(ctx context.Context, backend string) UpdateRecovery {
+	recovery := UpdateRecovery{RestartServices: []string{}, Hints: []string{}, Source: "advisory"}
+	if backend == "none" || backend == "" {
+		recovery.Reason = "No update backend is available to assess recovery needs."
+		return recovery
+	}
+	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
+		recovery.RebootRequired = true
+		recovery.Authoritative = true
+		recovery.Source = "/var/run/reboot-required"
+		recovery.Hints = append(recovery.Hints, "Reboot the host after the update job completes.")
+	}
+	if backend == "dnf" {
+		if result := runUpdateCommand(ctx, "needs-restarting", "-r"); result.Err == nil && result.ExitCode == 1 {
+			recovery.RebootRequired = true
+			recovery.Authoritative = true
+			recovery.Source = "needs-restarting"
+			recovery.Hints = append(recovery.Hints, "A reboot is required according to needs-restarting.")
+		}
+	}
+	if !recovery.RebootRequired {
+		recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
+	}
+	return recovery
 }
 
 func defaultUpdateDependencies() updateDependencies {
@@ -298,6 +337,7 @@ type UpdateResult struct {
 	Verified    bool            `json:"verified"`
 	Message     string          `json:"message"`
 	Fingerprint string          `json:"fingerprint"`
+	Recovery    UpdateRecovery  `json:"recovery"`
 }
 
 func ValidateUpdateOperation(operation UpdateOperation) error {
@@ -456,7 +496,7 @@ func ApplyUpdates(ctx context.Context, operation UpdateOperation) (UpdateResult,
 		}
 	}
 	if len(selected) == 0 {
-		return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: []string{}, Updated: []UpdatePackage{}, Verified: true, Message: "No updates were available.", Fingerprint: fingerprint}, nil
+		return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: []string{}, Updated: []UpdatePackage{}, Verified: true, Message: "No updates were available.", Fingerprint: fingerprint, Recovery: UpdateRecoveryForBackend(ctx, current.Backend)}, nil
 	}
 	arguments, err := updateApplyArguments(current.Backend, operation.Scope, operation.Packages)
 	if err != nil {
@@ -492,7 +532,7 @@ func ApplyUpdates(ctx context.Context, operation UpdateOperation) (UpdateResult,
 			Size:             item.Size,
 		})
 	}
-	return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: packages, Updated: updated, Verified: true, Message: "Updates applied and verified.", Fingerprint: UpdateFingerprint(final)}, nil
+	return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: packages, Updated: updated, Verified: true, Message: "Updates applied and verified.", Fingerprint: UpdateFingerprint(final), Recovery: UpdateRecoveryForBackend(ctx, current.Backend)}, nil
 }
 
 func updateApplyArguments(backend, scope string, packages []string) ([]string, error) {

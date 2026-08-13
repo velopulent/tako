@@ -124,6 +124,18 @@ func (process *userBridgeProcess) applyOverride(ctx context.Context, operation p
 	return state, nil
 }
 
+func (process *userBridgeProcess) applyFile(ctx context.Context, operation platform.FileOperation) (platform.FileResult, error) {
+	payload, err := process.call(ctx, "file", "file.apply", operation)
+	if err != nil {
+		return platform.FileResult{}, err
+	}
+	var result platform.FileResult
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return platform.FileResult{}, err
+	}
+	return result, nil
+}
+
 func (process *userBridgeProcess) call(ctx context.Context, id, method string, payload any) (json.RawMessage, error) {
 	result := make(chan struct {
 		payload json.RawMessage

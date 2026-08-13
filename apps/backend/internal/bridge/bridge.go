@@ -5,6 +5,7 @@ package bridge
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -73,10 +74,53 @@ func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
 				response.Payload, _ = json.Marshal(state)
 			}
 		}
+		if message.Method == "file.apply" {
+			result, err := applyFile(message.Payload)
+			if err != nil {
+				response.Error = fileErrorCode(err)
+			} else {
+				response.Error = ""
+				response.Payload, _ = json.Marshal(result)
+			}
+		}
 		if err := writeFrame(writer, response); err != nil {
 			logger.Error("bridge frame write failed", zap.Error(err))
 			return err
 		}
+	}
+}
+
+func applyFile(payload json.RawMessage) (platform.FileResult, error) {
+	var operation platform.FileOperation
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&operation); err != nil {
+		return platform.FileResult{}, platform.ErrInvalidFileOperation
+	}
+	if err := platform.ValidateFileOperation(operation); err != nil {
+		return platform.FileResult{}, err
+	}
+	return platform.ApplyUserFileOperation(context.Background(), operation)
+}
+
+func fileErrorCode(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrInvalidFileOperation):
+		return "invalid-file-operation"
+	case errors.Is(err, platform.ErrFileNotFound):
+		return "file-not-found"
+	case errors.Is(err, platform.ErrFilePermission):
+		return "file-permission-denied"
+	case errors.Is(err, platform.ErrFileConflict):
+		return "file-conflict"
+	case errors.Is(err, platform.ErrFileTooLarge):
+		return "file-too-large"
+	case errors.Is(err, platform.ErrUnsafeArchive):
+		return "unsafe-archive"
+	case errors.Is(err, platform.ErrArchiveLimit):
+		return "archive-limit"
+	default:
+		return "file-operation-failed"
 	}
 }
 

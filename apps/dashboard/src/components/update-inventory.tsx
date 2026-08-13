@@ -173,6 +173,25 @@ export function UpdateInventory() {
             <AlertDescription>{actionError.message}</AlertDescription>
           </Alert>
         )}
+        {status.recovery && (
+          <Alert>
+            <AlertTitle>
+              {status.recovery.rebootRequired
+                ? "Recovery action needed"
+                : "Recovery guidance"}
+            </AlertTitle>
+            <AlertDescription>
+              {status.recovery.hints.join(" ") ||
+                status.recovery.reason ||
+                "No additional recovery action was reported."}
+              {!status.recovery.authoritative && (
+                <span className="mt-1 block text-xs">
+                  Advisory only; verify service state after applying updates.
+                </span>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {status.packages.length === 0 ? (

@@ -15,6 +15,48 @@ export type SessionResponse = {
   adminIdleTimeoutSeconds?: number
 }
 
+export type FileEntry = {
+  name: string
+  path: string
+  kind: "file" | "directory" | "symlink"
+  size: number
+  mode: number
+  modifiedAt: string
+  fingerprint: string
+  hidden: boolean
+  readable: boolean
+  writable: boolean
+  permissionDenied?: boolean
+  symlinkTarget?: string
+  mime?: string
+  reason?: string
+}
+
+export type FileResult = {
+  directory?: {
+    path: string
+    entries: FileEntry[]
+    showHidden: boolean
+    fingerprint: string
+  }
+  entry?: FileEntry
+  entries?: FileEntry[]
+  search?: {
+    root: string
+    query: string
+    entries: FileEntry[]
+    limited: boolean
+  }
+  content?: string
+  offset?: number
+  total?: number
+  eof?: boolean
+  mime?: string
+  fingerprint?: string
+  warnings?: string[]
+  message?: string
+}
+
 export type LoginPrompt = {
   id: string
   style: "hidden" | "text" | "info" | "error"
@@ -498,6 +540,15 @@ export type UpdateStatus = {
   lockReason?: string
   message: string
   reason?: string
+  recovery?: UpdateRecovery
+}
+export type UpdateRecovery = {
+  authoritative: boolean
+  rebootRequired: boolean
+  restartServices: string[]
+  hints: string[]
+  source: string
+  reason?: string
 }
 export type UpdateOperation = {
   scope: "all" | "selected"
@@ -526,6 +577,7 @@ export type UpdateResult = {
   verified: boolean
   message: string
   fingerprint: string
+  recovery?: UpdateRecovery
 }
 export type UpdatePackage = {
   name: string

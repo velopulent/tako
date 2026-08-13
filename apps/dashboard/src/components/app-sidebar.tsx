@@ -4,6 +4,7 @@ import {
   ActivityIcon,
   ChartNoAxesCombinedIcon,
   FileClockIcon,
+  FilesIcon,
   GaugeIcon,
   HardDriveIcon,
   NetworkIcon,
@@ -59,6 +60,7 @@ const groups = [
     items: [
       { title: "Storage", to: "/storage", icon: HardDriveIcon },
       { title: "Network", to: "/network", icon: NetworkIcon },
+      { title: "Files", to: "/files", icon: FilesIcon },
     ],
   },
   {

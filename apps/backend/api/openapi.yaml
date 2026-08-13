@@ -964,6 +964,76 @@ paths:
       operationId: listNetworkInterfaces
       responses:
         '200': { description: Network interface inventory }
+  /files:
+    get:
+      operationId: listFiles
+      parameters:
+        - in: query
+          name: path
+          schema: { type: string, maxLength: 4096, default: . }
+        - in: query
+          name: hidden
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Authority-filtered directory listing
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/FileResult' } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: applyFileOperation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FileOperation' }
+      responses:
+        '200':
+          description: Completed bounded file operation
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/FileResult' } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /files/content:
+    get:
+      operationId: readFileContent
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string, maxLength: 4096 }
+        - in: header
+          name: Range
+          schema: { type: string, pattern: '^bytes=[0-9]+-[0-9]+$' }
+      responses:
+        '200': { description: 'Bounded file content; supports Accept-Ranges: bytes' }
+        '206': { description: Partial file content with Content-Range }
+        '400': { $ref: '#/components/responses/Problem' }
+        '416': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /files/text-window:
+    get:
+      operationId: readTextWindow
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string, maxLength: 4096 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200': { description: Windowed JSON text lines }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /processes:
     get:
       operationId: listProcesses
@@ -1074,7 +1144,7 @@ components:
         setupGuidance: { type: string }
     UpdateStatus:
       type: object
-      required: [available, backend, contract, packages, fingerprint, externalLock, message]
+      required: [available, backend, contract, packages, fingerprint, externalLock, message, recovery]
       properties:
         available: { type: boolean }
         backend: { type: string, maxLength: 64 }
@@ -1087,6 +1157,104 @@ components:
         fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         externalLock: { type: boolean }
         lockReason: { type: string, maxLength: 512 }
+        message: { type: string, maxLength: 512 }
+        reason: { type: string, maxLength: 512 }
+        recovery: { $ref: '#/components/schemas/UpdateRecovery' }
+    UpdateRecovery:
+      type: object
+      required: [authoritative, rebootRequired, restartServices, hints, source]
+      properties:
+        authoritative: { type: boolean }
+        rebootRequired: { type: boolean }
+        restartServices: { type: array, maxItems: 128, items: { type: string, maxLength: 256 } }
+        hints: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        source: { type: string, maxLength: 128 }
+    FileOperation:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action: { type: string, enum: [list, stat, read, read-window, write, create, rename, move, copy, trash, delete, search, archive, extract, metadata] }
+        path: { type: string, maxLength: 4096 }
+        destination: { type: string, maxLength: 4096 }
+        kind: { type: string, enum: [file, directory] }
+        content: { type: string, format: byte, maxLength: 5592406 }
+        contentSha256: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        offset: { type: integer, minimum: 0, maximum: 4194304 }
+        limit: { type: integer, minimum: 0, maximum: 4194304 }
+        lineOffset: { type: integer, minimum: 0 }
+        lineLimit: { type: integer, minimum: 1, maximum: 1000 }
+        expectedFingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        showHidden: { type: boolean }
+        recursive: { type: boolean }
+        permanent: { type: boolean }
+        confirmation: { type: string, maxLength: 128 }
+        query: { type: string, maxLength: 512 }
+        maxEntries: { type: integer, minimum: 0, maximum: 10000 }
+        archivePath: { type: string, maxLength: 4096 }
+        mode: { type: integer, minimum: 0, maximum: 511 }
+        owner: { type: string, maxLength: 256 }
+        group: { type: string, maxLength: 256 }
+    FileEntry:
+      type: object
+      required: [name, path, kind, size, mode, modifiedAt, fingerprint, hidden, readable, writable]
+      properties:
+        name: { type: string }
+        path: { type: string }
+        kind: { type: string, enum: [file, directory, symlink] }
+        size: { type: integer, minimum: 0 }
+        mode: { type: integer, minimum: 0 }
+        modifiedAt: { type: string, format: date-time }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        hidden: { type: boolean }
+        readable: { type: boolean }
+        writable: { type: boolean }
+        permissionDenied: { type: boolean }
+        symlinkTarget: { type: string }
+        mime: { type: string }
+        reason: { type: string }
+    FileDirectory:
+      type: object
+      required: [path, entries, showHidden, fingerprint]
+      properties:
+        path: { type: string }
+        entries:
+          type: array
+          maxItems: 4096
+          items: { $ref: '#/components/schemas/FileEntry' }
+        showHidden: { type: boolean }
+        fingerprint: { type: string }
+    FileSearchResult:
+      type: object
+      required: [root, query, entries, limited]
+      properties:
+        root: { type: string }
+        query: { type: string }
+        entries:
+          type: array
+          maxItems: 10000
+          items: { $ref: '#/components/schemas/FileEntry' }
+        limited: { type: boolean }
+    FileResult:
+      type: object
+      properties:
+        directory: { $ref: '#/components/schemas/FileDirectory' }
+        entry: { $ref: '#/components/schemas/FileEntry' }
+        entries:
+          type: array
+          maxItems: 4096
+          items: { $ref: '#/components/schemas/FileEntry' }
+        search: { $ref: '#/components/schemas/FileSearchResult' }
+        content: { type: string, format: byte }
+        offset: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+        eof: { type: boolean }
+        mime: { type: string }
+        fingerprint: { type: string }
+        warnings:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
         message: { type: string, maxLength: 512 }
         reason: { type: string, maxLength: 512 }
     UpdatePackage:
@@ -1133,7 +1301,7 @@ components:
         reason: { type: string, maxLength: 512 }
     UpdateResult:
       type: object
-      required: [backend, scope, packages, updated, verified, message, fingerprint]
+      required: [backend, scope, packages, updated, verified, message, fingerprint, recovery]
       properties:
         backend: { type: string, maxLength: 64 }
         scope: { type: string, enum: [all, selected] }
@@ -1142,6 +1310,7 @@ components:
         verified: { type: boolean }
         message: { type: string, maxLength: 512 }
         fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        recovery: { $ref: '#/components/schemas/UpdateRecovery' }
     AdministrativeElevationRequest:
       type: object
       required: [password]

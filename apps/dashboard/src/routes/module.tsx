@@ -62,6 +62,8 @@ import { GroupInventory } from "@/components/group-inventory"
 import { PasswordManager } from "@/components/password-manager"
 import { SSHKeyManager } from "@/components/ssh-key-manager"
 import { UpdateInventory } from "@/components/update-inventory"
+import { FileBrowser } from "@/components/file-browser"
+import type { SessionResponse } from "@/lib/api"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -145,6 +147,7 @@ export function ModulePage({ module }: { module: string }) {
   if (module === "services") return <ServicesPage />
   if (module === "storage") return <StoragePage />
   if (module === "network") return <NetworkPage />
+  if (module === "files") return <FilesPage />
   if (module === "logs") return <LogsPage />
   if (module === "settings") return <SettingsPage />
   if (module === "users") return <UsersPage />
@@ -153,6 +156,18 @@ export function ModulePage({ module }: { module: string }) {
   if (module === "jobs") return <JobsPage />
   if (module === "host") return <HostPage />
   return <TerminalPage />
+}
+
+function FilesPage() {
+  const session = useQuery({
+    queryKey: ["session"],
+    queryFn: () => api<SessionResponse>("/auth/session"),
+  })
+  return (
+    <Page description="Browse, preview, and manage files under authenticated UNIX authority.">
+      <FileBrowser csrfToken={session.data?.csrfToken ?? ""} />
+    </Page>
+  )
 }
 
 function MetricsPage() {

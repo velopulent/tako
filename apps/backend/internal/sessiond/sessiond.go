@@ -266,6 +266,10 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
+	if request.Operation != "file" && request.File != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
 	if request.Operation == "conversation" {
 		if request.Token != "" || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" {
 			_ = encoder.Encode(auth.Response{Error: "invalid-conversation"})
@@ -835,6 +839,58 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 		_ = encoder.Encode(auth.Response{UpdateResult: &result})
+		return
+	}
+	if request.Operation == "file" {
+		if request.File == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-file-operation"})
+			return
+		}
+		operation := *request.File
+		request.File = nil
+		if err := platform.ValidateFileOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: fileErrorCode(err)})
+			return
+		}
+		var identity auth.Identity
+		var bridge io.Closer
+		var administrative bool
+		var ok bool
+		if request.AdminToken != "" {
+			if request.Token != "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-file-operation"})
+				return
+			}
+			identity, ok = grants.adminIdentity(request.AdminToken)
+			administrative = true
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+				return
+			}
+		} else {
+			if request.Token == "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-file-operation"})
+				return
+			}
+			identity, ok = grants.get(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+				return
+			}
+			bridge, ok = grants.bridgeFor(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "user-bridge-unavailable"})
+				return
+			}
+		}
+		fileCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		result, applyErr := (systemFileBackend{}).Apply(fileCtx, operation, identity, administrative, bridge)
+		cancel()
+		if applyErr != nil {
+			_ = encoder.Encode(auth.Response{Error: fileErrorCode(applyErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{FileResult: &result})
 		return
 	}
 	if request.Operation == "host-config" {
