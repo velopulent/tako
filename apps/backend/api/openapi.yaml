@@ -361,6 +361,48 @@ paths:
                   stale: { type: boolean }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /host/power:
+    get:
+      operationId: getPowerStatus
+      responses:
+        '200':
+          description: Capability and inhibitor status for reboot and shutdown
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PowerStatus' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: requestPowerAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PowerRequest' }
+      responses:
+        '202': { description: Power request accepted; host may disconnect }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /host/power/preview:
+    post:
+      operationId: previewPowerAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, expectedFingerprint]
+              additionalProperties: false
+              properties:
+                action: { type: string, enum: [reboot, shutdown] }
+                expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
+      responses:
+        '200': { description: Current capability, inhibitor, and confirmation requirements }
+        '400': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /storage:
     get:
       operationId: listStorage
@@ -469,6 +511,43 @@ components:
         hostname: { type: string, minLength: 1, maxLength: 253 }
         timezone: { type: string, minLength: 1, maxLength: 128 }
         ntpEnabled: { type: boolean }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
+    PowerStatus:
+      type: object
+      required: [available, reboot, shutdown, inhibitors, fingerprint]
+      properties:
+        available: { type: boolean }
+        reboot: { $ref: '#/components/schemas/PowerActionStatus' }
+        shutdown: { $ref: '#/components/schemas/PowerActionStatus' }
+        inhibitors:
+          type: array
+          items: { $ref: '#/components/schemas/PowerInhibitor' }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+        reason: { type: string }
+    PowerActionStatus:
+      type: object
+      required: [state, available]
+      properties:
+        state: { type: string, enum: [available, challenged, denied, inhibited, unavailable] }
+        available: { type: boolean }
+        reason: { type: string }
+    PowerInhibitor:
+      type: object
+      required: [what, who, why, mode, uid, pid]
+      properties:
+        what: { type: string }
+        who: { type: string }
+        why: { type: string }
+        mode: { type: string }
+        uid: { type: integer }
+        pid: { type: integer }
+    PowerRequest:
+      type: object
+      required: [action, confirmation, expectedFingerprint]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [reboot, shutdown] }
+        confirmation: { type: string, enum: [REBOOT, SHUTDOWN] }
         expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
     LoginRequest:
       oneOf:

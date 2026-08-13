@@ -128,10 +128,20 @@ func activatedListener() (net.Listener, bool, error) {
 }
 
 func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, hostBackends ...hostConfigBackend) {
-	defer conn.Close()
 	backend := hostConfigBackend(systemHostConfigBackend{})
 	if len(hostBackends) > 0 && hostBackends[0] != nil {
 		backend = hostBackends[0]
+	}
+	handleWithBackends(conn, service, conversations, grants, policy, logger, backend, systemPowerBackend{})
+}
+
+func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend) {
+	defer conn.Close()
+	if backend == nil {
+		backend = systemHostConfigBackend{}
+	}
+	if power == nil {
+		power = systemPowerBackend{}
 	}
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReaderSize(conn, 16<<10)
@@ -142,7 +152,11 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
-	if request.Operation != "host-config" && hasHostConfigurationFields(request) {
+	if request.Operation != "host-config" && request.Operation != "power" && hasHostConfigurationFields(request) {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "power" && hasPowerFields(request) {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -364,6 +378,51 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 		_ = encoder.Encode(auth.Response{})
 		return
 	}
+	if request.Operation == "power" {
+		if request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.ExpectedFingerprint == "" {
+			_ = encoder.Encode(auth.Response{Error: "invalid-power-request"})
+			return
+		}
+		if err := parsePowerOperation(request.PowerAction, request.PowerConfirmation, request.ExpectedFingerprint); err != nil {
+			_ = encoder.Encode(auth.Response{Error: err.Error()})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		powerCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		status, readErr := power.Read(powerCtx)
+		if readErr != nil {
+			cancel()
+			_ = encoder.Encode(auth.Response{Error: "power-unavailable"})
+			return
+		}
+		if status.Fingerprint != request.ExpectedFingerprint {
+			cancel()
+			_ = encoder.Encode(auth.Response{Error: "power-conflict"})
+			return
+		}
+		selected := status.Reboot
+		if request.PowerAction == "shutdown" {
+			selected = status.Shutdown
+		}
+		if !selected.Available {
+			cancel()
+			_ = encoder.Encode(auth.Response{Error: "power-" + selected.State})
+			return
+		}
+		if err := power.Request(powerCtx, request.PowerAction); err != nil {
+			cancel()
+			_ = encoder.Encode(auth.Response{Error: "power-request-failed"})
+			return
+		}
+		cancel()
+		logger.Info("host power request", zap.String("username", identity.Username), zap.String("action", request.PowerAction))
+		_ = encoder.Encode(auth.Response{})
+		return
+	}
 	if request.Operation != "authenticate" || request.Token != "" || request.AdminToken != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Username == "" || request.Password == "" {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
@@ -388,6 +447,10 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 
 func hasHostConfigurationFields(request auth.Request) bool {
 	return request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != ""
+}
+
+func hasPowerFields(request auth.Request) bool {
+	return request.PowerAction != "" || request.PowerConfirmation != ""
 }
 
 func runServiceAction(operation serviceOperation) string {

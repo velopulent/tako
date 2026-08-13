@@ -115,6 +115,8 @@ type Request struct {
 	Timezone            string           `json:"timezone,omitempty"`
 	NTPEnabled          bool             `json:"ntpEnabled,omitempty"`
 	ExpectedFingerprint string           `json:"expectedFingerprint,omitempty"`
+	PowerAction         string           `json:"powerAction,omitempty"`
+	PowerConfirmation   string           `json:"powerConfirmation,omitempty"`
 }
 
 type HostConfigurationRequest struct {
@@ -140,6 +142,23 @@ func ApplyHostConfiguration(ctx context.Context, path string, request HostConfig
 		Hostname:            request.Hostname,
 		Timezone:            request.Timezone,
 		NTPEnabled:          request.NTPEnabled,
+		ExpectedFingerprint: request.ExpectedFingerprint,
+	})
+}
+
+type PowerRequest struct {
+	AdminToken          string
+	Action              string
+	Confirmation        string
+	ExpectedFingerprint string
+}
+
+func RequestPower(ctx context.Context, path string, request PowerRequest) error {
+	return serviceActionRequest(ctx, path, Request{
+		Operation:           "power",
+		AdminToken:          request.AdminToken,
+		PowerAction:         request.Action,
+		PowerConfirmation:   request.Confirmation,
 		ExpectedFingerprint: request.ExpectedFingerprint,
 	})
 }

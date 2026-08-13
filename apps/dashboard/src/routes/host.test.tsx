@@ -71,6 +71,16 @@ describe("HostPage", () => {
           return Promise.resolve(jsonResponse(current))
         return Promise.resolve(jsonResponse(current))
       }
+      if (path.endsWith("/host/power"))
+        return Promise.resolve(
+          jsonResponse({
+            available: true,
+            reboot: { state: "available", available: true },
+            shutdown: { state: "available", available: true },
+            inhibitors: [],
+            fingerprint: "b".repeat(64),
+          })
+        )
       if (path.endsWith("/admin"))
         return Promise.resolve(jsonResponse({ administrative: false }))
       return Promise.resolve(jsonResponse({ csrfToken: "csrf-token" }))

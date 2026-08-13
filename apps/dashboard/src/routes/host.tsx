@@ -26,10 +26,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { PowerControls } from "@/components/power-controls"
 import {
   api,
   type HostConfiguration,
   type HostConfigurationPreview,
+  type PowerStatus,
   type SessionResponse,
 } from "@/lib/api"
 
@@ -51,6 +53,10 @@ export function HostPage() {
   const configuration = useQuery({
     queryKey: ["host-config"],
     queryFn: () => api<HostConfiguration>("/host/config"),
+  })
+  const power = useQuery({
+    queryKey: ["host-power"],
+    queryFn: () => api<PowerStatus>("/host/power"),
   })
   const [draft, setDraft] = React.useState<HostForm | null>(null)
   const form =
@@ -251,6 +257,22 @@ export function HostPage() {
           </div>
         </CardContent>
       </Card>
+      {power.isPending && <Skeleton className="h-72" />}
+      {power.isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Power controls unavailable</AlertTitle>
+          <AlertDescription>
+            The host power-management adapter could not be read.
+          </AlertDescription>
+        </Alert>
+      )}
+      {power.data && (
+        <PowerControls
+          status={power.data}
+          csrfToken={session.data?.csrfToken ?? ""}
+          administrative={admin.data?.administrative ?? false}
+        />
+      )}
     </main>
   )
 }

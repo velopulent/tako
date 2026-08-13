@@ -58,6 +58,7 @@ type Server struct {
 	hostSnapshot          host.Info
 	hostSnapshotAt        time.Time
 	readHostConfiguration func(context.Context) (platform.HostConfiguration, error)
+	readPowerStatusFn     func(context.Context) (platform.PowerStatus, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -95,6 +96,7 @@ func New(cfg config.Config) (*Server, error) {
 		pruneDone:             make(chan struct{}),
 		detectCapabilities:    platform.Detect,
 		readHostConfiguration: platform.ReadHostConfiguration,
+		readPowerStatusFn:     platform.ReadPowerStatus,
 	}
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
@@ -272,6 +274,9 @@ func (server *Server) routes() http.Handler {
 			router.Get("/host/config", server.hostConfiguration)
 			router.Post("/host/config/preview", server.previewHostConfiguration)
 			router.With(server.requireCSRF).Put("/host/config", server.updateHostConfiguration)
+			router.Get("/host/power", server.powerStatus)
+			router.Post("/host/power/preview", server.previewPower)
+			router.With(server.requireCSRF).Post("/host/power", server.requestPower)
 			router.Get("/users", server.users)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)

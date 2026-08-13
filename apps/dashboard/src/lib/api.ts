@@ -141,6 +141,30 @@ export type HostConfigurationPreview = {
   stale: boolean
 }
 
+export type PowerStatus = {
+  available: boolean
+  reboot: {
+    state: "available" | "challenged" | "denied" | "inhibited" | "unavailable"
+    available: boolean
+    reason?: string
+  }
+  shutdown: {
+    state: "available" | "challenged" | "denied" | "inhibited" | "unavailable"
+    available: boolean
+    reason?: string
+  }
+  inhibitors: {
+    what: string
+    who: string
+    why: string
+    mode: string
+    uid: number
+    pid: number
+  }[]
+  fingerprint: string
+  reason?: string
+}
+
 export type ProcessInfo = {
   pid: number
   ppid: number
