@@ -28,6 +28,7 @@ func Detect(ctx context.Context) []Capability {
 		{ID: "processes", Available: fileExists("/proc")},
 		{ID: "users", Available: fileExists("/etc/passwd")},
 		{ID: "terminal", Available: false, Reason: "user bridge not connected"},
+		{ID: "process-network", Available: false, Reason: "optional eBPF monitor helper is not installed"},
 	}
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
@@ -51,6 +52,9 @@ func Detect(ctx context.Context) []Capability {
 	}
 	for id, name := range services {
 		capability := Capability{ID: id, Available: present[name]}
+		if id == "network" && (present["org.freedesktop.network1"] || fileExists("/run/systemd/netif")) {
+			capability.Available = true
+		}
 		if !capability.Available {
 			capability.Reason = name + " is not running"
 		}

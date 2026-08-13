@@ -19,13 +19,19 @@ import (
 )
 
 type Process struct {
-	PID     int     `json:"pid"`
-	PPID    int     `json:"ppid"`
-	User    string  `json:"user"`
-	Command string  `json:"command"`
-	State   string  `json:"state"`
-	CPUTime float64 `json:"cpuTime"`
-	Memory  uint64  `json:"memory"`
+	PID           int     `json:"pid"`
+	PPID          int     `json:"ppid"`
+	Started       uint64  `json:"started"`
+	User          string  `json:"user"`
+	Program       string  `json:"program"`
+	Command       string  `json:"command"`
+	State         string  `json:"state"`
+	Threads       int     `json:"threads"`
+	CPUTime       float64 `json:"cpuTime"`
+	Memory        uint64  `json:"memory"`
+	VirtualMemory uint64  `json:"virtualMemory"`
+	DiskRead      uint64  `json:"diskRead"`
+	DiskWrite     uint64  `json:"diskWrite"`
 }
 
 func Processes() ([]Process, error) {
@@ -59,7 +65,11 @@ func Processes() ([]Process, error) {
 		utime, _ := strconv.ParseUint(fields[11], 10, 64)
 		stime, _ := strconv.ParseUint(fields[12], 10, 64)
 		rss, _ := strconv.ParseUint(fields[21], 10, 64)
-		command := line[open+1 : close]
+		started, _ := strconv.ParseUint(fields[19], 10, 64)
+		virtualMemory, _ := strconv.ParseUint(fields[20], 10, 64)
+		threads, _ := strconv.Atoi(fields[17])
+		program := line[open+1 : close]
+		command := program
 		if cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline")); err == nil && len(cmdline) > 0 {
 			command = strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))
 		}
@@ -72,10 +82,35 @@ func Processes() ([]Process, error) {
 			}
 			users[uid] = username
 		}
-		result = append(result, Process{PID: pid, PPID: ppid, User: username, Command: command, State: fields[0], CPUTime: float64(utime+stime) / clockTicks, Memory: rss * pageSize})
+		diskRead, diskWrite := processIO(entry.Name())
+		result = append(result, Process{PID: pid, PPID: ppid, Started: started, User: username, Program: program, Command: command, State: fields[0], Threads: threads, CPUTime: float64(utime+stime) / clockTicks, Memory: rss * pageSize, VirtualMemory: virtualMemory, DiskRead: diskRead, DiskWrite: diskWrite})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Memory > result[j].Memory })
 	return result, nil
+}
+
+func processIO(pid string) (uint64, uint64) {
+	file, err := os.Open(filepath.Join("/proc", pid, "io"))
+	if err != nil {
+		return 0, 0
+	}
+	defer file.Close()
+	var read, write uint64
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 {
+			continue
+		}
+		value, _ := strconv.ParseUint(fields[1], 10, 64)
+		switch strings.TrimSuffix(fields[0], ":") {
+		case "read_bytes":
+			read = value
+		case "write_bytes":
+			write = value
+		}
+	}
+	return read, write
 }
 
 func processUID(pid string) string {
@@ -191,6 +226,7 @@ type Interface struct {
 	Up        bool     `json:"up"`
 	RX        uint64   `json:"rx"`
 	TX        uint64   `json:"tx"`
+	Manager   string   `json:"manager"`
 }
 
 func Interfaces() ([]Interface, error) {
@@ -205,7 +241,13 @@ func Interfaces() ([]Interface, error) {
 		for _, address := range addresses {
 			values = append(values, address.String())
 		}
-		result = append(result, Interface{Name: item.Name, Index: item.Index, MTU: item.MTU, Hardware: item.HardwareAddr.String(), Addresses: values, Up: item.Flags&net.FlagUp != 0, RX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/rx_bytes")), TX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/tx_bytes"))})
+		manager := "kernel"
+		if fileExists("/run/NetworkManager") {
+			manager = "NetworkManager"
+		} else if fileExists("/run/systemd/netif") {
+			manager = "systemd-networkd"
+		}
+		result = append(result, Interface{Name: item.Name, Index: item.Index, MTU: item.MTU, Hardware: item.HardwareAddr.String(), Addresses: values, Up: item.Flags&net.FlagUp != 0, RX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/rx_bytes")), TX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/tx_bytes")), Manager: manager})
 	}
 	return result, nil
 }
@@ -222,10 +264,19 @@ type Unit struct {
 	LoadState   string `json:"loadState"`
 	ActiveState string `json:"activeState"`
 	SubState    string `json:"subState"`
+	FileState   string `json:"fileState"`
+	Scope       string `json:"scope"`
+	Type        string `json:"type"`
 }
 
-func Units(ctx context.Context) ([]Unit, error) {
-	conn, err := dbus.ConnectSystemBus()
+func Units(ctx context.Context, scope, unitType string) ([]Unit, error) {
+	var conn *dbus.Conn
+	var err error
+	if scope == "user" {
+		conn, err = dbus.ConnectSessionBus()
+	} else {
+		conn, err = dbus.ConnectSystemBus()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -241,11 +292,36 @@ func Units(ctx context.Context) ([]Unit, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := make([]Unit, 0, len(raw))
+	files := map[string]string{}
+	var rawFiles []struct {
+		Name  string
+		State string
+	}
+	_ = conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").CallWithContext(ctx, "org.freedesktop.systemd1.Manager.ListUnitFiles", 0).Store(&rawFiles)
+	for _, item := range rawFiles {
+		name := filepath.Base(item.Name)
+		files[name] = item.State
+	}
+	resultByName := make(map[string]Unit, len(raw)+len(files))
 	for _, item := range raw {
-		if strings.HasSuffix(item.Name, ".service") {
-			result = append(result, Unit{Name: item.Name, Description: item.Description, LoadState: item.LoadState, ActiveState: item.ActiveState, SubState: item.SubState})
+		typeName := strings.TrimPrefix(filepath.Ext(item.Name), ".")
+		if unitType != "" && typeName != unitType {
+			continue
 		}
+		resultByName[item.Name] = Unit{Name: item.Name, Description: item.Description, LoadState: item.LoadState, ActiveState: item.ActiveState, SubState: item.SubState, FileState: files[item.Name], Scope: scope, Type: typeName}
+	}
+	for name, state := range files {
+		typeName := strings.TrimPrefix(filepath.Ext(name), ".")
+		if unitType != "" && typeName != unitType {
+			continue
+		}
+		if _, ok := resultByName[name]; !ok {
+			resultByName[name] = Unit{Name: name, LoadState: "loaded", ActiveState: "inactive", SubState: "dead", FileState: state, Scope: scope, Type: typeName}
+		}
+	}
+	result := make([]Unit, 0, len(resultByName))
+	for _, item := range resultByName {
+		result = append(result, item)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].ActiveState != result[j].ActiveState {
@@ -254,6 +330,75 @@ func Units(ctx context.Context) ([]Unit, error) {
 		return result[i].Name < result[j].Name
 	})
 	return result, nil
+}
+
+type UnitDetail struct {
+	Unit
+	Path                 string   `json:"path"`
+	MainPID              uint32   `json:"mainPid"`
+	MemoryCurrent        uint64   `json:"memoryCurrent"`
+	TasksCurrent         uint64   `json:"tasksCurrent"`
+	ActiveEnterTimestamp uint64   `json:"activeEnterTimestamp"`
+	Requires             []string `json:"requires"`
+	Wants                []string `json:"wants"`
+	WantedBy             []string `json:"wantedBy"`
+	Conflicts            []string `json:"conflicts"`
+	Before               []string `json:"before"`
+	After                []string `json:"after"`
+}
+
+func UnitDetails(ctx context.Context, scope, name string) (UnitDetail, error) {
+	var conn *dbus.Conn
+	var err error
+	if scope == "user" {
+		conn, err = dbus.ConnectSessionBus()
+	} else {
+		conn, err = dbus.ConnectSystemBus()
+	}
+	if err != nil {
+		return UnitDetail{}, err
+	}
+	defer conn.Close()
+	manager := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+	var path dbus.ObjectPath
+	if err := manager.CallWithContext(ctx, "org.freedesktop.systemd1.Manager.LoadUnit", 0, name).Store(&path); err != nil {
+		return UnitDetail{}, err
+	}
+	object := conn.Object("org.freedesktop.systemd1", path)
+	getString := func(property string) string {
+		value, err := object.GetProperty(property)
+		if err != nil {
+			return ""
+		}
+		result, _ := value.Value().(string)
+		return result
+	}
+	getStrings := func(property string) []string {
+		value, err := object.GetProperty(property)
+		if err != nil {
+			return []string{}
+		}
+		result, _ := value.Value().([]string)
+		return result
+	}
+	getUint32 := func(property string) uint32 {
+		value, err := object.GetProperty(property)
+		if err != nil {
+			return 0
+		}
+		result, _ := value.Value().(uint32)
+		return result
+	}
+	getUint64 := func(property string) uint64 {
+		value, err := object.GetProperty(property)
+		if err != nil {
+			return 0
+		}
+		result, _ := value.Value().(uint64)
+		return result
+	}
+	unit := Unit{Name: name, Description: getString("org.freedesktop.systemd1.Unit.Description"), LoadState: getString("org.freedesktop.systemd1.Unit.LoadState"), ActiveState: getString("org.freedesktop.systemd1.Unit.ActiveState"), SubState: getString("org.freedesktop.systemd1.Unit.SubState"), Scope: scope, Type: strings.TrimPrefix(filepath.Ext(name), ".")}
+	return UnitDetail{Unit: unit, Path: getString("org.freedesktop.systemd1.Unit.FragmentPath"), MainPID: getUint32("org.freedesktop.systemd1.Service.MainPID"), MemoryCurrent: getUint64("org.freedesktop.systemd1.Unit.MemoryCurrent"), TasksCurrent: getUint64("org.freedesktop.systemd1.Unit.TasksCurrent"), ActiveEnterTimestamp: getUint64("org.freedesktop.systemd1.Unit.ActiveEnterTimestamp"), Requires: getStrings("org.freedesktop.systemd1.Unit.Requires"), Wants: getStrings("org.freedesktop.systemd1.Unit.Wants"), WantedBy: getStrings("org.freedesktop.systemd1.Unit.WantedBy"), Conflicts: getStrings("org.freedesktop.systemd1.Unit.Conflicts"), Before: getStrings("org.freedesktop.systemd1.Unit.Before"), After: getStrings("org.freedesktop.systemd1.Unit.After")}, nil
 }
 
 type LogEntry struct {
