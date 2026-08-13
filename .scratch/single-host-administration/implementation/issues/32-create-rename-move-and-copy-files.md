@@ -4,8 +4,8 @@
 
 **Blocked by:** 07 — Show durable operation receipts; 31 — Browse Files under UNIX authority
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Operations resist traversal/symlink races and handle cross-filesystem behavior explicitly.
-- [ ] Postconditions and receipts reflect actual filesystem result.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Operations resist traversal/symlink races and handle cross-filesystem behavior explicitly.
+- [x] Postconditions and receipts reflect actual filesystem result.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

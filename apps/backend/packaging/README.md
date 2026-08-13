@@ -14,3 +14,9 @@ Install `polkit/org.velopulent.tako.policy` when the deployment uses Polkit for 
 For a reverse proxy, terminate public TLS at the proxy and forward only to a loopback Tako listener. Preserve WebSocket upgrade headers for `/api/v1/terminal/ws`, do not cache `/api/v1/*`, and restrict the proxy's upstream to `127.0.0.1:9090`. If Tako itself is internet-facing, use its generated/configured certificate and keep `allowed_origin` aligned with the browser origin.
 
 The disposable-VM smoke seam is `packaging/smoke-test.sh`. It checks binary presence, socket activation, service identities, TLS reachability, and (when `TAKO_SMOKE_USER`/`TAKO_SMOKE_PASSWORD` are provided by the VM harness) a real PAM login. It never changes host state or stores credentials.
+
+The release image matrix and privileged-backend assertions are documented in
+[`docs/vm-release-matrix.md`](../../../docs/vm-release-matrix.md). A packaging
+run must record optional-backend degradation explicitly rather than treating a
+missing SELinux, AppArmor, UFW, firewalld, Netplan, or PackageKit integration as
+ready.

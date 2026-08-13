@@ -4,8 +4,8 @@
 
 **Blocked by:** 03 — Enrich capability reporting; 17 — Query journal history precisely
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Kernel and userspace capability are probed separately and structured/raw audit formats are bounded.
-- [ ] Hosts without active framework degrade cleanly.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Kernel and userspace capability are probed separately and structured/raw audit formats are bounded.
+- [x] Hosts without active framework degrade cleanly.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

@@ -4,8 +4,8 @@
 
 **Blocked by:** 02 — Establish complete PAM user sessions
 
-**Status:** in-progress
+**Status:** completed
 
 - [x] Gateway cannot grant elevation by reauthenticating an otherwise unauthorized user.
 - [x] Drop, logout, timeout, bridge loss, and session loss independently terminate Administrative access.
-- [ ] Dedicated browser multi-round MFA elevation UX and VM policy matrix are still pending; the root policy path is covered by unit/integration seams.
+- [x] Dedicated browser multi-round MFA elevation UX accepts a bounded additional PAM response, and the supported policy families are documented in the VM release matrix.

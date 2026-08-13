@@ -4,8 +4,8 @@
 
 **Blocked by:** 31 — Browse Files under UNIX authority
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] HTML never renders inline; SVG/PDF active content is isolated or downloaded; `nosniff` is set.
-- [ ] Heavy preview components load conditionally and remain split into focused files.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] HTML never renders inline; SVG/PDF active content is isolated or downloaded; `nosniff` is set.
+- [x] Heavy preview components load conditionally and remain split into focused files.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

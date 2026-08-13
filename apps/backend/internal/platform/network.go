@@ -148,10 +148,12 @@ func networkCommand(ctx context.Context, name string, arguments ...string) ([]by
 		return nil, err
 	}
 	payload, readErr := readBounded(stdout, maxNetworkOutput)
-	waitErr := command.Wait()
 	if readErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
 		return nil, readErr
 	}
+	waitErr := command.Wait()
 	if waitErr != nil {
 		if commandCtx.Err() != nil {
 			return nil, commandCtx.Err()

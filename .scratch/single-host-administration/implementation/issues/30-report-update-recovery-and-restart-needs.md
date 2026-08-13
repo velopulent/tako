@@ -4,8 +4,8 @@
 
 **Blocked by:** 10 — Expand host inventory; 29 — Apply selected and all updates
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Backend-specific hints are capability-driven and failures distinguish advisory from authoritative data.
-- [ ] UI links recovery actions without general package installation/removal.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Backend-specific hints are capability-driven and failures distinguish advisory from authoritative data.
+- [x] UI links recovery actions without general package installation/removal.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

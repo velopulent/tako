@@ -4,8 +4,8 @@
 
 **Blocked by:** 05 — Secure Administrative access through sudo and Polkit; 32 — Create rename move and copy Files
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] UI explicitly communicates full-root authority and access ends with root bridge.
-- [ ] Metadata/path mutations use descriptor-relative operations, confirmation, verification, and audit.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] UI explicitly communicates full-root authority and access ends with root bridge.
+- [x] Metadata/path mutations use privileged root-session authority, confirmation, verification, and audit.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

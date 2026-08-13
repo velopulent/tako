@@ -4,8 +4,8 @@
 
 **Blocked by:** 32 — Create rename move and copy Files
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] MIME/text classification and size limits are enforced server-side.
-- [ ] Save uses same-directory atomic replacement, metadata handling, fsync, and stale token.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] MIME/text classification and size limits are enforced server-side.
+- [x] Save uses same-directory atomic replacement, metadata handling, fsync, and stale token.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

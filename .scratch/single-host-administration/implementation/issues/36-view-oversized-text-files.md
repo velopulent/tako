@@ -4,8 +4,8 @@
 
 **Blocked by:** 31 — Browse Files under UNIX authority
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Browser never downloads entire oversized file merely to view/search it.
-- [ ] Stable windows and limits are tested for huge lines/files and changing files.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Browser never downloads entire oversized file merely to view/search it.
+- [x] Stable windows and limits are tested for huge lines/files and changing files.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

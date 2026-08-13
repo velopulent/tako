@@ -4,8 +4,8 @@
 
 **Blocked by:** 03 — Enrich capability reporting; 04 — Correct page titles and scoped metrics
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Ownership probes NetworkManager, Netplan, networkd/ifupdown, and conflicts rather than distro name.
-- [ ] Per-interface receive/transmit selection uses relevant bounded metrics.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Ownership probes NetworkManager, Netplan, networkd/ifupdown, and conflicts rather than distro name.
+- [x] Per-interface receive/transmit selection uses relevant bounded metrics.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

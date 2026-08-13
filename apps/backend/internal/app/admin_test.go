@@ -82,6 +82,32 @@ func TestAdministrativeAccessUsesRootPolicyGrantAndClearsOnDrop(t *testing.T) {
 	}
 }
 
+func TestAdministrativeAccessPassesBoundedPAMResponsesToPolicy(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	authenticator := &administrativeTestAuthenticator{}
+	server.authenticator = authenticator
+	cookie, csrf := loginForTest(t, server.routes())
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/elevate", bytes.NewBufferString(`{"password":"secret","responses":["123456"]}`))
+	request.AddCookie(cookie)
+	request.Header.Set("X-CSRF-Token", csrf)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("elevation returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	authenticator.mu.Lock()
+	defer authenticator.mu.Unlock()
+	if authenticator.password != "secret\n123456" {
+		t.Fatalf("policy did not receive ordered PAM responses: %q", authenticator.password)
+	}
+}
+
 func TestAdministrativeAccessRejectsMalformedAndDeniedRequests(t *testing.T) {
 	server, err := New(testConfig(t))
 	if err != nil {
@@ -111,5 +137,28 @@ func TestAdministrativeAccessRejectsMalformedAndDeniedRequests(t *testing.T) {
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("denied elevation returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestParseFileRangeSupportsSuffixAndOpenEndedRanges(t *testing.T) {
+	tests := []struct {
+		name       string
+		rangeValue string
+		start      int64
+		end        int64
+		valid      bool
+	}{
+		{name: "explicit", rangeValue: "bytes=2-5", start: 2, end: 5, valid: true},
+		{name: "open ended", rangeValue: "bytes=8-", start: 8, end: 9, valid: true},
+		{name: "suffix", rangeValue: "bytes=-3", start: 7, end: 9, valid: true},
+		{name: "unsatisfiable", rangeValue: "bytes=10-", valid: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			start, end, valid := parseFileRange(test.rangeValue, 10)
+			if valid != test.valid || (valid && (start != test.start || end != test.end)) {
+				t.Fatalf("parseFileRange(%q) = (%d, %d, %v)", test.rangeValue, start, end, valid)
+			}
+		})
 	}
 }

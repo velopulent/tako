@@ -546,16 +546,39 @@ func (server *Server) adminElevate(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	var body struct {
-		Password string `json:"password"`
+		Password  string   `json:"password"`
+		Responses []string `json:"responses,omitempty"`
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF || len(body.Password) > 4096 {
-		problem(writer, 400, "invalid-request", "Password is required")
+	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF || len(body.Password) == 0 || len(body.Password) > 4096 || len(body.Responses) > 4 {
+		problem(writer, 400, "invalid-request", "Password and PAM responses must be valid")
 		return
 	}
-	access, err := controller.AuthorizeAdministrative(request.Context(), current.Identity.BridgeToken, body.Password, server.config.AdminIdleTimeout)
+	for _, response := range body.Responses {
+		if len(response) > 4096 || strings.ContainsAny(response, "\x00\r\n") {
+			body.Password = ""
+			body.Responses = nil
+			problem(writer, 400, "invalid-request", "PAM responses must be single-line values within the size limit")
+			return
+		}
+	}
+	policyInput := body.Password
+	if len(body.Responses) > 0 {
+		policyInput += "\n" + strings.Join(body.Responses, "\n")
+	}
+	if len(policyInput) > 16<<10 {
+		body.Password = ""
+		body.Responses = nil
+		policyInput = ""
+		problem(writer, 400, "invalid-request", "Password and PAM responses exceed the size limit")
+		return
+	}
+	body.Password = ""
+	body.Responses = nil
+	access, err := controller.AuthorizeAdministrative(request.Context(), current.Identity.BridgeToken, policyInput, server.config.AdminIdleTimeout)
+	policyInput = ""
 	body.Password = ""
 	if err != nil {
 		if errors.Is(err, auth.ErrServiceUnavailable) {
@@ -1069,7 +1092,7 @@ func (server *Server) firewallStatus(writer http.ResponseWriter, request *http.R
 		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before inspecting firewall state")
 		return
 	}
-	state, err := auth.PreviewFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: platform.FirewallOperation{Backend: "firewalld"}})
+	state, err := auth.PreviewFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: platform.FirewallOperation{Backend: "auto"}})
 	if err != nil {
 		writeFirewallOperationError(writer, err)
 		return
@@ -1280,13 +1303,24 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 	}
 	status := http.StatusOK
 	if rangeValue := request.Header.Get("Range"); rangeValue != "" {
-		start, end, valid := parseFileRange(rangeValue)
-		if !valid {
-			problem(writer, http.StatusRequestedRangeNotSatisfiable, "invalid-file-range", "Only a single byte range is supported")
+		statResult, statOK := server.applyFileOperation(writer, request, platform.FileOperation{Action: "stat", Path: path})
+		if !statOK || statResult.Entry == nil {
 			return
 		}
-		offset, limit = start, end-start+1
-		status = http.StatusPartialContent
+		ifRange := strings.Trim(request.Header.Get("If-Range"), "\"")
+		if ifRange != "" && ifRange != statResult.Entry.Fingerprint {
+			// A stale validator turns a range request into a bounded full read.
+			offset, limit = 0, platform.MaxFileChunk
+		} else {
+			start, end, valid := parseFileRange(rangeValue, statResult.Entry.Size)
+			if !valid {
+				writer.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", statResult.Entry.Size))
+				problem(writer, http.StatusRequestedRangeNotSatisfiable, "invalid-file-range", "The requested range is invalid or outside the file")
+				return
+			}
+			offset, limit = start, end-start+1
+			status = http.StatusPartialContent
+		}
 	}
 	result, ok := server.applyFileOperation(writer, request, platform.FileOperation{Action: "read", Path: path, Offset: offset, Limit: limit})
 	if !ok {
@@ -1306,6 +1340,32 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 	}
 	if result.Fingerprint != "" {
 		writer.Header().Set("X-File-Fingerprint", result.Fingerprint)
+		etag := `"` + result.Fingerprint + `"`
+		writer.Header().Set("ETag", etag)
+		if status == http.StatusOK && request.Header.Get("If-None-Match") == etag {
+			writer.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	contentType := writer.Header().Get("Content-Type")
+	filename := filepath.Base(path)
+	filename = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == '"' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, filename)
+	if filename == "" || filename == "." || filename == string(filepath.Separator) {
+		filename = "download"
+	}
+	inline := (strings.HasPrefix(contentType, "image/") && contentType != "image/svg+xml") || strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "audio/") || (strings.HasPrefix(contentType, "text/") && contentType != "text/html") || contentType == "application/json" || contentType == "application/pdf"
+	disposition := "attachment"
+	if inline {
+		disposition = "inline"
+	}
+	writer.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"`, disposition, filename))
+	if contentType == "application/pdf" || contentType == "image/svg+xml" || contentType == "text/html" {
+		writer.Header().Set("Content-Security-Policy", "sandbox")
 	}
 	if status == http.StatusPartialContent {
 		end := result.Offset + int64(len(result.Content)) - 1
@@ -1446,17 +1506,42 @@ func writeFileOperationError(writer http.ResponseWriter, err error) {
 	}
 }
 
-func parseFileRange(value string) (int64, int64, bool) {
+func parseFileRange(value string, total int64) (int64, int64, bool) {
 	if !strings.HasPrefix(value, "bytes=") || strings.Contains(value, ",") {
 		return 0, 0, false
 	}
 	parts := strings.SplitN(strings.TrimPrefix(value, "bytes="), "-", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	if len(parts) != 2 || total <= 0 {
 		return 0, 0, false
 	}
-	start, startErr := strconv.ParseInt(parts[0], 10, 64)
-	end, endErr := strconv.ParseInt(parts[1], 10, 64)
-	if startErr != nil || endErr != nil || start < 0 || end < start || end-start+1 > platform.MaxFileChunk {
+	if parts[0] == "" {
+		suffix, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || suffix <= 0 {
+			return 0, 0, false
+		}
+		if suffix > platform.MaxFileChunk {
+			suffix = platform.MaxFileChunk
+		}
+		if suffix > total {
+			suffix = total
+		}
+		return total - suffix, total - 1, true
+	}
+	start, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || start < 0 || start >= total {
+		return 0, 0, false
+	}
+	end := total - 1
+	if parts[1] != "" {
+		end, err = strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || end < start {
+			return 0, 0, false
+		}
+		if end >= total {
+			end = total - 1
+		}
+	}
+	if end-start+1 > platform.MaxFileChunk {
 		return 0, 0, false
 	}
 	return start, end, true

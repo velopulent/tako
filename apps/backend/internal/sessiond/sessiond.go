@@ -348,7 +348,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "authorize-admin" {
-		if request.Token == "" || request.AdminToken != "" || request.Username != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.AdminTTL > 3600 || len(request.Password) > 4096 {
+		if request.Token == "" || request.AdminToken != "" || request.Username != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.AdminTTL > 3600 || len(request.Password) == 0 || len(request.Password) > 16<<10 {
 			_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
 			return
 		}

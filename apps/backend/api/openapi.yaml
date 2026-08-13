@@ -1155,10 +1155,27 @@ paths:
           schema: { type: string, maxLength: 4096 }
         - in: header
           name: Range
-          schema: { type: string, pattern: '^bytes=[0-9]+-[0-9]+$' }
+          schema: { type: string, pattern: '^bytes=([0-9]+-[0-9]*|-[0-9]+)$' }
+        - in: header
+          name: If-Range
+          schema: { type: string, maxLength: 128 }
+        - in: header
+          name: If-None-Match
+          schema: { type: string, maxLength: 128 }
       responses:
-        '200': { description: 'Bounded file content; supports Accept-Ranges: bytes' }
-        '206': { description: Partial file content with Content-Range }
+        '200':
+          description: 'Bounded file content; supports Accept-Ranges, ETag, and safe Content-Disposition headers'
+          headers:
+            Accept-Ranges: { schema: { type: string, enum: [bytes] } }
+            ETag: { schema: { type: string, maxLength: 128 } }
+            Content-Disposition: { schema: { type: string, maxLength: 256 } }
+        '206':
+          description: Partial file content with Content-Range
+          headers:
+            Accept-Ranges: { schema: { type: string, enum: [bytes] } }
+            Content-Range: { schema: { type: string, maxLength: 128 } }
+            ETag: { schema: { type: string, maxLength: 128 } }
+        '304': { description: File content is unchanged for If-None-Match }
         '400': { $ref: '#/components/responses/Problem' }
         '416': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
@@ -1370,7 +1387,7 @@ components:
         path: { type: string, maxLength: 4096 }
         destination: { type: string, maxLength: 4096 }
         kind: { type: string, enum: [file, directory] }
-        content: { type: string, format: byte, maxLength: 5592406 }
+        content: { type: string, format: byte, maxLength: 6990508 }
         contentSha256: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         offset: { type: integer, minimum: 0, maximum: 4194304 }
         limit: { type: integer, minimum: 0, maximum: 4194304 }
@@ -1621,6 +1638,10 @@ components:
       additionalProperties: false
       properties:
         password: { type: string, maxLength: 4096 }
+        responses:
+          type: array
+          maxItems: 4
+          items: { type: string, maxLength: 4096 }
     AdministrativeAccess:
       type: object
       required: [administrative, until]

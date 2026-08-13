@@ -45,6 +45,7 @@ export function SiteHeader({
     client = useQueryClient(),
     { theme, setTheme } = useTheme(),
     [password, setPassword] = React.useState(""),
+    [mfaResponse, setMfaResponse] = React.useState(""),
     [elevationError, setElevationError] = React.useState(""),
     [elevating, setElevating] = React.useState(false)
   const admin = useQuery({
@@ -80,9 +81,13 @@ export function SiteHeader({
       await api("/admin/elevate", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({
+          password,
+          ...(mfaResponse ? { responses: [mfaResponse] } : {}),
+        }),
       })
       setPassword("")
+      setMfaResponse("")
       await admin.refetch()
       await client.invalidateQueries({ queryKey: ["session"] })
     } catch {
@@ -90,6 +95,7 @@ export function SiteHeader({
         "The host policy rejected this attempt. If your PAM stack requires MFA, enter the current challenge response and retry."
       )
       setPassword("")
+      setMfaResponse("")
     } finally {
       setElevating(false)
     }
@@ -143,6 +149,19 @@ export function SiteHeader({
                   placeholder="Password"
                   aria-label="Password"
                   autoComplete="current-password"
+                />
+              </InputGroup>
+              <InputGroup>
+                <InputGroupAddon>
+                  <KeyRoundIcon aria-hidden="true" />
+                </InputGroupAddon>
+                <InputGroupInput
+                  type="password"
+                  value={mfaResponse}
+                  onChange={(event) => setMfaResponse(event.target.value)}
+                  placeholder="MFA response (if required)"
+                  aria-label="MFA response"
+                  autoComplete="one-time-code"
                 />
               </InputGroup>
               {elevationError && (

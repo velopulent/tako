@@ -27,6 +27,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { MediaPreview } from "@/components/media-preview"
@@ -232,19 +238,20 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
             aria-label="Files"
           >
             {entries.map((entry) => (
-              <div
-                key={`${entry.path}:${entry.fingerprint}`}
-                className="flex min-h-14 items-center gap-3 px-3 py-2 hover:bg-muted/50"
-                role="row"
-                tabIndex={0}
-                onDoubleClick={() => open(entry)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault()
-                    open(entry)
-                  }
-                }}
-              >
+              <ContextMenu key={`${entry.path}:${entry.fingerprint}`}>
+                <ContextMenuTrigger className="contents">
+                  <div
+                    className="flex min-h-14 items-center gap-3 px-3 py-2 hover:bg-muted/50"
+                    role="row"
+                    tabIndex={0}
+                    onDoubleClick={() => open(entry)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault()
+                        open(entry)
+                      }
+                    }}
+                  >
                 {entry.kind === "directory" ? (
                   <FolderIcon
                     className="size-5 text-muted-foreground"
@@ -325,7 +332,53 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </div>
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuItem
+                    onClick={() => open(entry)}
+                    disabled={entry.permissionDenied}
+                  >
+                    <FileIcon aria-hidden="true" /> Open
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onClick={() => download(entry)}
+                    disabled={
+                      entry.permissionDenied || entry.kind === "directory"
+                    }
+                  >
+                    <DownloadIcon aria-hidden="true" /> Download
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onClick={() =>
+                      mutation.mutate({
+                        action: "copy",
+                        path: entry.path,
+                        destination: `${entry.path}.copy`,
+                        expectedFingerprint: entry.fingerprint,
+                      })
+                    }
+                    disabled={
+                      entry.permissionDenied || entry.kind === "directory"
+                    }
+                  >
+                    <CopyIcon aria-hidden="true" /> Copy here
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    className="text-destructive"
+                    onClick={() =>
+                      mutation.mutate({
+                        action: "trash",
+                        path: entry.path,
+                        expectedFingerprint: entry.fingerprint,
+                      })
+                    }
+                    disabled={entry.permissionDenied}
+                  >
+                    <Trash2Icon aria-hidden="true" /> Move to trash
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
             ))}
           </div>
         )}

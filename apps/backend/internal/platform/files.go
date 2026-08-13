@@ -157,6 +157,11 @@ func ValidateFileOperation(operation FileOperation) error {
 			return ErrInvalidFileOperation
 		}
 	}
+	if operation.Action == "archive" || operation.Action == "extract" {
+		if operation.Confirmation != "CONFIRM FILE OPERATION" {
+			return ErrInvalidFileOperation
+		}
+	}
 	if (operation.Action == "write" || operation.Action == "write-text" || operation.Action == "write-chunk") && operation.Limit == 0 && len(operation.Content) == 0 {
 		return ErrInvalidFileOperation
 	}
@@ -241,19 +246,19 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 	case "delete":
 		return deleteFile(path, operation)
 	case "search":
-		return searchFiles(path, operation)
+		return searchFiles(ctx, path, operation)
 	case "archive":
 		archive, resolveErr := resolve(operation.ArchivePath)
 		if resolveErr != nil {
 			return FileResult{}, resolveErr
 		}
-		return createArchive(path, archive, operation)
+		return createArchive(ctx, path, archive, operation)
 	case "extract":
 		archive, resolveErr := resolve(operation.ArchivePath)
 		if resolveErr != nil {
 			return FileResult{}, resolveErr
 		}
-		return extractArchive(archive, path, operation)
+		return extractArchive(ctx, archive, path, operation)
 	case "metadata":
 		return updateMetadata(path, operation, privileged)
 	default:
@@ -599,7 +604,7 @@ func deleteFile(path string, operation FileOperation) (FileResult, error) {
 	return FileResult{Message: "Item deleted."}, err
 }
 
-func searchFiles(path string, operation FileOperation) (FileResult, error) {
+func searchFiles(ctx context.Context, path string, operation FileOperation) (FileResult, error) {
 	maxEntries := operation.MaxEntries
 	if maxEntries == 0 {
 		maxEntries = 1000
@@ -607,6 +612,9 @@ func searchFiles(path string, operation FileOperation) (FileResult, error) {
 	result := FileSearchResult{Root: path, Query: operation.Query, Entries: []FileEntry{}}
 	count := 0
 	err := filepath.WalkDir(path, func(current string, item os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrPermission) {
 				return filepath.SkipDir
@@ -632,7 +640,7 @@ func searchFiles(path string, operation FileOperation) (FileResult, error) {
 	return FileResult{Search: &result}, nil
 }
 
-func createArchive(source, destination string, operation FileOperation) (FileResult, error) {
+func createArchive(ctx context.Context, source, destination string, operation FileOperation) (FileResult, error) {
 	sourceAbs, sourceErr := filepath.Abs(source)
 	destinationAbs, destinationErr := filepath.Abs(destination)
 	if sourceErr != nil || destinationErr != nil || pathWithin(sourceAbs, destinationAbs) {
@@ -643,11 +651,20 @@ func createArchive(source, destination string, operation FileOperation) (FileRes
 		return FileResult{}, err
 	}
 	defer output.Close()
+	removePartial := true
+	defer func() {
+		if removePartial {
+			_ = os.Remove(destination)
+		}
+	}()
 	gzipWriter := gzip.NewWriter(output)
 	tarWriter := tar.NewWriter(gzipWriter)
 	entries := 0
 	bytesWritten := int64(0)
 	err = filepath.Walk(source, func(path string, info os.FileInfo, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -692,10 +709,11 @@ func createArchive(source, destination string, operation FileOperation) (FileRes
 	if err != nil {
 		return FileResult{}, err
 	}
+	removePartial = false
 	return FileResult{Message: fmt.Sprintf("Archive created with %d entries.", entries)}, nil
 }
 
-func extractArchive(archivePath, destination string, operation FileOperation) (FileResult, error) {
+func extractArchive(ctx context.Context, archivePath, destination string, operation FileOperation) (FileResult, error) {
 	input, err := os.Open(archivePath)
 	if err != nil {
 		return FileResult{}, err
@@ -710,6 +728,9 @@ func extractArchive(archivePath, destination string, operation FileOperation) (F
 	entries := 0
 	bytesRead := int64(0)
 	for {
+		if err := ctx.Err(); err != nil {
+			return FileResult{}, err
+		}
 		header, nextErr := tarReader.Next()
 		if errors.Is(nextErr, io.EOF) {
 			break

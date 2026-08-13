@@ -130,8 +130,13 @@ func (hostProbe) CommandOutput(ctx context.Context, name string, arguments ...st
 		return "", false
 	}
 	output, readErr := readBounded(stdout, 4096)
+	if readErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return "", false
+	}
 	waitErr := command.Wait()
-	if readErr != nil || waitErr != nil {
+	if waitErr != nil {
 		return "", false
 	}
 	line := strings.TrimSpace(strings.SplitN(string(output), "\n", 2)[0])
@@ -147,6 +152,9 @@ func readBounded(reader io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(payload)) > limit {
+		if closer, ok := reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
 		return nil, errors.New("command output limit exceeded")
 	}
 	return payload, nil

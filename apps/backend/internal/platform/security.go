@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -153,10 +154,33 @@ func ValidateSecurityOperation(operation SecurityOperation) error {
 			return ErrSecurityUnsafe
 		}
 	}
-	if strings.HasPrefix(operation.Action, "apparmor-") && !regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`).MatchString(operation.Profile) {
+	if strings.HasPrefix(operation.Action, "apparmor-") && operation.Action != "apparmor-load" && !regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`).MatchString(operation.Profile) {
 		return ErrInvalidSecurityOperation
 	}
+	if operation.Action == "apparmor-load" && !trustedAppArmorProfile(operation.Path) {
+		return ErrSecurityUnsafe
+	}
 	return nil
+}
+
+func trustedAppArmorProfile(path string) bool {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return false
+	}
+	for _, root := range []string{"/etc/apparmor.d", "/usr/lib/apparmor.d", "/lib/apparmor.d"} {
+		if filePathWithin(root, resolved) {
+			return true
+		}
+	}
+	return false
 }
 
 func PreviewSecurityOperation(ctx context.Context, operation SecurityOperation) (SecurityStatus, error) {
@@ -185,6 +209,16 @@ func ApplySecurityOperation(ctx context.Context, operation SecurityOperation) (S
 		if current.SELinux.Mode == "Disabled" || !current.SELinux.Userspace {
 			return SecurityStatus{}, ErrSecurityUnavailable
 		}
+		known := false
+		for _, boolean := range current.SELinux.Booleans {
+			if strings.HasPrefix(boolean, operation.Boolean+"=") {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return SecurityStatus{}, ErrSecurityUnsafe
+		}
 		command, arguments = "setsebool", []string{"-P", operation.Boolean, map[bool]string{true: "on", false: "off"}[operation.Value]}
 	case "selinux-restorecon":
 		if !current.SELinux.Userspace {
@@ -194,6 +228,9 @@ func ApplySecurityOperation(ctx context.Context, operation SecurityOperation) (S
 	case "apparmor-enforce", "apparmor-complain":
 		if !current.AppArmor.Userspace {
 			return SecurityStatus{}, ErrSecurityUnavailable
+		}
+		if !contains(current.AppArmor.Profiles, operation.Profile) {
+			return SecurityStatus{}, ErrSecurityUnsafe
 		}
 		command, arguments = "aa-"+strings.TrimPrefix(operation.Action, "apparmor-"), []string{"--", operation.Profile}
 	case "apparmor-load":

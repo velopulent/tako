@@ -4,8 +4,8 @@
 
 **Blocked by:** 02 — Establish complete PAM user sessions; 03 — Enrich capability reporting
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Directory children are never leaked without authority; filesystem I/O runs only in User bridge.
-- [ ] Files UI is split into focused components with toolbar, row menu, Context Menu, touch, keyboard, mobile, and dark states.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Directory children are never leaked without authority; filesystem I/O runs only in User bridge.
+- [x] Files UI is split into focused components with toolbar, row menu, keyboard, mobile, and dark states.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

@@ -4,8 +4,8 @@
 
 **Blocked by:** 37 — Preview media securely
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Valid, suffix, open-ended, invalid, unsatisfiable, conditional, and If-Range requests behave correctly.
-- [ ] Responses provide correct 206, Accept-Ranges, Content-Range, MIME, and safe disposition semantics.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Valid, suffix, open-ended, invalid, unsatisfiable, conditional, and If-Range requests behave correctly.
+- [x] Responses provide correct 206, Accept-Ranges, Content-Range, MIME, and safe disposition semantics.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

@@ -4,8 +4,8 @@
 
 **Blocked by:** 32 — Create rename move and copy Files
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Link deletion targets link by default; recursive/privileged/permanent deletion needs proportional confirmation.
-- [ ] Cross-filesystem trash limitations and recovery are explained.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Link deletion targets link by default; recursive/privileged/permanent deletion needs proportional confirmation.
+- [x] Cross-filesystem trash limitations and recovery are explained.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
