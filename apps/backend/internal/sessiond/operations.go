@@ -4,29 +4,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+
+	"github.com/velopulent/tako/internal/platform"
 )
 
-const maxServiceUnitLength = 256
+type serviceOperation = platform.ServiceOperation
 
-type serviceOperation struct {
-	Scope  string
-	Unit   string
-	Action string
-}
+const maxServiceUnitLength = platform.MaxServiceUnitLength
 
 func parseServiceOperation(scope, unit, action string) (serviceOperation, error) {
-	if scope != "system" && scope != "user" {
-		return serviceOperation{}, errors.New("invalid service scope")
-	}
-	if unit == "" || len(unit) > maxServiceUnitLength || strings.ContainsAny(unit, "/\x00") {
-		return serviceOperation{}, errors.New("invalid service unit")
-	}
-	switch action {
-	case "start", "stop", "restart", "reload", "enable", "disable", "mask", "unmask":
-		return serviceOperation{Scope: scope, Unit: unit, Action: action}, nil
-	default:
-		return serviceOperation{}, errors.New("invalid service action")
-	}
+	return platform.ParseServiceOperation(scope, unit, action)
 }
 
 type hostConfigurationOperation struct {

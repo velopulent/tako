@@ -702,7 +702,13 @@ func (server *Server) services(writer http.ResponseWriter, request *http.Request
 }
 
 func (server *Server) serviceDetail(writer http.ResponseWriter, request *http.Request) {
-	item, err := platform.UnitDetails(request.Context(), chi.URLParam(request, "scope"), chi.URLParam(request, "unit"))
+	scope := chi.URLParam(request, "scope")
+	unit := chi.URLParam(request, "unit")
+	if err := platform.ValidateServiceTarget(scope, unit); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-service-operation", "Unsupported service scope or unit")
+		return
+	}
+	item, err := platform.UnitDetails(request.Context(), scope, unit)
 	if err != nil {
 		server.writeModule(writer, "services", nil, err)
 		return
@@ -712,12 +718,9 @@ func (server *Server) serviceDetail(writer http.ResponseWriter, request *http.Re
 func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Request) {
 	current := request.Context().Value(sessionKey{}).(session.Session)
 	scope := chi.URLParam(request, "scope")
+	unit := chi.URLParam(request, "unit")
 	startedAt := time.Now().UTC()
-	target := scope + "/" + chi.URLParam(request, "unit")
-	if scope == "system" && (current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil)) {
-		problem(writer, 403, "administrative-access-required", "Gain Administrative access first")
-		return
-	}
+	target := scope + "/" + unit
 	var body struct {
 		Action string `json:"action"`
 	}
@@ -727,20 +730,33 @@ func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Re
 		problem(writer, 400, "invalid-request", "Action is required")
 		return
 	}
-	target = scope + "/" + chi.URLParam(request, "unit") + "/" + body.Action
-	var actionErr error
-	if scope == "system" {
-		actionErr = auth.ServiceActionAsAdmin(request.Context(), server.config.SessionSocket, current.Identity.AdminToken, scope, chi.URLParam(request, "unit"), body.Action)
-	} else {
-		actionErr = auth.ServiceAction(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, scope, chi.URLParam(request, "unit"), body.Action)
-	}
-	if actionErr != nil {
-		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "service action failed", scope == "system")
-		problem(writer, 502, "service-action-failed", actionErr.Error())
+	operation, operationErr := platform.ParseServiceOperation(scope, unit, body.Action)
+	if operationErr != nil {
+		problem(writer, http.StatusBadRequest, "invalid-service-operation", "Unsupported service scope, unit, or action")
 		return
 	}
-	server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", scope == "system")
-	item, err := platform.UnitDetails(request.Context(), chi.URLParam(request, "scope"), chi.URLParam(request, "unit"))
+	if operation.Scope == "system" && (current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) || current.Identity.BridgeToken == "") {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access first")
+		return
+	}
+	if operation.Scope == "user" && current.Identity.BridgeToken == "" {
+		problem(writer, http.StatusForbidden, "user-session-required", "An authenticated UNIX session is required")
+		return
+	}
+	target = operation.Scope + "/" + operation.Unit + "/" + operation.Action
+	var actionErr error
+	if operation.Scope == "system" {
+		actionErr = auth.ServiceActionAsAdmin(request.Context(), server.config.SessionSocket, current.Identity.AdminToken, operation.Scope, operation.Unit, operation.Action)
+	} else {
+		actionErr = auth.ServiceAction(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, operation.Scope, operation.Unit, operation.Action)
+	}
+	if actionErr != nil {
+		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "service action failed", operation.Scope == "system")
+		problem(writer, http.StatusBadGateway, "service-action-failed", "Service action could not be completed; inspect operation history")
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", operation.Scope == "system")
+	item, err := platform.UnitDetails(request.Context(), operation.Scope, operation.Unit)
 	if err != nil {
 		problem(writer, 502, "service-refresh-failed", err.Error())
 		return

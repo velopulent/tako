@@ -289,6 +289,47 @@ func TestOperationReceiptsEndpointReturnsSanitizedHistory(t *testing.T) {
 	}
 }
 
+func TestServiceRoutesRejectUnsafeTargetsAndMissingAuthority(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	cookie, csrf := loginForTest(t, server.routes())
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/services/global/demo.service", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid service target returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	for _, test := range []struct {
+		name   string
+		path   string
+		body   string
+		status int
+	}{
+		{name: "unknown action", path: "/api/v1/services/user/demo.service/actions", body: `{"action":"exec"}`, status: http.StatusBadRequest},
+		{name: "unknown field", path: "/api/v1/services/user/demo.service/actions", body: `{"action":"restart","command":"id"}`, status: http.StatusBadRequest},
+		{name: "system needs administrative bridge", path: "/api/v1/services/system/demo.service/actions", body: `{"action":"restart"}`, status: http.StatusForbidden},
+		{name: "user needs unix bridge", path: "/api/v1/services/user/demo.service/actions", body: `{"action":"restart"}`, status: http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewBufferString(test.body))
+			request.AddCookie(cookie)
+			request.Header.Set("X-CSRF-Token", csrf)
+			recorder := httptest.NewRecorder()
+			server.routes().ServeHTTP(recorder, request)
+			if recorder.Code != test.status {
+				t.Fatalf("service request returned %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

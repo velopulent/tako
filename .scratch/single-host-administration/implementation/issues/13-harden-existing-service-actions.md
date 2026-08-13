@@ -4,8 +4,8 @@
 
 **Blocked by:** 06 — Introduce typed privileged operations; 07 — Show durable operation receipts
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] System actions require authorized Privileged bridge; user actions run as authenticated UNIX identity.
-- [ ] Validated inventory unit names and action allowlists prevent arbitrary targets.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] System actions require authorized Privileged bridge; user actions run as authenticated UNIX identity.
+- [x] Validated inventory unit names and action allowlists prevent arbitrary targets.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

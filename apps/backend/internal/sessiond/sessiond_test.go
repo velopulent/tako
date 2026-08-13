@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -385,6 +386,68 @@ func TestSystemServiceActionRequiresAdministrativeGrant(t *testing.T) {
 	}
 	if response.Error != "invalid-administrative-request" {
 		t.Fatalf("system action without admin grant returned %q", response.Error)
+	}
+}
+
+type recordingServiceBackend struct {
+	mu     sync.Mutex
+	called []serviceOperation
+	err    error
+}
+
+func (backend *recordingServiceBackend) Run(_ context.Context, operation serviceOperation) error {
+	backend.mu.Lock()
+	backend.called = append(backend.called, operation)
+	backend.mu.Unlock()
+	return backend.err
+}
+
+func (backend *recordingServiceBackend) operations() []serviceOperation {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	return append([]serviceOperation(nil), backend.called...)
+}
+
+func TestServiceActionsUseTheMatchingUNIXGrant(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "octopus", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, err := store.authorize(context.Background(), bridgeToken, "secret", 300, func(context.Context, auth.Identity, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		request auth.Request
+		want    serviceOperation
+	}{
+		{name: "user", request: auth.Request{Operation: "service-action", Token: bridgeToken, Scope: "user", Unit: "demo.service", Action: "restart"}, want: serviceOperation{Scope: "user", Unit: "demo.service", Action: "restart"}},
+		{name: "system", request: auth.Request{Operation: "service-action", AdminToken: adminToken, Scope: "system", Unit: "demo.service", Action: "reload"}, want: serviceOperation{Scope: "system", Unit: "demo.service", Action: "reload"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &recordingServiceBackend{}
+			serverConn, clientConn := net.Pipe()
+			defer clientConn.Close()
+			go handleWithBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, backend)
+			if err := json.NewEncoder(clientConn).Encode(test.request); err != nil {
+				t.Fatal(err)
+			}
+			var response auth.Response
+			if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Error != "" {
+				t.Fatalf("service action failed: %q", response.Error)
+			}
+			called := backend.operations()
+			if len(called) != 1 || called[0] != test.want {
+				t.Fatalf("backend calls = %#v, want %#v", called, test.want)
+			}
+		})
 	}
 }
 

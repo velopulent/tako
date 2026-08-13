@@ -348,6 +348,9 @@ type UnitDetail struct {
 }
 
 func UnitDetails(ctx context.Context, scope, name string) (UnitDetail, error) {
+	if err := ValidateServiceTarget(scope, name); err != nil {
+		return UnitDetail{}, err
+	}
 	var conn *dbus.Conn
 	var err error
 	if scope == "user" {

@@ -49,6 +49,20 @@ type grantStore struct {
 
 type administrativePolicy func(context.Context, auth.Identity, string) error
 
+type serviceBackend interface {
+	Run(context.Context, serviceOperation) error
+}
+
+type systemServiceBackend struct{}
+
+func (systemServiceBackend) Run(ctx context.Context, operation serviceOperation) error {
+	arguments := []string{operation.Action, "--", operation.Unit}
+	if operation.Scope == "user" {
+		arguments = append([]string{"--user"}, arguments...)
+	}
+	return exec.CommandContext(ctx, "systemctl", arguments...).Run()
+}
+
 var errAdministrativeUnavailable = errors.New("administrative policy unavailable")
 
 // Run starts the privileged local session service. The caller selects this
@@ -132,16 +146,20 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 	if len(hostBackends) > 0 && hostBackends[0] != nil {
 		backend = hostBackends[0]
 	}
-	handleWithBackends(conn, service, conversations, grants, policy, logger, backend, systemPowerBackend{})
+	handleWithBackends(conn, service, conversations, grants, policy, logger, backend, systemPowerBackend{}, systemServiceBackend{})
 }
 
-func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend) {
+func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
 	}
 	if power == nil {
 		power = systemPowerBackend{}
+	}
+	serviceBackend := serviceBackend(systemServiceBackend{})
+	if len(serviceBackends) > 0 && serviceBackends[0] != nil {
+		serviceBackend = serviceBackends[0]
 	}
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReaderSize(conn, 16<<10)
@@ -335,7 +353,7 @@ func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversati
 			_ = encoder.Encode(auth.Response{Error: "invalid-service-operation"})
 			return
 		}
-		errorCode := runServiceAction(operation)
+		errorCode := runServiceAction(serviceBackend, operation)
 		logger.Info("service action", zap.String("username", identity.Username), zap.String("scope", request.Scope), zap.String("unit", request.Unit), zap.String("action", request.Action), zap.String("result", errorCode))
 		_ = encoder.Encode(auth.Response{Error: errorCode})
 		return
@@ -453,14 +471,10 @@ func hasPowerFields(request auth.Request) bool {
 	return request.PowerAction != "" || request.PowerConfirmation != ""
 }
 
-func runServiceAction(operation serviceOperation) string {
+func runServiceAction(backend serviceBackend, operation serviceOperation) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	arguments := []string{operation.Action, "--", operation.Unit}
-	if operation.Scope == "user" {
-		arguments = append([]string{"--user"}, arguments...)
-	}
-	if err := exec.CommandContext(ctx, "systemctl", arguments...).Run(); err != nil {
+	if err := backend.Run(ctx, operation); err != nil {
 		if ctx.Err() != nil {
 			return "service-job-timeout"
 		}

@@ -9,19 +9,7 @@ import {
   type SessionResponse,
 } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -30,6 +18,8 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { DataTable } from "@/components/data-table"
+import { ServiceActions } from "@/components/service-actions"
+import type { ServiceActionName } from "@/lib/service-actions"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { ColumnDef } from "@tanstack/react-table"
 
@@ -67,7 +57,7 @@ export function ServiceDetailPage() {
       ),
   })
   const action = useMutation({
-    mutationFn: (name: string) =>
+    mutationFn: (name: ServiceActionName) =>
       api<ServiceDetail>(
         `/services/${scope}/${encodeURIComponent(unit)}/actions`,
         {
@@ -144,55 +134,13 @@ export function ServiceDetailPage() {
               <AlertDescription>{action.error.message}</AlertDescription>
             </Alert>
           )}
-          <div className="flex flex-wrap gap-2">
-            {[
-              "start",
-              "stop",
-              "restart",
-              "reload",
-              "enable",
-              "disable",
-              "mask",
-              "unmask",
-            ].map((name) => (
-              <AlertDialog key={name}>
-                <AlertDialogTrigger
-                  render={
-                    <Button
-                      variant={
-                        name === "stop" || name === "mask"
-                          ? "destructive"
-                          : "outline"
-                      }
-                      size="sm"
-                    />
-                  }
-                >
-                  {name[0].toUpperCase() + name.slice(1)}
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>
-                      {name} {unit}?
-                    </AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This changes {scope} systemd state. Administrative access
-                      is required for system units.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      disabled={action.isPending}
-                      onClick={() => action.mutate(name)}
-                    >
-                      Confirm
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            ))}
-          </div>
+          <ServiceActions
+            scope={scope}
+            unit={unit}
+            administrative={session.data?.administrative === true}
+            pending={action.isPending}
+            onAction={(name) => action.mutate(name)}
+          />
           <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[10rem_1fr]">
             <dt className="font-medium">Path</dt>
             <dd className="font-mono text-xs">{item.path || "—"}</dd>

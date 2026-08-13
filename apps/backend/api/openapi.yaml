@@ -153,6 +153,7 @@ paths:
       operationId: getService
       responses:
         '200': { description: Unit status, runtime properties, and relationships }
+        '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /services/{scope}/{unit}/actions:
     parameters:
@@ -171,6 +172,7 @@ paths:
                 action: { type: string, enum: [start, stop, restart, reload, enable, disable, mask, unmask] }
       responses:
         '200': { description: Refreshed unit state }
+        '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
   /admin:
