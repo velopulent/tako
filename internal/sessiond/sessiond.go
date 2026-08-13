@@ -142,6 +142,27 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, grants *grantStore, lo
 		_ = encoder.Encode(auth.Response{Error: responseError})
 		return
 	}
+	if request.Operation == "service-action" {
+		identity, ok := grants.get(request.Token)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+			return
+		}
+		errorCode := runServiceAction(request.Scope, request.Unit, request.Action)
+		logger.Info("service action", zap.String("username", identity.Username), zap.String("scope", request.Scope), zap.String("unit", request.Unit), zap.String("action", request.Action), zap.String("result", errorCode))
+		_ = encoder.Encode(auth.Response{Error: errorCode})
+		return
+	}
+	if request.Operation == "verify" {
+		identity, err := service.Authenticate(context.Background(), request.Username, request.Password)
+		request.Password = ""
+		if err != nil {
+			_ = encoder.Encode(auth.Response{Error: "authentication-failed"})
+			return
+		}
+		_ = encoder.Encode(auth.Response{Identity: &identity})
+		return
+	}
 	identity, closePAM, err := service.OpenSession(request.Username, request.Password)
 	request.Password = ""
 	if err != nil {
@@ -158,6 +179,26 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, grants *grantStore, lo
 	}
 	logger.Info("PAM authentication succeeded", zap.String("username", identity.Username), zap.Int("uid", identity.UID))
 	_ = encoder.Encode(auth.Response{Identity: &identity, BridgeToken: token})
+}
+
+func runServiceAction(scope, unit, action string) string {
+	allowed := map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true, "mask": true, "unmask": true}
+	if (scope != "system" && scope != "user") || !allowed[action] || unit == "" || strings.ContainsAny(unit, "/\x00") {
+		return "unsupported-service-action"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	arguments := []string{action, "--", unit}
+	if scope == "user" {
+		arguments = append([]string{"--user"}, arguments...)
+	}
+	if err := exec.CommandContext(ctx, "systemctl", arguments...).Run(); err != nil {
+		if ctx.Err() != nil {
+			return "service-job-timeout"
+		}
+		return "service-action-failed"
+	}
+	return ""
 }
 
 func (store *grantStore) resize(token string, columns, rows uint16) string {

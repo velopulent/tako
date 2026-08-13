@@ -35,6 +35,51 @@ type Request struct {
 	Token     string `json:"token,omitempty"`
 	Columns   uint16 `json:"columns,omitempty"`
 	Rows      uint16 `json:"rows,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Unit      string `json:"unit,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+}
+
+func ServiceAction(ctx context.Context, path, token, scope, unit, action string) error {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if err := json.NewEncoder(conn).Encode(Request{Operation: "service-action", Token: token, Scope: scope, Unit: unit, Action: action}); err != nil {
+		return err
+	}
+	var response Response
+	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+		return err
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	return nil
+}
+
+func VerifyPassword(ctx context.Context, path, username, password string) (Identity, error) {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return Identity{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+	if err := json.NewEncoder(conn).Encode(Request{Operation: "verify", Username: username, Password: password}); err != nil {
+		return Identity{}, err
+	}
+	var response Response
+	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+		return Identity{}, err
+	}
+	if response.Identity == nil {
+		return Identity{}, ErrAuthenticationFailed
+	}
+	return *response.Identity, nil
 }
 
 type Response struct {

@@ -12,12 +12,27 @@ import (
 const CookieName = "tako_session"
 
 type Session struct {
-	ID        string
-	CSRF      string
-	Identity  auth.Identity
-	CreatedAt time.Time
-	SeenAt    time.Time
+	ID         string
+	CSRF       string
+	Identity   auth.Identity
+	CreatedAt  time.Time
+	SeenAt     time.Time
+	AdminUntil time.Time
 }
+
+func (store *Store) SetAdministrative(id string, until time.Time) bool {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current, ok := store.sessions[id]
+	if !ok {
+		return false
+	}
+	current.AdminUntil = until
+	store.sessions[id] = current
+	return true
+}
+
+func (store *Store) DropAdministrative(id string) { store.SetAdministrative(id, time.Time{}) }
 
 type Store struct {
 	mu       sync.Mutex
