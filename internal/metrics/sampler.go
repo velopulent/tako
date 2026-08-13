@@ -12,41 +12,88 @@ import (
 )
 
 type Sample struct {
-	Timestamp   time.Time `json:"timestamp"`
-	CPUPercent  float64   `json:"cpuPercent"`
-	MemoryUsed  uint64    `json:"memoryUsed"`
-	MemoryTotal uint64    `json:"memoryTotal"`
-	Load1       float64   `json:"load1"`
-	NetworkRX   uint64    `json:"networkRx"`
-	NetworkTX   uint64    `json:"networkTx"`
+	Timestamp      time.Time                  `json:"timestamp"`
+	CPUPercent     float64                    `json:"cpuPercent"`
+	MemoryUsed     uint64                     `json:"memoryUsed"`
+	MemoryTotal    uint64                     `json:"memoryTotal"`
+	Load1          float64                    `json:"load1"`
+	Load5          float64                    `json:"load5"`
+	Load15         float64                    `json:"load15"`
+	CPUCorePercent []float64                  `json:"cpuCorePercent"`
+	SwapUsed       uint64                     `json:"swapUsed"`
+	SwapTotal      uint64                     `json:"swapTotal"`
+	NetworkRX      uint64                     `json:"networkRx"`
+	NetworkTX      uint64                     `json:"networkTx"`
+	DiskRead       uint64                     `json:"diskRead"`
+	DiskWrite      uint64                     `json:"diskWrite"`
+	Interfaces     map[string]InterfaceSample `json:"interfaces"`
+}
+
+type InterfaceSample struct {
+	RX uint64 `json:"rx"`
+	TX uint64 `json:"tx"`
 }
 
 type cpuCounters struct{ total, idle uint64 }
 
 type Sampler struct {
-	mu          sync.RWMutex
-	samples     []Sample
-	capacity    int
-	previousCPU cpuCounters
-	subscribers map[chan Sample]struct{}
+	mu              sync.RWMutex
+	samples         []Sample
+	capacity        int
+	previousCPU     cpuCounters
+	previousCores   []cpuCounters
+	subscribers     map[chan Sample]subscription
+	wake            chan struct{}
+	defaultInterval time.Duration
+	retention       time.Duration
+}
+
+type subscription struct {
+	interval time.Duration
+	last     time.Time
 }
 
 func NewSampler(capacity int) *Sampler {
-	return &Sampler{capacity: capacity, subscribers: make(map[chan Sample]struct{})}
+	return &Sampler{capacity: capacity, subscribers: make(map[chan Sample]subscription), wake: make(chan struct{}, 1), defaultInterval: time.Minute, retention: 24 * time.Hour}
+}
+
+func (sampler *Sampler) Configure(defaultInterval, retention time.Duration) {
+	sampler.defaultInterval = defaultInterval
+	sampler.retention = retention
 }
 
 func (sampler *Sampler) Run(ctx context.Context, interval time.Duration) {
+	if interval > 0 {
+		sampler.defaultInterval = interval
+	}
 	sampler.collect()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 	for {
+		wait := sampler.fastestInterval()
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-sampler.wake:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
 			sampler.collect()
 		}
 	}
+}
+
+func (sampler *Sampler) fastestInterval() time.Duration {
+	sampler.mu.RLock()
+	defer sampler.mu.RUnlock()
+	result := sampler.defaultInterval
+	for _, subscriber := range sampler.subscribers {
+		if subscriber.interval < result {
+			result = subscriber.interval
+		}
+	}
+	return result
 }
 
 func (sampler *Sampler) History() []Sample {
@@ -54,6 +101,27 @@ func (sampler *Sampler) History() []Sample {
 	defer sampler.mu.RUnlock()
 	result := make([]Sample, len(sampler.samples))
 	copy(result, sampler.samples)
+	return result
+}
+
+func (sampler *Sampler) HistorySince(since time.Time, maximum int) []Sample {
+	all := sampler.History()
+	start := 0
+	for start < len(all) && all[start].Timestamp.Before(since) {
+		start++
+	}
+	all = all[start:]
+	if maximum < 1 || len(all) <= maximum {
+		return all
+	}
+	if maximum == 1 {
+		return all[len(all)-1:]
+	}
+	step := float64(len(all)-1) / float64(maximum-1)
+	result := make([]Sample, 0, maximum)
+	for index := 0; index < maximum; index++ {
+		result = append(result, all[int(float64(index)*step)])
+	}
 	return result
 }
 
@@ -67,15 +135,27 @@ func (sampler *Sampler) Current() (Sample, bool) {
 }
 
 func (sampler *Sampler) Subscribe() (<-chan Sample, func()) {
+	return sampler.SubscribeEvery(sampler.defaultInterval)
+}
+
+func (sampler *Sampler) SubscribeEvery(interval time.Duration) (<-chan Sample, func()) {
 	channel := make(chan Sample, 4)
 	sampler.mu.Lock()
-	sampler.subscribers[channel] = struct{}{}
+	sampler.subscribers[channel] = subscription{interval: interval}
 	sampler.mu.Unlock()
+	select {
+	case sampler.wake <- struct{}{}:
+	default:
+	}
 	return channel, func() {
 		sampler.mu.Lock()
 		delete(sampler.subscribers, channel)
 		close(channel)
 		sampler.mu.Unlock()
+		select {
+		case sampler.wake <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -84,9 +164,11 @@ func (sampler *Sampler) collect() {
 	if err != nil {
 		return
 	}
-	memoryUsed, memoryTotal, _ := readMemory("/proc/meminfo")
-	load, _ := readLoad("/proc/loadavg")
-	rx, tx, _ := readNetwork("/proc/net/dev")
+	memoryUsed, memoryTotal, swapUsed, swapTotal, _ := readMemory("/proc/meminfo")
+	load1, load5, load15, _ := readLoad("/proc/loadavg")
+	rx, tx, interfaces, _ := readNetwork("/proc/net/dev")
+	diskRead, diskWrite, _ := readDisk("/proc/diskstats")
+	cores, _ := readCPUCores("/proc/stat")
 
 	sampler.mu.Lock()
 	cpuPercent := 0.0
@@ -96,16 +178,35 @@ func (sampler *Sampler) collect() {
 		cpuPercent = 100 * float64(totalDelta-idleDelta) / float64(totalDelta)
 	}
 	sampler.previousCPU = cpu
-	sample := Sample{Timestamp: time.Now().UTC(), CPUPercent: cpuPercent, MemoryUsed: memoryUsed, MemoryTotal: memoryTotal, Load1: load, NetworkRX: rx, NetworkTX: tx}
+	corePercents := make([]float64, len(cores))
+	for index, counters := range cores {
+		if index < len(sampler.previousCores) && counters.total > sampler.previousCores[index].total {
+			total := counters.total - sampler.previousCores[index].total
+			idle := counters.idle - sampler.previousCores[index].idle
+			corePercents[index] = 100 * float64(total-idle) / float64(total)
+		}
+	}
+	sampler.previousCores = cores
+	now := time.Now().UTC()
+	sample := Sample{Timestamp: now, CPUPercent: cpuPercent, CPUCorePercent: corePercents, MemoryUsed: memoryUsed, MemoryTotal: memoryTotal, SwapUsed: swapUsed, SwapTotal: swapTotal, Load1: load1, Load5: load5, Load15: load15, NetworkRX: rx, NetworkTX: tx, DiskRead: diskRead, DiskWrite: diskWrite, Interfaces: interfaces}
+	cutoff := now.Add(-sampler.retention)
+	for len(sampler.samples) > 0 && sampler.samples[0].Timestamp.Before(cutoff) {
+		sampler.samples = sampler.samples[1:]
+	}
 	if len(sampler.samples) == sampler.capacity {
 		copy(sampler.samples, sampler.samples[1:])
 		sampler.samples[len(sampler.samples)-1] = sample
 	} else {
 		sampler.samples = append(sampler.samples, sample)
 	}
-	for subscriber := range sampler.subscribers {
+	for channel, subscriber := range sampler.subscribers {
+		if !subscriber.last.IsZero() && now.Sub(subscriber.last) < subscriber.interval {
+			continue
+		}
 		select {
-		case subscriber <- sample:
+		case channel <- sample:
+			subscriber.last = now
+			sampler.subscribers[channel] = subscriber
 		default:
 		}
 	}
@@ -131,10 +232,10 @@ func readCPU(path string) (cpuCounters, error) {
 	return cpuCounters{total: total, idle: values[3] + values[4]}, nil
 }
 
-func readMemory(path string) (uint64, uint64, error) {
+func readMemory(path string) (uint64, uint64, uint64, uint64, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	defer file.Close()
 	values := map[string]uint64{}
@@ -149,28 +250,36 @@ func readMemory(path string) (uint64, uint64, error) {
 	}
 	total := values["MemTotal"]
 	available := values["MemAvailable"]
-	return total - available, total, scanner.Err()
+	swapTotal, swapFree := values["SwapTotal"], values["SwapFree"]
+	return total - available, total, swapTotal - swapFree, swapTotal, scanner.Err()
 }
 
-func readLoad(path string) (float64, error) {
+func readLoad(path string) (float64, float64, float64, error) {
 	payload, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	fields := strings.Fields(string(payload))
 	if len(fields) == 0 {
-		return 0, fmt.Errorf("invalid loadavg")
+		return 0, 0, 0, fmt.Errorf("invalid loadavg")
 	}
-	return strconv.ParseFloat(fields[0], 64)
+	if len(fields) < 3 {
+		return 0, 0, 0, fmt.Errorf("invalid loadavg")
+	}
+	one, err := strconv.ParseFloat(fields[0], 64)
+	five, _ := strconv.ParseFloat(fields[1], 64)
+	fifteen, _ := strconv.ParseFloat(fields[2], 64)
+	return one, five, fifteen, err
 }
 
-func readNetwork(path string) (uint64, uint64, error) {
+func readNetwork(path string) (uint64, uint64, map[string]InterfaceSample, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	defer file.Close()
 	var rx, tx uint64
+	interfaces := map[string]InterfaceSample{}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -178,7 +287,8 @@ func readNetwork(path string) (uint64, uint64, error) {
 			continue
 		}
 		parts := strings.SplitN(line, ":", 2)
-		if strings.TrimSpace(parts[0]) == "lo" {
+		name := strings.TrimSpace(parts[0])
+		if name == "lo" {
 			continue
 		}
 		fields := strings.Fields(parts[1])
@@ -189,6 +299,52 @@ func readNetwork(path string) (uint64, uint64, error) {
 		transmitted, _ := strconv.ParseUint(fields[8], 10, 64)
 		rx += received
 		tx += transmitted
+		interfaces[name] = InterfaceSample{RX: received, TX: transmitted}
 	}
-	return rx, tx, scanner.Err()
+	return rx, tx, interfaces, scanner.Err()
+}
+
+func readCPUCores(path string) ([]cpuCounters, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	result := []cpuCounters{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 5 || !strings.HasPrefix(fields[0], "cpu") || fields[0] == "cpu" {
+			continue
+		}
+		var total uint64
+		values := make([]uint64, len(fields)-1)
+		for i := range values {
+			values[i], _ = strconv.ParseUint(fields[i+1], 10, 64)
+			total += values[i]
+		}
+		result = append(result, cpuCounters{total: total, idle: values[3] + values[4]})
+	}
+	return result, scanner.Err()
+}
+
+func readDisk(path string) (uint64, uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+	var read, written uint64
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 14 || strings.HasPrefix(fields[2], "loop") || strings.HasPrefix(fields[2], "ram") {
+			continue
+		}
+		sectorsRead, _ := strconv.ParseUint(fields[5], 10, 64)
+		sectorsWritten, _ := strconv.ParseUint(fields[9], 10, 64)
+		read += sectorsRead * 512
+		written += sectorsWritten * 512
+	}
+	return read, written, scanner.Err()
 }
