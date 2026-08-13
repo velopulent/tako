@@ -184,6 +184,43 @@ func TestApplyTimerUsesScopedStructuredRequest(t *testing.T) {
 	}
 }
 
+func TestApplyOverrideUsesAdminGrantAndTypedPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
+	}
+	defer listener.Close()
+	requestSeen := make(chan Request, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request Request
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr == nil {
+			requestSeen <- request
+			_ = json.NewEncoder(connection).Encode(Response{OverrideState: &platform.OverrideState{Scope: "system", Unit: "worker.service"}})
+		}
+	}()
+	state, err := ApplyOverride(context.Background(), path, OverrideRequest{
+		AdminToken: "admin-token",
+		Operation:  platform.OverrideOperation{Action: "preview", Scope: "system", Unit: "worker.service"},
+	})
+	if err != nil || state.Unit != "worker.service" {
+		t.Fatalf("override request failed: %#v %v", state, err)
+	}
+	select {
+	case request := <-requestSeen:
+		if request.Operation != "service-override" || request.AdminToken != "admin-token" || request.Override == nil || request.Override.Scope != "system" {
+			t.Fatalf("unexpected override request: %#v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("override request was not received")
+	}
+}
+
 func TestSocketAuthenticatorReportsUnavailableService(t *testing.T) {
 	authenticator := SocketAuthenticator{Path: filepath.Join(t.TempDir(), "missing.sock")}
 	_, err := authenticator.Authenticate(context.Background(), "octopus", "secret")

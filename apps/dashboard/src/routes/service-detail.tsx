@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/card"
 import { DataTable } from "@/components/data-table"
 import { ServiceConfiguration } from "@/components/service-configuration"
+import { ServiceOverride } from "@/components/service-override"
 import { ServiceActions } from "@/components/service-actions"
 import type { ServiceActionName } from "@/lib/service-actions"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -175,6 +176,12 @@ export function ServiceDetailPage() {
         </CardContent>
       </Card>
       <ServiceConfiguration scope={scope} unit={unit} />
+      <ServiceOverride
+        scope={scope}
+        unit={unit}
+        csrfToken={session.data?.csrfToken ?? ""}
+        administrative={session.data?.administrative === true}
+      />
       <Card>
         <CardHeader>
           <CardTitle>Service logs</CardTitle>

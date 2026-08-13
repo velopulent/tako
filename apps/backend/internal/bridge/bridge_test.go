@@ -66,6 +66,34 @@ func TestRunTimerPreviewIsStructuredAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestRunServiceOverridePreviewIsReadOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	operation := platform.OverrideOperation{Action: "preview", Scope: "user", Unit: "worker.service"}
+	input := bytes.NewBuffer(nil)
+	if err := writeFrame(bufio.NewWriter(input), frame{ID: "override-1", Method: "override.apply", Payload: mustJSON(operation)}); err != nil {
+		t.Fatal(err)
+	}
+	output := bytes.NewBuffer(nil)
+	if err := Run(input, output, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	response, err := readFrame(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" {
+		t.Fatalf("override preview failed: %q", response.Error)
+	}
+	var state platform.OverrideState
+	if err := json.Unmarshal(response.Payload, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Scope != "user" || state.Unit != "worker.service" || state.Exists {
+		t.Fatalf("unexpected override state: %#v", state)
+	}
+}
+
 func mustJSON(value any) json.RawMessage {
 	payload, err := json.Marshal(value)
 	if err != nil {

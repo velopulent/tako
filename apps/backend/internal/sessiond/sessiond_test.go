@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -474,7 +475,7 @@ func TestTimerOperationUsesUserBridgeAndStructuredPayload(t *testing.T) {
 	backend := &recordingTimerBackend{state: platform.TimerState{Scope: "user", Name: "nightly", TimerUnit: "nightly.timer", ServiceUnit: "nightly.service"}}
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
-	go handleWithTimerBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, backend)
+	go handleWithTimerBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, backend, systemOverrideBackend{})
 	operation := platform.TimerOperation{Action: "preview", Scope: "user", Name: "nightly"}
 	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "timer", Token: token, Timer: &operation}); err != nil {
 		t.Fatal(err)
@@ -496,7 +497,7 @@ func TestTimerOperationRejectsMixedFields(t *testing.T) {
 	backend := &recordingTimerBackend{}
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
-	go handleWithTimerBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, backend)
+	go handleWithTimerBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, backend, systemOverrideBackend{})
 	operation := platform.TimerOperation{Action: "preview", Scope: "user", Name: "nightly"}
 	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "timer", Token: "token", Unit: "unsafe", Timer: &operation}); err != nil {
 		t.Fatal(err)
@@ -507,6 +508,46 @@ func TestTimerOperationRejectsMixedFields(t *testing.T) {
 	}
 	if response.Error != "invalid-timer-request" {
 		t.Fatalf("mixed timer request error=%q", response.Error)
+	}
+}
+
+type recordingOverrideBackend struct {
+	operation platform.OverrideOperation
+	bridge    io.Closer
+	state     platform.OverrideState
+}
+
+func (backend *recordingOverrideBackend) Apply(_ context.Context, operation platform.OverrideOperation, bridge io.Closer) (platform.OverrideState, error) {
+	backend.operation = operation
+	backend.bridge = bridge
+	return backend.state, nil
+}
+
+func TestServiceOverrideUsesAdminGrantAndAllowlistedPayload(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridge := &trackingCloser{}
+	bridgeToken, err := store.addGrant(auth.Identity{Username: "octopus", UID: 1000, GID: 1000}, bridge, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, err := store.authorize(context.Background(), bridgeToken, "secret", 300, func(context.Context, auth.Identity, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &recordingOverrideBackend{state: platform.OverrideState{Scope: "system", Unit: "worker.service", Exists: true}}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handleWithTimerBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, backend)
+	operation := platform.OverrideOperation{Action: "preview", Scope: "system", Unit: "worker.service"}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "service-override", AdminToken: adminToken, Override: &operation}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || response.OverrideState == nil || !reflect.DeepEqual(backend.operation, operation) || backend.bridge != nil {
+		t.Fatalf("override response=%#v operation=%#v bridge=%T", response, backend.operation, backend.bridge)
 	}
 }
 

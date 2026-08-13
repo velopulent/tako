@@ -308,6 +308,37 @@ export type TimerState = {
   definition?: TimerDefinition
 }
 
+export type ServiceOverrideOperation = {
+  action: "preview" | "apply" | "delete"
+  scope: "system" | "user"
+  unit: string
+  environment?: Record<string, string>
+  restart?: string
+  restartSec?: string
+  timeoutStartSec?: string
+  timeoutStopSec?: string
+  nice?: number
+  cpuQuota?: string
+  memoryMax?: string
+  tasksMax?: number
+  expectedFingerprint?: string
+}
+
+export type ServiceOverrideDefinition = Omit<
+  ServiceOverrideOperation,
+  "action" | "scope" | "unit" | "expectedFingerprint"
+>
+
+export type ServiceOverrideState = {
+  scope: "system" | "user"
+  unit: string
+  path: string
+  exists: boolean
+  fingerprint?: string
+  definition?: ServiceOverrideDefinition
+  guidance: string[]
+}
+
 type Problem = {
   code?: string
   detail?: string

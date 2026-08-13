@@ -64,6 +64,15 @@ func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
 				response.Payload, _ = json.Marshal(state)
 			}
 		}
+		if message.Method == "override.apply" {
+			state, err := applyOverride(message.Payload)
+			if err != nil {
+				response.Error = overrideErrorCode(err)
+			} else {
+				response.Error = ""
+				response.Payload, _ = json.Marshal(state)
+			}
+		}
 		if err := writeFrame(writer, response); err != nil {
 			logger.Error("bridge frame write failed", zap.Error(err))
 			return err
@@ -119,6 +128,55 @@ func timerErrorCode(err error) string {
 		return "timer-pair-incomplete"
 	default:
 		return "timer-operation-failed"
+	}
+}
+
+func applyOverride(payload json.RawMessage) (platform.OverrideState, error) {
+	var operation platform.OverrideOperation
+	if err := json.Unmarshal(payload, &operation); err != nil || operation.Scope != "user" {
+		return platform.OverrideState{}, platform.ErrInvalidOverrideOperation
+	}
+	if err := platform.ValidateOverrideOperation(operation); err != nil {
+		return platform.OverrideState{}, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return platform.OverrideState{}, err
+	}
+	root := filepath.Join(home, ".config", "systemd", "user")
+	state, err := platform.ApplyServiceOverride(root, operation)
+	if err != nil || operation.Action == "preview" {
+		return state, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); err != nil {
+		if ctx.Err() != nil {
+			return platform.OverrideState{}, context.DeadlineExceeded
+		}
+		return platform.OverrideState{}, err
+	}
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "show", operation.Unit, "--property=LoadState", "--value").Run(); err != nil {
+		if ctx.Err() != nil {
+			return platform.OverrideState{}, context.DeadlineExceeded
+		}
+		return platform.OverrideState{}, err
+	}
+	return state, nil
+}
+
+func overrideErrorCode(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrInvalidOverrideOperation):
+		return "invalid-service-override"
+	case errors.Is(err, platform.ErrOverrideConflict):
+		return "service-override-conflict"
+	case errors.Is(err, platform.ErrOverrideNotFound):
+		return "service-override-not-found"
+	case errors.Is(err, platform.ErrOverrideUnmanaged):
+		return "service-override-unmanaged"
+	default:
+		return "service-override-failed"
 	}
 }
 

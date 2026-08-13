@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -441,6 +442,48 @@ func TestSystemTimerRouteRequiresAdministrativeAccess(t *testing.T) {
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("system timer without admin returned %d", recorder.Code)
+	}
+}
+
+func TestServiceOverrideRoutesNormalizePreviewAndRejectStaleWrites(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	created, err := server.sessions.Create(auth.Identity{Username: "octopus", BridgeToken: "bridge-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
+	var applied []platform.OverrideOperation
+	server.applyOverride = func(_ context.Context, request auth.OverrideRequest) (platform.OverrideState, error) {
+		applied = append(applied, request.Operation)
+		if request.Operation.Action != "preview" {
+			return platform.OverrideState{}, errors.New("service-override-conflict")
+		}
+		return platform.OverrideState{Scope: "user", Unit: "worker.service", Exists: true, Fingerprint: strings.Repeat("a", 64)}, nil
+	}
+	body := `{"action":"apply","scope":"user","unit":"worker.service","environment":{"APP_MODE":"safe"},"restart":"on-failure","restartSec":"5s"}`
+	preview := httptest.NewRequest(http.MethodPost, "/api/v1/services/user/worker.service/overrides/preview", bytes.NewBufferString(body))
+	preview.AddCookie(cookie)
+	preview.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, preview)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"fingerprint":"`+strings.Repeat("a", 64)+`"`)) {
+		t.Fatalf("override preview returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(applied) != 1 || applied[0].Action != "preview" || applied[0].ExpectedFingerprint != "" {
+		t.Fatalf("preview was not normalized: %#v", applied)
+	}
+	apply := httptest.NewRequest(http.MethodPost, "/api/v1/services/user/worker.service/overrides", bytes.NewBufferString(`{"action":"apply","scope":"user","unit":"worker.service","environment":{"APP_MODE":"safe"},"restart":"on-failure","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	apply.AddCookie(cookie)
+	apply.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder = httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, apply)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("override conflict returned %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

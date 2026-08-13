@@ -150,10 +150,10 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 }
 
 func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, serviceBackends ...serviceBackend) {
-	handleWithTimerBackends(conn, service, conversations, grants, policy, logger, backend, power, systemTimerBackend{}, serviceBackends...)
+	handleWithTimerBackends(conn, service, conversations, grants, policy, logger, backend, power, systemTimerBackend{}, systemOverrideBackend{}, serviceBackends...)
 }
 
-func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, serviceBackends ...serviceBackend) {
+func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -163,6 +163,9 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 	}
 	if timer == nil {
 		timer = systemTimerBackend{}
+	}
+	if override == nil {
+		override = systemOverrideBackend{}
 	}
 	serviceBackend := serviceBackend(systemServiceBackend{})
 	if len(serviceBackends) > 0 && serviceBackends[0] != nil {
@@ -186,6 +189,10 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 		return
 	}
 	if request.Operation != "timer" && request.Timer != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "service-override" && request.Override != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -420,6 +427,57 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 		}
 		logger.Info("timer operation", zap.String("username", identity.Username), zap.String("scope", operation.Scope), zap.String("name", operation.Name), zap.String("action", operation.Action))
 		_ = encoder.Encode(auth.Response{TimerState: &state})
+		return
+	}
+	if request.Operation == "service-override" {
+		if request.Override == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 {
+			_ = encoder.Encode(auth.Response{Error: "invalid-service-override-request"})
+			return
+		}
+		operation := *request.Override
+		if err := platform.ValidateOverrideOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-service-override"})
+			return
+		}
+		var bridge io.Closer
+		var identity auth.Identity
+		var ok bool
+		if operation.Scope == "system" {
+			if request.Token != "" || request.AdminToken == "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
+				return
+			}
+			identity, ok = grants.adminIdentity(request.AdminToken)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+				return
+			}
+		} else {
+			if request.Token == "" || request.AdminToken != "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-service-override-request"})
+				return
+			}
+			identity, ok = grants.get(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+				return
+			}
+			bridge, ok = grants.bridgeFor(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "user-bridge-unavailable"})
+				return
+			}
+		}
+		overrideCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		state, applyErr := override.Apply(overrideCtx, operation, bridge)
+		cancel()
+		if applyErr != nil {
+			code := overrideErrorCode(applyErr)
+			logger.Warn("service override failed", zap.String("username", identity.Username), zap.String("scope", operation.Scope), zap.String("unit", operation.Unit), zap.String("error", code))
+			_ = encoder.Encode(auth.Response{Error: code})
+			return
+		}
+		_ = encoder.Encode(auth.Response{OverrideState: &state})
 		return
 	}
 	if request.Operation == "host-config" {

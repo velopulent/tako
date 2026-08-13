@@ -37,6 +37,9 @@ func TestValidateTimerOperationRejectsInjectionAndAmbiguousSchedules(t *testing.
 			t.Fatalf("operation %#v returned %v", operation, err)
 		}
 	}
+	if err := ValidateTimerOperation(TimerOperation{Action: "preview", Scope: "user", Name: "backup", OnCalendar: "hourly\nExecStart=/bin/sh", Command: "/usr/bin/backup"}); !errors.Is(err, ErrInvalidTimerOperation) {
+		t.Fatalf("malformed preview returned %v", err)
+	}
 }
 
 func TestTimerOperationRejectsUnknownAndTrailingJSON(t *testing.T) {

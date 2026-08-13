@@ -62,6 +62,7 @@ type Server struct {
 	readUnitDetails       func(context.Context, string, string) (platform.UnitDetail, error)
 	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
 	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
+	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -104,6 +105,9 @@ func New(cfg config.Config) (*Server, error) {
 		readUnitConfiguration: platform.ReadUnitConfiguration,
 		applyTimer: func(ctx context.Context, request auth.TimerRequest) (platform.TimerState, error) {
 			return auth.ApplyTimer(ctx, cfg.SessionSocket, request)
+		},
+		applyOverride: func(ctx context.Context, request auth.OverrideRequest) (platform.OverrideState, error) {
+			return auth.ApplyOverride(ctx, cfg.SessionSocket, request)
 		},
 	}
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
@@ -292,6 +296,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/services/{scope}/{unit}/configuration", server.serviceConfiguration)
 			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/actions/preview", server.serviceActionPreview)
 			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/actions", server.serviceAction)
+			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/overrides/preview", server.serviceOverridePreview)
+			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/overrides", server.serviceOverride)
 			router.With(server.requireCSRF).Post("/timers/preview", server.timerPreview)
 			router.With(server.requireCSRF).Post("/timers", server.timerAction)
 			router.Get("/storage", server.storage)
@@ -914,6 +920,101 @@ func writeTimerError(writer http.ResponseWriter, err error) {
 		problem(writer, http.StatusForbidden, code, "The authenticated user session is unavailable")
 	default:
 		problem(writer, http.StatusBadGateway, "timer-operation-failed", "Timer operation could not be completed; inspect operation history")
+	}
+}
+
+func decodeServiceOverride(writer http.ResponseWriter, request *http.Request) (platform.OverrideOperation, bool) {
+	var operation platform.OverrideOperation
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 32<<10))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&operation) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-request", "Invalid service override")
+		return platform.OverrideOperation{}, false
+	}
+	if operation.Scope != chi.URLParam(request, "scope") || operation.Unit != chi.URLParam(request, "unit") {
+		problem(writer, http.StatusBadRequest, "invalid-service-override", "Override target does not match the service path")
+		return platform.OverrideOperation{}, false
+	}
+	if err := platform.ValidateOverrideOperation(operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-service-override", "Unsupported override field or service target")
+		return platform.OverrideOperation{}, false
+	}
+	return operation, true
+}
+
+func serviceOverrideAuthority(current session.Session, operation platform.OverrideOperation) (int, string, string, bool) {
+	return serviceAuthority(current, platform.ServiceOperation{Scope: operation.Scope, Unit: operation.Unit, Action: "reload"})
+}
+
+func overrideRequestFor(current session.Session, operation platform.OverrideOperation) auth.OverrideRequest {
+	request := auth.OverrideRequest{Operation: operation}
+	if operation.Scope == "system" {
+		request.AdminToken = current.Identity.AdminToken
+	} else {
+		request.Token = current.Identity.BridgeToken
+	}
+	return request
+}
+
+func (server *Server) serviceOverridePreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	operation, ok := decodeServiceOverride(writer, request)
+	if !ok {
+		return
+	}
+	if status, code, message, authorized := serviceOverrideAuthority(current, operation); !authorized {
+		problem(writer, status, code, message)
+		return
+	}
+	operation.Action = "preview"
+	operation.ExpectedFingerprint = ""
+	state, err := server.applyOverride(request.Context(), overrideRequestFor(current, operation))
+	if err != nil {
+		writeOverrideError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (server *Server) serviceOverride(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	startedAt := time.Now().UTC()
+	operation, ok := decodeServiceOverride(writer, request)
+	if !ok {
+		return
+	}
+	if operation.Action == "preview" {
+		problem(writer, http.StatusBadRequest, "invalid-service-override", "Use the preview endpoint for read-only inspection")
+		return
+	}
+	if status, code, message, authorized := serviceOverrideAuthority(current, operation); !authorized {
+		problem(writer, status, code, message)
+		return
+	}
+	state, err := server.applyOverride(request.Context(), overrideRequestFor(current, operation))
+	target := operation.Scope + "/" + operation.Unit + "/override/" + operation.Action
+	if err != nil {
+		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "service override failed", operation.Scope == "system")
+		writeOverrideError(writer, err)
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", operation.Scope == "system")
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func writeOverrideError(writer http.ResponseWriter, err error) {
+	code := err.Error()
+	switch code {
+	case "invalid-service-override":
+		problem(writer, http.StatusBadRequest, code, "Service override is invalid")
+	case "service-override-conflict":
+		problem(writer, http.StatusConflict, code, "Override changed; preview it again before applying")
+	case "service-override-not-found", "service-override-unmanaged":
+		problem(writer, http.StatusConflict, code, "The managed Tako drop-in is unavailable or contains unsupported directives")
+	case "invalid-bridge-token", "user-bridge-unavailable":
+		problem(writer, http.StatusForbidden, code, "The authenticated user session is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "service-override-failed", "Service override could not be completed; inspect operation history")
 	}
 }
 

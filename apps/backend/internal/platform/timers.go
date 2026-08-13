@@ -107,9 +107,15 @@ func ValidateTimerOperation(operation TimerOperation) error {
 		}
 	}
 	if operation.Action == "preview" {
+		if operation.Description != "" || operation.OnCalendar != "" || operation.OnBootSec != "" || operation.OnUnitActiveSec != "" || operation.Command != "" || operation.Persistent {
+			return validateTimerDefinition(operation.Definition())
+		}
 		return nil
 	}
 	if operation.Action == "delete" || operation.Action == "enable" || operation.Action == "disable" {
+		if operation.Description != "" || operation.OnCalendar != "" || operation.OnBootSec != "" || operation.OnUnitActiveSec != "" || operation.Command != "" || operation.Persistent {
+			return ErrInvalidTimerOperation
+		}
 		if operation.ExpectedFingerprint == "" {
 			return ErrInvalidTimerOperation
 		}

@@ -245,6 +245,50 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
+  /services/{scope}/{unit}/overrides/preview:
+    parameters:
+      - { in: path, name: scope, required: true, schema: { type: string, enum: [system, user] } }
+      - { in: path, name: unit, required: true, schema: { type: string, pattern: '^[A-Za-z0-9@._-]+\.service$' } }
+    post:
+      operationId: previewServiceOverride
+      summary: Inspect Tako's managed service drop-in without writing it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceOverrideOperation' }
+      responses:
+        '200':
+          description: Current managed drop-in and recovery guidance
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceOverrideState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /services/{scope}/{unit}/overrides:
+    parameters:
+      - { in: path, name: scope, required: true, schema: { type: string, enum: [system, user] } }
+      - { in: path, name: unit, required: true, schema: { type: string, pattern: '^[A-Za-z0-9@._-]+\.service$' } }
+    post:
+      operationId: applyServiceOverride
+      summary: Apply or remove Tako's allowlisted service drop-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceOverrideOperation' }
+      responses:
+        '200':
+          description: Updated managed drop-in and recovery guidance
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceOverrideState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
   /admin:
     get:
       operationId: getAdministrativeAccess
@@ -687,6 +731,53 @@ components:
         onUnitActiveSec: { type: string, maxLength: 256 }
         command: { type: string, maxLength: 512 }
         persistent: { type: boolean }
+    ServiceOverrideOperation:
+      type: object
+      additionalProperties: false
+      required: [action, scope, unit]
+      properties:
+        action: { type: string, enum: [preview, apply, delete] }
+        scope: { type: string, enum: [system, user] }
+        unit: { type: string, maxLength: 256, pattern: '^[A-Za-z0-9@._-]+\.service$' }
+        environment:
+          type: object
+          maxProperties: 64
+          additionalProperties: { type: string, maxLength: 4096 }
+        restart: { type: string, enum: [no, on-success, on-failure, on-abnormal, on-watchdog, on-abort, always] }
+        restartSec: { type: string, maxLength: 64 }
+        timeoutStartSec: { type: string, maxLength: 64 }
+        timeoutStopSec: { type: string, maxLength: 64 }
+        nice: { type: integer, minimum: -20, maximum: 19 }
+        cpuQuota: { type: string, pattern: '^[0-9]+(\.[0-9]+)?%$' }
+        memoryMax: { type: string, maxLength: 32 }
+        tasksMax: { type: integer, minimum: 1, maximum: 1000000 }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64, pattern: '^[a-fA-F0-9]{64}$' }
+    ServiceOverrideState:
+      type: object
+      required: [scope, unit, path, exists, guidance]
+      properties:
+        scope: { type: string, enum: [system, user] }
+        unit: { type: string, maxLength: 256 }
+        path: { type: string, maxLength: 4096 }
+        exists: { type: boolean }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+        definition: { $ref: '#/components/schemas/ServiceOverrideDefinition' }
+        guidance:
+          type: array
+          maxItems: 4
+          items: { type: string, maxLength: 512 }
+    ServiceOverrideDefinition:
+      type: object
+      properties:
+        environment: { type: object, additionalProperties: { type: string, maxLength: 4096 } }
+        restart: { type: string }
+        restartSec: { type: string }
+        timeoutStartSec: { type: string }
+        timeoutStopSec: { type: string }
+        nice: { type: integer }
+        cpuQuota: { type: string }
+        memoryMax: { type: string }
+        tasksMax: { type: integer }
     LoginRequest:
       oneOf:
         - type: object

@@ -99,32 +99,39 @@ type UserSession struct {
 type Conversation func(PromptStyle, string) (string, error)
 
 type Request struct {
-	Operation           string                   `json:"operation,omitempty"`
-	Username            string                   `json:"username,omitempty"`
-	Password            string                   `json:"password,omitempty"`
-	ConversationID      string                   `json:"conversationId,omitempty"`
-	Responses           []PromptResponse         `json:"responses,omitempty"`
-	Token               string                   `json:"token,omitempty"`
-	AdminToken          string                   `json:"adminToken,omitempty"`
-	AdminTTL            uint32                   `json:"adminTtlSeconds,omitempty"`
-	Columns             uint16                   `json:"columns,omitempty"`
-	Rows                uint16                   `json:"rows,omitempty"`
-	Action              string                   `json:"action,omitempty"`
-	Unit                string                   `json:"unit,omitempty"`
-	Scope               string                   `json:"scope,omitempty"`
-	Hostname            string                   `json:"hostname,omitempty"`
-	Timezone            string                   `json:"timezone,omitempty"`
-	NTPEnabled          bool                     `json:"ntpEnabled,omitempty"`
-	ExpectedFingerprint string                   `json:"expectedFingerprint,omitempty"`
-	PowerAction         string                   `json:"powerAction,omitempty"`
-	PowerConfirmation   string                   `json:"powerConfirmation,omitempty"`
-	Timer               *platform.TimerOperation `json:"timer,omitempty"`
+	Operation           string                      `json:"operation,omitempty"`
+	Username            string                      `json:"username,omitempty"`
+	Password            string                      `json:"password,omitempty"`
+	ConversationID      string                      `json:"conversationId,omitempty"`
+	Responses           []PromptResponse            `json:"responses,omitempty"`
+	Token               string                      `json:"token,omitempty"`
+	AdminToken          string                      `json:"adminToken,omitempty"`
+	AdminTTL            uint32                      `json:"adminTtlSeconds,omitempty"`
+	Columns             uint16                      `json:"columns,omitempty"`
+	Rows                uint16                      `json:"rows,omitempty"`
+	Action              string                      `json:"action,omitempty"`
+	Unit                string                      `json:"unit,omitempty"`
+	Scope               string                      `json:"scope,omitempty"`
+	Hostname            string                      `json:"hostname,omitempty"`
+	Timezone            string                      `json:"timezone,omitempty"`
+	NTPEnabled          bool                        `json:"ntpEnabled,omitempty"`
+	ExpectedFingerprint string                      `json:"expectedFingerprint,omitempty"`
+	PowerAction         string                      `json:"powerAction,omitempty"`
+	PowerConfirmation   string                      `json:"powerConfirmation,omitempty"`
+	Timer               *platform.TimerOperation    `json:"timer,omitempty"`
+	Override            *platform.OverrideOperation `json:"override,omitempty"`
 }
 
 type TimerRequest struct {
 	Token      string
 	AdminToken string
 	Operation  platform.TimerOperation
+}
+
+type OverrideRequest struct {
+	Token      string
+	AdminToken string
+	Operation  platform.OverrideOperation
 }
 
 type HostConfigurationRequest struct {
@@ -188,6 +195,25 @@ func ApplyTimer(ctx context.Context, path string, request TimerRequest) (platfor
 		return platform.TimerState{}, ErrServiceUnavailable
 	}
 	return *response.TimerState, nil
+}
+
+func ApplyOverride(ctx context.Context, path string, request OverrideRequest) (platform.OverrideState, error) {
+	response, err := socketRequest(ctx, path, Request{
+		Operation:  "service-override",
+		Token:      request.Token,
+		AdminToken: request.AdminToken,
+		Override:   &request.Operation,
+	})
+	if err != nil {
+		return platform.OverrideState{}, err
+	}
+	if response.Error != "" {
+		return platform.OverrideState{}, errors.New(response.Error)
+	}
+	if response.OverrideState == nil {
+		return platform.OverrideState{}, ErrServiceUnavailable
+	}
+	return *response.OverrideState, nil
 }
 
 func socketRequest(ctx context.Context, path string, request Request) (Response, error) {
@@ -311,14 +337,15 @@ func bridgeTokenRequest(ctx context.Context, path, operation, token string) erro
 }
 
 type Response struct {
-	Identity       *Identity            `json:"identity,omitempty"`
-	BridgeToken    string               `json:"bridgeToken,omitempty"`
-	ConversationID string               `json:"conversationId,omitempty"`
-	Prompts        []Prompt             `json:"prompts,omitempty"`
-	Error          string               `json:"error,omitempty"`
-	AdminToken     string               `json:"adminToken,omitempty"`
-	AdminUntil     time.Time            `json:"adminUntil,omitempty"`
-	TimerState     *platform.TimerState `json:"timerState,omitempty"`
+	Identity       *Identity               `json:"identity,omitempty"`
+	BridgeToken    string                  `json:"bridgeToken,omitempty"`
+	ConversationID string                  `json:"conversationId,omitempty"`
+	Prompts        []Prompt                `json:"prompts,omitempty"`
+	Error          string                  `json:"error,omitempty"`
+	AdminToken     string                  `json:"adminToken,omitempty"`
+	AdminUntil     time.Time               `json:"adminUntil,omitempty"`
+	TimerState     *platform.TimerState    `json:"timerState,omitempty"`
+	OverrideState  *platform.OverrideState `json:"overrideState,omitempty"`
 }
 
 type Authenticator interface {

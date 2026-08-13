@@ -112,6 +112,18 @@ func (process *userBridgeProcess) applyTimer(ctx context.Context, operation plat
 	return state, nil
 }
 
+func (process *userBridgeProcess) applyOverride(ctx context.Context, operation platform.OverrideOperation) (platform.OverrideState, error) {
+	payload, err := process.call(ctx, "override", "override.apply", operation)
+	if err != nil {
+		return platform.OverrideState{}, err
+	}
+	var state platform.OverrideState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return platform.OverrideState{}, err
+	}
+	return state, nil
+}
+
 func (process *userBridgeProcess) call(ctx context.Context, id, method string, payload any) (json.RawMessage, error) {
 	result := make(chan struct {
 		payload json.RawMessage
