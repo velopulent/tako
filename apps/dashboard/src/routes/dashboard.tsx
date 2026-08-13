@@ -32,11 +32,11 @@ import { DataTable } from "@/components/data-table"
 import { MetricsCharts } from "@/components/metrics-chart"
 import { RefreshSelect } from "@/components/refresh-select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import {
   usePreference,
-  refreshIntervals,
-  type RefreshInterval,
 } from "@/hooks/use-preference"
+import { refreshIntervals, type RefreshInterval } from "@/lib/monitoring"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -56,10 +56,12 @@ const duration = (seconds: number) => {
 }
 
 export function DashboardPage() {
+  const defaultInterval =
+    useMonitoringPreference().data?.defaultInterval ?? "1m"
   const [interval, setInterval] = usePreference<RefreshInterval>(
     "current",
     "interval:dashboard",
-    "1m"
+    defaultInterval
   )
   const milliseconds =
     refreshIntervals.find((item) => item.value === interval)?.milliseconds ||

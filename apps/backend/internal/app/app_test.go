@@ -21,8 +21,7 @@ func (unavailableAuthenticator) Authenticate(context.Context, string, string) (a
 }
 
 func TestDevelopmentLoginAndDashboard(t *testing.T) {
-	cfg := config.Default()
-	cfg.Development = true
+	cfg := testConfig(t)
 	cfg.AllowedOrigins = []string{"http://127.0.0.1:9090"}
 	server, err := New(cfg)
 	if err != nil {
@@ -65,8 +64,7 @@ func TestDevelopmentLoginAndDashboard(t *testing.T) {
 }
 
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
-	cfg := config.Default()
-	cfg.Development = true
+	cfg := testConfig(t)
 	server, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +78,7 @@ func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 }
 
 func TestLoginReportsUnavailableAuthenticationService(t *testing.T) {
-	cfg := config.Default()
-	cfg.Development = true
+	cfg := testConfig(t)
 	server, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -108,8 +105,7 @@ func TestLoginReportsUnavailableAuthenticationService(t *testing.T) {
 }
 
 func TestLogoutRequiresCSRFToken(t *testing.T) {
-	cfg := config.Default()
-	cfg.Development = true
+	cfg := testConfig(t)
 	cfg.AllowedOrigins = []string{"http://127.0.0.1:9090"}
 	server, err := New(cfg)
 	if err != nil {
@@ -158,4 +154,154 @@ func TestGeneratedCertificateIsUsable(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("private key permissions are %o", info.Mode().Perm())
 	}
+}
+
+func TestMonitoringPreferenceSurvivesServerRestart(t *testing.T) {
+	cfg := config.Default()
+	cfg.Development = true
+	cfg.DataDir = t.TempDir()
+
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := loginForTest(t, first.routes())
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/preferences/monitoring", bytes.NewBufferString(`{"defaultInterval":"30s","expectedRevision":0}`))
+	request.AddCookie(cookie)
+	request.Header.Set("X-CSRF-Token", csrf)
+	recorder := httptest.NewRecorder()
+	first.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	first.cancel()
+	if err := first.preferences.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.cancel()
+	defer second.preferences.Close()
+	cookie, _ = loginForTest(t, second.routes())
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/preferences/monitoring", nil)
+	request.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	second.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("read returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var preference struct {
+		DefaultInterval string `json:"defaultInterval"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &preference); err != nil {
+		t.Fatal(err)
+	}
+	if preference.DefaultInterval != "30s" {
+		t.Fatalf("preference did not survive restart: %#v", preference)
+	}
+}
+
+func TestMonitoringPreferenceRejectsStaleAndMalformedWrites(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	handler := server.routes()
+	cookie, csrf := loginForTest(t, handler)
+
+	tests := []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{name: "first write", body: `{"defaultInterval":"30s","expectedRevision":0}`, status: http.StatusOK},
+		{name: "stale write", body: `{"defaultInterval":"5s","expectedRevision":0}`, status: http.StatusConflict},
+		{name: "trailing object", body: `{"defaultInterval":"5s","expectedRevision":1}{}`, status: http.StatusBadRequest},
+		{name: "unknown secret field", body: `{"defaultInterval":"5s","expectedRevision":1,"password":"do-not-store"}`, status: http.StatusBadRequest},
+		{name: "invalid interval", body: `{"defaultInterval":"2s","expectedRevision":1}`, status: http.StatusBadRequest},
+		{name: "negative revision", body: `{"defaultInterval":"5s","expectedRevision":-1}`, status: http.StatusBadRequest},
+		{name: "oversized", body: `{"defaultInterval":"5s","expectedRevision":1,"padding":"` + string(bytes.Repeat([]byte("x"), 5<<10)) + `"}`, status: http.StatusRequestEntityTooLarge},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/preferences/monitoring", bytes.NewBufferString(test.body))
+			request.AddCookie(cookie)
+			request.Header.Set("X-CSRF-Token", csrf)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != test.status {
+				t.Fatalf("expected %d, got %d: %s", test.status, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/preferences/monitoring", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"defaultInterval":"30s"`)) {
+		t.Fatalf("rejected writes changed preference: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMonitoringPreferenceUsesConfiguredDefault(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/preferences/monitoring", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("read returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var preference struct {
+		DefaultInterval string `json:"defaultInterval"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &preference); err != nil {
+		t.Fatal(err)
+	}
+	if preference.DefaultInterval != "1m" {
+		t.Fatalf("configured default is not API interval: %#v", preference)
+	}
+}
+
+func loginForTest(t *testing.T, handler http.Handler) (*http.Cookie, string) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"","password":""}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("login returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == session.CookieName {
+			return cookie, response.CSRFToken
+		}
+	}
+	t.Fatal("login did not issue session cookie")
+	return nil, ""
+}
+
+func testConfig(t *testing.T) config.Config {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Development = true
+	cfg.DataDir = t.TempDir()
+	return cfg
 }

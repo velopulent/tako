@@ -1,3 +1,5 @@
+import type { RefreshInterval } from "@/lib/monitoring"
+
 export type User = {
   username: string
   name: string
@@ -135,6 +137,10 @@ export type UpdateStatus = {
   message: string
 }
 export type TerminalStatus = { available: boolean; message: string }
+export type MonitoringPreference = {
+  defaultInterval: RefreshInterval
+  revision: number
+}
 
 type Problem = {
   code?: string

@@ -17,6 +17,14 @@
         "cwd": "apps/dashboard"
       }
     },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "options": {
+        "command": "vitest run",
+        "cwd": "apps/dashboard"
+      }
+    },
     "format": {
       "executor": "nx:run-commands",
       "options": {

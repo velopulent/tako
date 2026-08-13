@@ -6,7 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { refreshIntervals, type RefreshInterval } from "@/hooks/use-preference"
+import { refreshIntervals, type RefreshInterval } from "@/lib/monitoring"
 
 export function RefreshSelect({
   value,

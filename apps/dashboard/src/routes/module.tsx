@@ -6,7 +6,6 @@ import { PauseIcon, PlayIcon, RefreshCwIcon, TerminalIcon } from "lucide-react"
 
 import {
   api,
-  type Capability,
   type InterfaceInfo,
   type LogEntry,
   type MetricSample,
@@ -48,11 +47,12 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import {
   usePreference,
-  type RefreshInterval,
-  refreshIntervals,
 } from "@/hooks/use-preference"
+import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
+import { SettingsPage } from "@/routes/settings"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -72,11 +72,7 @@ const intervalMs = (value: RefreshInterval): number | false => {
 }
 
 function usePageInterval(page: string) {
-  const [defaultValue] = usePreference<RefreshInterval>(
-    "current",
-    "interval:default",
-    "1m"
-  )
+  const defaultValue = useMonitoringPreference().data?.defaultInterval ?? "1m"
   const [value, setValue] = usePreference<RefreshInterval>(
     "current",
     `interval:${page}`,
@@ -693,63 +689,6 @@ function LogsPage() {
           }
         />
       </State>
-    </Page>
-  )
-}
-
-function SettingsPage() {
-  const [value, setValue] = usePreference<RefreshInterval>(
-    "current",
-    "interval:default",
-    "1m"
-  )
-  const capabilities = useQuery({
-    queryKey: ["capabilities"],
-    queryFn: () => api<{ capabilities: Capability[] }>("/capabilities"),
-  })
-  return (
-    <Page
-      title="Settings"
-      description="Browser preferences and host integration capabilities."
-    >
-      <Card>
-        <CardHeader>
-          <CardTitle>Monitoring</CardTitle>
-          <CardDescription>
-            Default browser interval. Individual pages may override it. History
-            is retained in memory for 24 hours.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <RefreshSelect value={value} onChange={setValue} />
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Host capabilities</CardTitle>
-          <CardDescription>
-            Optional integrations detected at runtime.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {capabilities.data?.capabilities.map((item) => (
-            <div
-              key={item.id}
-              className="flex items-center justify-between gap-3 rounded-lg border p-3"
-            >
-              <div>
-                <p className="font-medium capitalize">{item.id}</p>
-                <p className="text-xs text-muted-foreground">
-                  {item.reason || "Ready"}
-                </p>
-              </div>
-              <Badge variant={item.available ? "secondary" : "outline"}>
-                {item.available ? "Ready" : "Unavailable"}
-              </Badge>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
     </Page>
   )
 }

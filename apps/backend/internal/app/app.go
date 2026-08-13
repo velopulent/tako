@@ -28,11 +28,12 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
+	"github.com/velopulent/tako/internal/dashboard"
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/metrics"
 	"github.com/velopulent/tako/internal/platform"
+	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
-	"github.com/velopulent/tako/internal/dashboard"
 	"go.uber.org/zap"
 )
 
@@ -42,6 +43,7 @@ type Server struct {
 	sessions      *session.Store
 	authenticator auth.Authenticator
 	metrics       *metrics.Sampler
+	preferences   *preferences.Store
 	loginAttempts *loginLimiter
 	logger        *zap.Logger
 	cancel        context.CancelFunc
@@ -56,12 +58,18 @@ func New(cfg config.Config) (*Server, error) {
 	capacity := int(cfg.HistoryRetention/time.Second) + 1
 	sampler := metrics.NewSampler(capacity)
 	sampler.Configure(cfg.MonitoringInterval, cfg.HistoryRetention)
+	preferenceStore, err := preferences.Open(cfg.DataDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	go sampler.Run(ctx, cfg.MonitoringInterval)
 	server := &Server{
 		config:        cfg,
 		sessions:      session.NewStore(15*time.Minute, 12*time.Hour),
 		authenticator: authenticator,
 		metrics:       sampler,
+		preferences:   preferenceStore,
 		loginAttempts: newLoginLimiter(5, time.Minute),
 		logger:        zap.L().Named("gateway"),
 		cancel:        cancel,
@@ -119,7 +127,9 @@ func (server *Server) Serve(listener net.Listener) error {
 
 func (server *Server) Shutdown(ctx context.Context) error {
 	server.cancel()
-	return server.http.Shutdown(ctx)
+	shutdownErr := server.http.Shutdown(ctx)
+	closeErr := server.preferences.Close()
+	return errors.Join(shutdownErr, closeErr)
 }
 
 func (server *Server) routes() http.Handler {
@@ -140,6 +150,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/dashboard", server.dashboard)
 			router.Get("/metrics", server.metricHistory)
 			router.Get("/metrics/stream", server.metricStream)
+			router.Get("/preferences/monitoring", server.monitoringPreference)
+			router.With(server.requireCSRF).Put("/preferences/monitoring", server.updateMonitoringPreference)
 			router.Get("/terminal/ws", server.terminalWebSocket)
 			router.Get("/logs", server.logs)
 			router.Get("/logs/stream", server.logStream)

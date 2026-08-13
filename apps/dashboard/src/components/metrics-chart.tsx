@@ -23,7 +23,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-import type { RefreshInterval } from "@/hooks/use-preference"
+import type { RefreshInterval } from "@/lib/monitoring"
 
 const configs = {
   cpu: { cpuPercent: { label: "CPU", color: "var(--chart-cpu)" } },

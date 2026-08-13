@@ -58,6 +58,30 @@ paths:
       responses:
         '200':
           description: text/event-stream of metric events
+  /preferences/monitoring:
+    get:
+      operationId: getMonitoringPreference
+      responses:
+        '200':
+          description: Server-side default monitoring interval and optimistic-lock revision
+    put:
+      operationId: updateMonitoringPreference
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [defaultInterval, expectedRevision]
+              properties:
+                defaultInterval: { type: string, enum: [off, 1s, 5s, 15s, 30s, 1m, 5m] }
+                expectedRevision: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Updated preference and its new optimistic-lock revision
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /logs:
     get:
       operationId: listLogs
