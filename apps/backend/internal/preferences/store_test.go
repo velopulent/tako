@@ -36,8 +36,8 @@ func TestOpenMigratesAndSecuresDatabase(t *testing.T) {
 	if err := store.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatalf("database version is %d, want 3", version)
+	if version != 4 {
+		t.Fatalf("database version is %d, want 4", version)
 	}
 }
 
@@ -93,8 +93,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := second.database.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatalf("database version is %d, want 3", version)
+	if version != 4 {
+		t.Fatalf("database version is %d, want 4", version)
 	}
 }
 
@@ -190,5 +190,49 @@ func TestOperationReceiptsAreDurableAndBounded(t *testing.T) {
 	}
 	if _, err := store.RecordOperation(context.Background(), OperationReceipt{Actor: "", Target: "secret", Result: "failed"}); err == nil {
 		t.Fatal("invalid receipt was accepted")
+	}
+}
+
+func TestSavedLogViewsAreOwnedVersionedAndDurable(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.CreateSavedLogView(context.Background(), "alice", "Incident", SavedLogFilter{Unit: "worker.service", Priority: "3", Details: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Revision != 1 {
+		t.Fatalf("created view revision = %d", view.Revision)
+	}
+	if _, err := store.SavedLogViews(context.Background(), "bob", 100); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.SavedLogViews(context.Background(), "alice", 100)
+	if err != nil || len(items) != 1 || items[0].Filter.Unit != "worker.service" {
+		t.Fatalf("saved views = %#v err=%v", items, err)
+	}
+	updated, err := store.UpdateSavedLogView(context.Background(), "alice", view.ID, "Incident v2", SavedLogFilter{Text: "failed"}, view.Revision)
+	if err != nil || updated.Revision != 2 {
+		t.Fatalf("updated view = %#v err=%v", updated, err)
+	}
+	if _, err := store.UpdateSavedLogView(context.Background(), "alice", view.ID, "stale", SavedLogFilter{}, view.Revision); err != ErrConflict {
+		t.Fatalf("stale update error = %v, want %v", err, ErrConflict)
+	}
+	if err := store.DeleteSavedLogView(context.Background(), "bob", view.ID, updated.Revision); err != ErrConflict {
+		t.Fatalf("cross-owner delete error = %v, want %v", err, ErrConflict)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	items, err = store.SavedLogViews(context.Background(), "alice", 100)
+	if err != nil || len(items) != 1 || items[0].Revision != 2 || items[0].Name != "Incident v2" {
+		t.Fatalf("restarted views = %#v err=%v", items, err)
 	}
 }

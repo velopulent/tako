@@ -31,6 +31,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
+import { SavedLogViews } from "@/components/saved-log-views"
 
 const columns: ColumnDef<LogEntry>[] = [
   {
@@ -59,6 +60,9 @@ const columns: ColumnDef<LogEntry>[] = [
 
 function makeParams(filters: {
   priority: string
+  boot: string
+  since: string
+  until: string
   unit: string
   executable: string
   text: string
@@ -70,6 +74,9 @@ function makeParams(filters: {
     limit: String(filters.limit ?? 200),
   })
   if (filters.priority) params.set("priority", filters.priority)
+  if (filters.boot) params.set("boot", filters.boot)
+  if (filters.since) params.set("since", filters.since)
+  if (filters.until) params.set("until", filters.until)
   if (filters.unit) params.set("unit", filters.unit)
   if (filters.executable) params.set("executable", filters.executable)
   if (filters.text) params.set("text", filters.text)
@@ -80,10 +87,16 @@ function makeParams(filters: {
 
 export function JournalBrowser() {
   const [priority, setPriority] = React.useState("")
+  const [boot, setBoot] = React.useState("")
+  const [since, setSince] = React.useState("")
+  const [until, setUntil] = React.useState("")
   const [unit, setUnit] = React.useState("")
   const [executable, setExecutable] = React.useState("")
   const [text, setText] = React.useState("")
   const [activeUnit, setActiveUnit] = React.useState("")
+  const [activeBoot, setActiveBoot] = React.useState("")
+  const [activeSince, setActiveSince] = React.useState("")
+  const [activeUntil, setActiveUntil] = React.useState("")
   const [activeExecutable, setActiveExecutable] = React.useState("")
   const [activeText, setActiveText] = React.useState("")
   const [details, setDetails] = React.useState(false)
@@ -101,6 +114,9 @@ export function JournalBrowser() {
   }
   const filterValues = {
     priority,
+    boot: activeBoot,
+    since: activeSince,
+    until: activeUntil,
     unit: activeUnit,
     executable: activeExecutable,
     text: activeText,
@@ -115,16 +131,37 @@ export function JournalBrowser() {
   })
   const streamParams = React.useMemo(
     () => makeParams(filterValues).toString(),
-    [priority, activeUnit, activeExecutable, activeText, details]
+    [
+      priority,
+      activeBoot,
+      activeSince,
+      activeUntil,
+      activeUnit,
+      activeExecutable,
+      activeText,
+      details,
+    ]
   )
   const exportParams = React.useMemo(
     () => makeParams({ ...filterValues, limit: 500 }).toString(),
-    [priority, activeUnit, activeExecutable, activeText, details]
+    [
+      priority,
+      activeBoot,
+      activeSince,
+      activeUntil,
+      activeUnit,
+      activeExecutable,
+      activeText,
+      details,
+    ]
   )
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
       setActiveUnit(unit)
+      setActiveBoot(boot)
+      setActiveSince(since)
+      setActiveUntil(until)
       setActiveExecutable(executable)
       setActiveText(text)
       setCursor("")
@@ -133,7 +170,7 @@ export function JournalBrowser() {
       setLatest(true)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [unit, executable, text])
+  }, [boot, since, until, unit, executable, text])
 
   React.useEffect(() => {
     if (!following || typeof EventSource === "undefined") return
@@ -165,6 +202,29 @@ export function JournalBrowser() {
     setLatest(true)
     setFollowing(true)
   }
+  const applySavedFilter = (saved: {
+    boot?: string
+    since?: string
+    until?: string
+    priority?: string
+    unit?: string
+    executable?: string
+    text?: string
+    details?: boolean
+  }) => {
+    setPriority(saved.priority ?? "")
+    setBoot(saved.boot ?? "")
+    setSince(saved.since ?? "")
+    setUntil(saved.until ?? "")
+    setUnit(saved.unit ?? "")
+    setExecutable(saved.executable ?? "")
+    setText(saved.text ?? "")
+    setDetails(Boolean(saved.details))
+    setCursor("")
+    setLive([])
+    setPendingLive(0)
+    setLatest(true)
+  }
 
   return (
     <>
@@ -178,6 +238,36 @@ export function JournalBrowser() {
               value={text}
               onChange={(event) => setText(event.target.value)}
               placeholder="failed"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="journal-boot">Boot</FieldLabel>
+            <Input
+              id="journal-boot"
+              maxLength={32}
+              value={boot}
+              onChange={(event) => setBoot(event.target.value)}
+              placeholder="current or boot ID"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="journal-since">Since (RFC3339)</FieldLabel>
+            <Input
+              id="journal-since"
+              maxLength={64}
+              value={since}
+              onChange={(event) => setSince(event.target.value)}
+              placeholder="2026-08-13T00:00:00Z"
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="journal-until">Until (RFC3339)</FieldLabel>
+            <Input
+              id="journal-until"
+              maxLength={64}
+              value={until}
+              onChange={(event) => setUntil(event.target.value)}
+              placeholder="2026-08-13T23:59:59Z"
             />
           </Field>
           <Field>
@@ -227,6 +317,7 @@ export function JournalBrowser() {
             </Select>
           </Field>
         </FieldGroup>
+        <SavedLogViews filter={filterValues} onApply={applySavedFilter} />
         {pendingLive > 0 && (
           <Button variant="secondary" size="sm" onClick={jumpToLatest}>
             <ArrowDownToLineIcon data-icon="inline-start" />

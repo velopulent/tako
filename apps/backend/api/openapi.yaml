@@ -223,6 +223,64 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '413': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /log-views:
+    get:
+      operationId: listSavedLogViews
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+      responses:
+        '200':
+          description: Saved journal views owned by the authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100
+                    items: { $ref: '#/components/schemas/SavedLogView' }
+    post:
+      operationId: createSavedLogView
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/SavedLogViewRequest' } }
+      responses:
+        '201': { description: Saved journal view created, content: { application/json: { schema: { $ref: '#/components/schemas/SavedLogView' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /log-views/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, maxLength: 128 }
+    put:
+      operationId: updateSavedLogView
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/SavedLogViewUpdateRequest' } }
+      responses:
+        '200': { description: Saved journal view updated, content: { application/json: { schema: { $ref: '#/components/schemas/SavedLogView' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: deleteSavedLogView
+      parameters:
+        - in: query
+          name: expectedRevision
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '204': { description: Saved journal view deleted }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /users:
     get:
       operationId: listUsers
@@ -949,6 +1007,41 @@ components:
         details:
           type: object
           additionalProperties: { type: string, maxLength: 16384 }
+    SavedLogFilter:
+      type: object
+      additionalProperties: false
+      properties:
+        boot: { type: string, maxLength: 64 }
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+        priority: { type: string, pattern: '^[0-7](\.\.[0-7])?$' }
+        unit: { type: string, maxLength: 256 }
+        executable: { type: string, maxLength: 4096 }
+        text: { type: string, maxLength: 512 }
+        details: { type: boolean, default: false }
+    SavedLogViewRequest:
+      type: object
+      required: [name, filter]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        filter: { $ref: '#/components/schemas/SavedLogFilter' }
+        expectedRevision: { type: integer, minimum: 1 }
+    SavedLogViewUpdateRequest:
+      allOf:
+        - $ref: '#/components/schemas/SavedLogViewRequest'
+        - type: object
+          required: [expectedRevision]
+    SavedLogView:
+      type: object
+      required: [id, name, filter, revision, createdAt, updatedAt]
+      properties:
+        id: { type: string, maxLength: 128 }
+        name: { type: string, maxLength: 128 }
+        filter: { $ref: '#/components/schemas/SavedLogFilter' }
+        revision: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     MetricSample:
       type: object
       required: [timestamp, cpuPercent, memoryUsed, memoryTotal, networkRx, networkTx, diskRead, diskWrite]

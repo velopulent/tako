@@ -266,6 +266,24 @@ export type JournalPage = {
   items: LogEntry[]
   nextCursor?: string
 }
+export type SavedLogFilter = {
+  boot?: string
+  since?: string
+  until?: string
+  priority?: string
+  unit?: string
+  executable?: string
+  text?: string
+  details?: boolean
+}
+export type SavedLogView = {
+  id: string
+  name: string
+  filter: SavedLogFilter
+  revision: number
+  createdAt: string
+  updatedAt: string
+}
 export type UpdateStatus = {
   available: boolean
   backend: string

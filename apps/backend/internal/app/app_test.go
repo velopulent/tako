@@ -576,6 +576,60 @@ func TestLogStreamAppliesFiltersAndEmitsStructuredEntries(t *testing.T) {
 	}
 }
 
+func TestSavedLogViewRoutesPersistAndRejectStaleWrites(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	handler := server.routes()
+	cookie, csrf := loginForTest(t, handler)
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/log-views", strings.NewReader(`{"name":"Incident","filter":{"unit":"worker.service","details":true}}`))
+	create.AddCookie(cookie)
+	create.Header.Set("X-CSRF-Token", csrf)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, create)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create saved view returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var created preferences.SavedLogView
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	list := httptest.NewRequest(http.MethodGet, "/api/v1/log-views", nil)
+	list.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, list)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Incident") {
+		t.Fatalf("list saved views returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	update := httptest.NewRequest(http.MethodPut, "/api/v1/log-views/"+created.ID, strings.NewReader(`{"name":"Incident updated","filter":{"text":"failed"},"expectedRevision":1}`))
+	update.AddCookie(cookie)
+	update.Header.Set("X-CSRF-Token", csrf)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, update)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Incident updated") {
+		t.Fatalf("update saved view returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stale := httptest.NewRequest(http.MethodPut, "/api/v1/log-views/"+created.ID, strings.NewReader(`{"name":"stale","filter":{},"expectedRevision":1}`))
+	stale.AddCookie(cookie)
+	stale.Header.Set("X-CSRF-Token", csrf)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, stale)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("stale saved view returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	remove := httptest.NewRequest(http.MethodDelete, "/api/v1/log-views/"+created.ID+"?expectedRevision=2", nil)
+	remove.AddCookie(cookie)
+	remove.Header.Set("X-CSRF-Token", csrf)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, remove)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("delete saved view returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

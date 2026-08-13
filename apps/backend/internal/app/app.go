@@ -287,6 +287,10 @@ func (server *Server) routes() http.Handler {
 			router.Get("/logs", server.logs)
 			router.Get("/logs/stream", server.logStream)
 			router.Get("/logs/export", server.logExport)
+			router.Get("/log-views", server.savedLogViews)
+			router.With(server.requireCSRF).Post("/log-views", server.createSavedLogView)
+			router.With(server.requireCSRF).Put("/log-views/{id}", server.updateSavedLogView)
+			router.With(server.requireCSRF).Delete("/log-views/{id}", server.deleteSavedLogView)
 			router.Get("/operations", server.operationReceipts)
 			router.Get("/jobs", server.jobsList)
 			router.With(server.requireCSRF).Post("/jobs/host-inventory", server.startHostInventoryJob)
@@ -1185,6 +1189,133 @@ func encodeJournalCSV(entries []platform.LogEntry) ([]byte, error) {
 		return nil, err
 	}
 	return output.Bytes(), nil
+}
+
+type savedLogViewPayload struct {
+	Name             string                     `json:"name"`
+	Filter           preferences.SavedLogFilter `json:"filter"`
+	ExpectedRevision int64                      `json:"expectedRevision,omitempty"`
+}
+
+func journalQueryFromSavedFilter(filter preferences.SavedLogFilter) (platform.JournalQuery, error) {
+	query := platform.JournalQuery{
+		Limit:      1,
+		Boot:       filter.Boot,
+		Priority:   filter.Priority,
+		Unit:       filter.Unit,
+		Executable: filter.Executable,
+		Text:       filter.Text,
+		Details:    filter.Details,
+	}
+	for key, destination := range map[string]*time.Time{"since": &query.Since, "until": &query.Until} {
+		raw := map[string]string{"since": filter.Since, "until": filter.Until}[key]
+		if raw == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			return platform.JournalQuery{}, err
+		}
+		*destination = parsed
+	}
+	if err := query.Validate(); err != nil {
+		return platform.JournalQuery{}, err
+	}
+	return query, nil
+}
+
+func decodeSavedLogViewPayload(writer http.ResponseWriter, request *http.Request) (savedLogViewPayload, error) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 32<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var payload savedLogViewPayload
+	if err := decoder.Decode(&payload); err != nil {
+		return savedLogViewPayload{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return savedLogViewPayload{}, errors.New("trailing request data")
+		}
+		return savedLogViewPayload{}, err
+	}
+	if _, err := journalQueryFromSavedFilter(payload.Filter); err != nil {
+		return savedLogViewPayload{}, err
+	}
+	return payload, nil
+}
+
+func (server *Server) savedLogViews(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	limit := 100
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			problem(writer, http.StatusBadRequest, "invalid-log-view-limit", "Saved log view limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	items, err := server.preferences.SavedLogViews(request.Context(), current.Identity.Username, limit)
+	if err != nil {
+		problem(writer, http.StatusInternalServerError, "log-views-unavailable", "Saved log views are unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}
+
+func (server *Server) createSavedLogView(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	payload, err := decodeSavedLogViewPayload(writer, request)
+	if err != nil || payload.Name == "" {
+		problem(writer, http.StatusBadRequest, "invalid-log-view", "Saved log view name or filters are invalid")
+		return
+	}
+	item, err := server.preferences.CreateSavedLogView(request.Context(), current.Identity.Username, payload.Name, payload.Filter)
+	if err != nil {
+		writeSavedLogViewError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, item)
+}
+
+func (server *Server) updateSavedLogView(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	payload, err := decodeSavedLogViewPayload(writer, request)
+	if err != nil || payload.Name == "" || payload.ExpectedRevision < 1 {
+		problem(writer, http.StatusBadRequest, "invalid-log-view", "Saved log view name, revision, or filters are invalid")
+		return
+	}
+	item, err := server.preferences.UpdateSavedLogView(request.Context(), current.Identity.Username, chi.URLParam(request, "id"), payload.Name, payload.Filter, payload.ExpectedRevision)
+	if err != nil {
+		writeSavedLogViewError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, item)
+}
+
+func (server *Server) deleteSavedLogView(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	revision, err := strconv.ParseInt(request.URL.Query().Get("expectedRevision"), 10, 64)
+	if err != nil || revision < 1 {
+		problem(writer, http.StatusBadRequest, "invalid-log-view-revision", "A positive expectedRevision is required")
+		return
+	}
+	if err := server.preferences.DeleteSavedLogView(request.Context(), current.Identity.Username, chi.URLParam(request, "id"), revision); err != nil {
+		writeSavedLogViewError(writer, err)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func writeSavedLogViewError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, preferences.ErrConflict):
+		problem(writer, http.StatusConflict, "log-view-conflict", "The saved log view changed; refresh it before retrying")
+	case errors.Is(err, preferences.ErrSavedLogViewNotFound):
+		problem(writer, http.StatusNotFound, "log-view-not-found", "Saved log view was not found")
+	default:
+		problem(writer, http.StatusBadRequest, "invalid-log-view", "Saved log view name or filters are invalid")
+	}
 }
 
 func (server *Server) logStream(writer http.ResponseWriter, request *http.Request) {

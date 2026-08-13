@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,6 +24,29 @@ type MonitoringPreference struct {
 	DefaultInterval string
 	Revision        int64
 }
+
+type SavedLogFilter struct {
+	Boot       string `json:"boot,omitempty"`
+	Since      string `json:"since,omitempty"`
+	Until      string `json:"until,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+	Unit       string `json:"unit,omitempty"`
+	Executable string `json:"executable,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Details    bool   `json:"details,omitempty"`
+}
+
+type SavedLogView struct {
+	ID        string         `json:"id"`
+	Owner     string         `json:"-"`
+	Name      string         `json:"name"`
+	Filter    SavedLogFilter `json:"filter"`
+	Revision  int64          `json:"revision"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+}
+
+var ErrSavedLogViewNotFound = errors.New("saved log view not found")
 
 type OperationReceipt struct {
 	ID             string    `json:"id"`
@@ -149,6 +173,158 @@ func (store *Store) SetMonitoringInterval(ctx context.Context, value string, exp
 		return MonitoringPreference{}, ErrConflict
 	}
 	return store.MonitoringInterval(ctx, value)
+}
+
+func validateSavedLogView(owner, name string, filter SavedLogFilter) error {
+	if owner == "" || len(owner) > 256 || name == "" || len(name) > 128 || strings.ContainsAny(owner+name, "\x00\r\n") {
+		return errors.New("invalid saved log view")
+	}
+	if len(filter.Boot) > 64 || len(filter.Since) > 64 || len(filter.Until) > 64 || len(filter.Priority) > 8 || len(filter.Unit) > 256 || len(filter.Executable) > 4096 || len(filter.Text) > 512 || strings.ContainsAny(filter.Boot+filter.Since+filter.Until+filter.Priority+filter.Unit+filter.Executable+filter.Text, "\x00\r\n") {
+		return errors.New("invalid saved log filter")
+	}
+	return nil
+}
+
+func (store *Store) SavedLogViews(ctx context.Context, owner string, limit int) ([]SavedLogView, error) {
+	if owner == "" || len(owner) > 256 {
+		return nil, errors.New("invalid saved log view owner")
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := store.database.QueryContext(ctx, `
+		SELECT id, owner, name, boot, since, until, priority, unit, executable, text, details, revision, created_at, updated_at
+		FROM saved_log_views WHERE owner = ? ORDER BY name COLLATE NOCASE LIMIT ?
+	`, owner, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list saved log views: %w", err)
+	}
+	defer rows.Close()
+	items := make([]SavedLogView, 0, limit)
+	for rows.Next() {
+		item, err := scanSavedLogView(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read saved log views: %w", err)
+	}
+	return items, nil
+}
+
+func (store *Store) CreateSavedLogView(ctx context.Context, owner, name string, filter SavedLogFilter) (SavedLogView, error) {
+	if err := validateSavedLogView(owner, name, filter); err != nil {
+		return SavedLogView{}, err
+	}
+	id, err := receiptID()
+	if err != nil {
+		return SavedLogView{}, fmt.Errorf("create saved log view id: %w", err)
+	}
+	now := time.Now().UTC()
+	_, err = store.database.ExecContext(ctx, `
+		INSERT INTO saved_log_views
+			(id, owner, name, boot, since, until, priority, unit, executable, text, details, revision, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+	`, id, owner, name, filter.Boot, filter.Since, filter.Until, filter.Priority, filter.Unit, filter.Executable, filter.Text, filter.Details, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return SavedLogView{}, ErrConflict
+		}
+		return SavedLogView{}, fmt.Errorf("save log view: %w", err)
+	}
+	return SavedLogView{ID: id, Owner: owner, Name: name, Filter: filter, Revision: 1, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (store *Store) UpdateSavedLogView(ctx context.Context, owner, id, name string, filter SavedLogFilter, expectedRevision int64) (SavedLogView, error) {
+	if err := validateSavedLogView(owner, name, filter); err != nil || id == "" || len(id) > 128 || expectedRevision < 1 {
+		if err != nil {
+			return SavedLogView{}, err
+		}
+		return SavedLogView{}, errors.New("invalid saved log view update")
+	}
+	now := time.Now().UTC()
+	result, err := store.database.ExecContext(ctx, `
+		UPDATE saved_log_views
+		SET name = ?, boot = ?, since = ?, until = ?, priority = ?, unit = ?, executable = ?, text = ?, details = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND owner = ? AND revision = ?
+	`, name, filter.Boot, filter.Since, filter.Until, filter.Priority, filter.Unit, filter.Executable, filter.Text, filter.Details, now.Format(time.RFC3339Nano), id, owner, expectedRevision)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return SavedLogView{}, ErrConflict
+		}
+		return SavedLogView{}, fmt.Errorf("update saved log view: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return SavedLogView{}, fmt.Errorf("verify saved log view update: %w", err)
+	}
+	if changed != 1 {
+		return SavedLogView{}, ErrConflict
+	}
+	return store.savedLogView(ctx, owner, id)
+}
+
+func (store *Store) DeleteSavedLogView(ctx context.Context, owner, id string, expectedRevision int64) error {
+	if owner == "" || id == "" || len(id) > 128 || expectedRevision < 1 {
+		return errors.New("invalid saved log view deletion")
+	}
+	result, err := store.database.ExecContext(ctx, "DELETE FROM saved_log_views WHERE id = ? AND owner = ? AND revision = ?", id, owner, expectedRevision)
+	if err != nil {
+		return fmt.Errorf("delete saved log view: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("verify saved log view deletion: %w", err)
+	}
+	if changed != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (store *Store) savedLogView(ctx context.Context, owner, id string) (SavedLogView, error) {
+	row := store.database.QueryRowContext(ctx, `
+		SELECT id, owner, name, boot, since, until, priority, unit, executable, text, details, revision, created_at, updated_at
+		FROM saved_log_views WHERE id = ? AND owner = ?
+	`, id, owner)
+	item, err := scanSavedLogLogViewRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SavedLogView{}, ErrSavedLogViewNotFound
+	}
+	return item, err
+}
+
+type savedLogViewScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSavedLogView(rows *sql.Rows) (SavedLogView, error) {
+	return scanSavedLogLogViewRow(rows)
+}
+
+func scanSavedLogLogViewRow(scanner savedLogViewScanner) (SavedLogView, error) {
+	var item SavedLogView
+	var details int
+	var createdAt, updatedAt string
+	if err := scanner.Scan(&item.ID, &item.Owner, &item.Name, &item.Filter.Boot, &item.Filter.Since, &item.Filter.Until, &item.Filter.Priority, &item.Filter.Unit, &item.Filter.Executable, &item.Filter.Text, &details, &item.Revision, &createdAt, &updatedAt); err != nil {
+		return SavedLogView{}, fmt.Errorf("read saved log view: %w", err)
+	}
+	item.Filter.Details = details != 0
+	var err error
+	item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return SavedLogView{}, fmt.Errorf("parse saved log view creation time: %w", err)
+	}
+	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return SavedLogView{}, fmt.Errorf("parse saved log view update time: %w", err)
+	}
+	return item, nil
 }
 
 func (store *Store) RecordOperation(ctx context.Context, receipt OperationReceipt) (OperationReceipt, error) {
@@ -523,6 +699,23 @@ func (store *Store) migrate(ctx context.Context) error {
 			completed_at TEXT NOT NULL,
 			cancel_requested INTEGER NOT NULL CHECK (cancel_requested IN (0, 1)),
 			dangerous INTEGER NOT NULL CHECK (dangerous IN (0, 1))
+		)`,
+		`CREATE TABLE saved_log_views (
+			id TEXT PRIMARY KEY,
+			owner TEXT NOT NULL,
+			name TEXT NOT NULL,
+			boot TEXT NOT NULL,
+			since TEXT NOT NULL,
+			until TEXT NOT NULL,
+			priority TEXT NOT NULL,
+			unit TEXT NOT NULL,
+			executable TEXT NOT NULL,
+			text TEXT NOT NULL,
+			details INTEGER NOT NULL CHECK (details IN (0, 1)),
+			revision INTEGER NOT NULL CHECK (revision > 0),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(owner, name)
 		)`,
 	}
 	if _, err := transaction.ExecContext(ctx, migrations[0]); err != nil {
