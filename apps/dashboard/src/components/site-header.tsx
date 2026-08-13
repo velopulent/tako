@@ -24,6 +24,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
   InputGroup,
   InputGroupAddon,
@@ -43,7 +44,9 @@ export function SiteHeader({
   const location = useLocation(),
     client = useQueryClient(),
     { theme, setTheme } = useTheme(),
-    [password, setPassword] = React.useState("")
+    [password, setPassword] = React.useState(""),
+    [elevationError, setElevationError] = React.useState(""),
+    [elevating, setElevating] = React.useState(false)
   const admin = useQuery({
     queryKey: ["admin"],
     queryFn: () =>
@@ -71,14 +74,25 @@ export function SiteHeader({
     window.location.reload()
   }
   async function elevate() {
-    await api("/admin/elevate", {
-      method: "POST",
-      headers: { "X-CSRF-Token": csrfToken },
-      body: JSON.stringify({ password }),
-    })
-    setPassword("")
-    await admin.refetch()
-    await client.invalidateQueries({ queryKey: ["session"] })
+    setElevationError("")
+    setElevating(true)
+    try {
+      await api("/admin/elevate", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ password }),
+      })
+      setPassword("")
+      await admin.refetch()
+      await client.invalidateQueries({ queryKey: ["session"] })
+    } catch {
+      setElevationError(
+        "The host policy rejected this attempt. If your PAM stack requires MFA, enter the current challenge response and retry."
+      )
+      setPassword("")
+    } finally {
+      setElevating(false)
+    }
   }
   async function drop() {
     await api<void>("/admin/drop", {
@@ -131,10 +145,21 @@ export function SiteHeader({
                   autoComplete="current-password"
                 />
               </InputGroup>
+              {elevationError && (
+                <Alert variant="destructive" role="alert">
+                  <AlertDescription>{elevationError}</AlertDescription>
+                </Alert>
+              )}
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={elevate} disabled={!password}>
-                  Authenticate
+                <AlertDialogAction
+                  onClick={(event) => {
+                    if (elevating) event.preventDefault()
+                    void elevate()
+                  }}
+                  disabled={!password || elevating}
+                >
+                  {elevating ? "Checking policy…" : "Authenticate"}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>

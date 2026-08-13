@@ -1443,7 +1443,7 @@ func (store *grantStore) release(token string) {
 }
 
 func decodeRequestLine(reader *bufio.Reader, request *auth.Request) error {
-	const maxRequestBytes = 16 << 10
+	const maxRequestBytes = 8 << 20
 	var payload []byte
 	for {
 		part, err := reader.ReadSlice('\n')

@@ -103,6 +103,7 @@ type FileOperation struct {
 	ContentSHA256       string  `json:"contentSha256,omitempty"`
 	Offset              int64   `json:"offset,omitempty"`
 	Limit               int64   `json:"limit,omitempty"`
+	TotalSize           int64   `json:"totalSize,omitempty"`
 	LineOffset          int     `json:"lineOffset,omitempty"`
 	LineLimit           int     `json:"lineLimit,omitempty"`
 	ExpectedFingerprint string  `json:"expectedFingerprint,omitempty"`
@@ -119,14 +120,21 @@ type FileOperation struct {
 }
 
 func ValidateFileOperation(operation FileOperation) error {
-	validActions := map[string]bool{"list": true, "stat": true, "read": true, "read-window": true, "write": true, "create": true, "rename": true, "move": true, "copy": true, "trash": true, "delete": true, "search": true, "archive": true, "extract": true, "metadata": true}
+	validActions := map[string]bool{"list": true, "stat": true, "read": true, "read-window": true, "write": true, "write-text": true, "write-chunk": true, "create": true, "rename": true, "move": true, "copy": true, "trash": true, "delete": true, "search": true, "archive": true, "extract": true, "metadata": true}
 	if !validActions[operation.Action] || len(operation.Path) > MaxFilePath || len(operation.Destination) > MaxFilePath || len(operation.ArchivePath) > MaxFilePath || strings.ContainsAny(operation.Path+operation.Destination+operation.ArchivePath, "\x00\r\n") {
 		return ErrInvalidFileOperation
 	}
 	if operation.Path == "" && operation.Action != "archive" {
 		return ErrInvalidFileOperation
 	}
-	if operation.Offset < 0 || operation.Limit < 0 || operation.Limit > MaxFileChunk || len(operation.Content) > MaxFileChunk {
+	contentLimit := MaxFileChunk
+	if operation.Action == "write-text" {
+		contentLimit = MaxTextFile
+	}
+	if operation.Offset < 0 || operation.Limit < 0 || operation.Limit > MaxFileChunk || len(operation.Content) > contentLimit {
+		return ErrInvalidFileOperation
+	}
+	if operation.TotalSize < 0 || operation.TotalSize > 1<<40 {
 		return ErrInvalidFileOperation
 	}
 	if operation.Action == "read-window" && (operation.LineOffset < 0 || operation.LineLimit < 1 || operation.LineLimit > 1000) {
@@ -149,7 +157,7 @@ func ValidateFileOperation(operation FileOperation) error {
 			return ErrInvalidFileOperation
 		}
 	}
-	if operation.Action == "write" && operation.Limit == 0 && len(operation.Content) == 0 {
+	if (operation.Action == "write" || operation.Action == "write-text" || operation.Action == "write-chunk") && operation.Limit == 0 && len(operation.Content) == 0 {
 		return ErrInvalidFileOperation
 	}
 	if operation.Action == "rename" || operation.Action == "move" || operation.Action == "copy" {
@@ -213,6 +221,13 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 		return ReadTextWindow(path, operation.LineOffset, operation.LineLimit)
 	case "write":
 		return writeFile(path, operation)
+	case "write-text":
+		if len(operation.Content) > MaxTextFile {
+			return FileResult{}, ErrFileTooLarge
+		}
+		return writeFile(path, operation)
+	case "write-chunk":
+		return writeChunk(path, operation)
 	case "create":
 		return createFile(path, operation)
 	case "rename", "move", "copy":
@@ -262,6 +277,21 @@ func resolveFilePath(root, value string, privileged bool) (string, error) {
 		rel, err := filepath.Rel(root, path)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return "", ErrFilePermission
+		}
+		check := path
+		if _, statErr := os.Lstat(check); errors.Is(statErr, os.ErrNotExist) {
+			check = filepath.Dir(check)
+		}
+		realPath, evalErr := filepath.EvalSymlinks(check)
+		if evalErr != nil {
+			if !errors.Is(evalErr, os.ErrNotExist) {
+				return "", ErrFilePermission
+			}
+		} else {
+			realRoot, rootErr := filepath.EvalSymlinks(root)
+			if rootErr != nil || !pathWithin(realRoot, realPath) {
+				return "", ErrFilePermission
+			}
 		}
 	}
 	return path, nil
@@ -439,6 +469,35 @@ func writeFile(path string, operation FileOperation) (FileResult, error) {
 	return FileResult{Entry: &entry, Fingerprint: entry.Fingerprint}, err
 }
 
+func writeChunk(path string, operation FileOperation) (FileResult, error) {
+	if operation.ContentSHA256 != "" {
+		digest := sha256.Sum256(operation.Content)
+		if !strings.EqualFold(hex.EncodeToString(digest[:]), operation.ContentSHA256) {
+			return FileResult{}, ErrFileConflict
+		}
+	}
+	if info, statErr := os.Stat(path); statErr == nil && operation.ExpectedFingerprint != "" && statFingerprint(info) != operation.ExpectedFingerprint {
+		return FileResult{}, ErrFileConflict
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return FileResult{}, err
+	}
+	defer file.Close()
+	if _, err := file.Seek(operation.Offset, io.SeekStart); err != nil {
+		return FileResult{}, err
+	}
+	if _, err := file.Write(operation.Content); err != nil {
+		return FileResult{}, err
+	}
+	if err := file.Sync(); err != nil {
+		return FileResult{}, err
+	}
+	entry, err := fileEntry(path, path)
+	next := operation.Offset + int64(len(operation.Content))
+	return FileResult{Entry: &entry, Offset: next, Total: entry.Size, EOF: operation.TotalSize > 0 && next >= operation.TotalSize, Fingerprint: entry.Fingerprint}, err
+}
+
 func createFile(path string, operation FileOperation) (FileResult, error) {
 	if operation.Kind == "directory" {
 		if err := os.Mkdir(path, 0o755); err != nil {
@@ -479,9 +538,13 @@ func transferFile(action, source, destination string, operation FileOperation) (
 			_ = input.Close()
 			return FileResult{}, createErr
 		}
-		_, copyErr := io.CopyN(output, input, MaxArchiveEntryBytes+1)
+		written, copyErr := io.CopyN(output, input, MaxArchiveBytes+1)
 		_ = input.Close()
 		_ = output.Close()
+		if copyErr == nil || written > MaxArchiveBytes {
+			_ = os.Remove(destination)
+			return FileResult{}, ErrFileTooLarge
+		}
 		if copyErr != nil && !errors.Is(copyErr, io.EOF) {
 			_ = os.Remove(destination)
 			return FileResult{}, copyErr
@@ -570,6 +633,11 @@ func searchFiles(path string, operation FileOperation) (FileResult, error) {
 }
 
 func createArchive(source, destination string, operation FileOperation) (FileResult, error) {
+	sourceAbs, sourceErr := filepath.Abs(source)
+	destinationAbs, destinationErr := filepath.Abs(destination)
+	if sourceErr != nil || destinationErr != nil || pathWithin(sourceAbs, destinationAbs) {
+		return FileResult{}, ErrInvalidFileOperation
+	}
 	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return FileResult{}, err

@@ -68,6 +68,7 @@ type NetworkOperation struct {
 	ExpectedFingerprint string   `json:"expectedFingerprint,omitempty"`
 	Confirmation        string   `json:"confirmation,omitempty"`
 	ReconnectToken      string   `json:"reconnectToken,omitempty"`
+	Checkpoint          string   `json:"checkpoint,omitempty"`
 }
 
 type NetworkState struct {
@@ -254,6 +255,9 @@ func ValidateNetworkOperation(operation NetworkOperation) error {
 	if operation.Action != "preview" && operation.Confirmation != "CONFIRM NETWORK CHANGE" {
 		return ErrInvalidNetworkOperation
 	}
+	if (operation.Action == "commit" || operation.Action == "rollback") && operation.Checkpoint == "" {
+		return ErrInvalidNetworkOperation
+	}
 	return nil
 }
 
@@ -283,9 +287,36 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != snapshot.Fingerprint {
 		return NetworkState{}, ErrNetworkConflict
 	}
+	if operation.Backend == "Netplan" {
+		return applyNetplanOperation(ctx, operation, snapshot)
+	}
 	if operation.Backend != "NetworkManager" {
 		return NetworkState{}, ErrNetworkUnavailable
 	}
+	if operation.Action == "checkpoint" {
+		payload, checkpointErr := networkCommand(ctx, "nmcli", "device", "checkpoint", operation.Interface, "--timeout", "120", "--persist", "no")
+		if checkpointErr != nil {
+			return NetworkState{}, checkpointErr
+		}
+		checkpoint := firstLine(string(payload))
+		return NetworkState{Snapshot: snapshot, Action: "checkpoint", Checkpoint: checkpoint, Rollback: checkpoint != "", Warning: "Checkpoint expires automatically; commit only after a fresh connection is verified."}, nil
+	}
+	if operation.Action == "commit" || operation.Action == "rollback" {
+		argument := "--" + operation.Action
+		if _, commandErr := networkCommand(ctx, "nmcli", "device", "checkpoint", operation.Checkpoint, argument); commandErr != nil {
+			return NetworkState{}, commandErr
+		}
+		updated, readErr := NetworkSnapshotRead(ctx)
+		if readErr != nil {
+			return NetworkState{}, readErr
+		}
+		return NetworkState{Snapshot: updated, Action: operation.Action, Committed: operation.Action == "commit", Rollback: operation.Action == "rollback", Checkpoint: operation.Checkpoint}, nil
+	}
+	checkpointPayload, checkpointErr := networkCommand(ctx, "nmcli", "device", "checkpoint", operation.Interface, "--timeout", "120", "--persist", "no")
+	if checkpointErr != nil {
+		return NetworkState{}, checkpointErr
+	}
+	checkpoint := firstLine(string(checkpointPayload))
 	arguments := []string{"device"}
 	switch operation.Action {
 	case "dhcp":
@@ -306,10 +337,16 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 		return NetworkState{}, ErrInvalidNetworkOperation
 	}
 	if _, err := networkCommand(ctx, "nmcli", arguments...); err != nil {
+		if checkpoint != "" {
+			_, _ = networkCommand(ctx, "nmcli", "device", "checkpoint", checkpoint, "--rollback")
+		}
 		return NetworkState{}, err
 	}
 	if operation.Action == "commit" || operation.Action == "dhcp" || operation.Action == "static" || operation.Action == "dns" || strings.HasPrefix(operation.Action, "route-") {
 		if _, err := networkCommand(ctx, "nmcli", "device", "connect", operation.Interface); err != nil {
+			if checkpoint != "" {
+				_, _ = networkCommand(ctx, "nmcli", "device", "checkpoint", checkpoint, "--rollback")
+			}
 			return NetworkState{}, err
 		}
 	}
@@ -317,7 +354,49 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 	if err != nil {
 		return NetworkState{}, err
 	}
-	return NetworkState{Snapshot: updated, Action: operation.Action, Committed: true, Rollback: false, Warning: "NetworkManager checkpoint support is unavailable; reconnect verification completed."}, nil
+	if checkpoint != "" {
+		if _, commitErr := networkCommand(ctx, "nmcli", "device", "checkpoint", checkpoint, "--commit"); commitErr != nil {
+			return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: checkpoint, Committed: false, Rollback: true, Warning: "The change applied but checkpoint commit needs explicit operator verification."}, commitErr
+		}
+	}
+	return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: checkpoint, Committed: true, Rollback: false, Warning: "Reconnect verification completed before checkpoint commit."}, nil
+}
+
+func applyNetplanOperation(ctx context.Context, operation NetworkOperation, snapshot NetworkSnapshot) (NetworkState, error) {
+	if operation.Interface == "" || strings.ContainsAny(operation.Interface, "./\\") {
+		return NetworkState{}, ErrInvalidNetworkOperation
+	}
+	key := "ethernets." + operation.Interface
+	arguments := []string{"set"}
+	switch operation.Action {
+	case "dhcp":
+		arguments = append(arguments, key+".dhcp4=true")
+	case "static":
+		arguments = append(arguments, key+".dhcp4=false", key+".addresses=["+operation.Address+"]")
+		if operation.Gateway != "" {
+			arguments = append(arguments, key+".routes=[{to=default,via="+operation.Gateway+"}]")
+		}
+	case "dns":
+		arguments = append(arguments, key+".nameservers.addresses=["+strings.Join(operation.DNS, ",")+"]")
+	default:
+		return NetworkState{}, ErrNetworkUnavailable
+	}
+	if _, err := networkCommand(ctx, "netplan", arguments...); err != nil {
+		return NetworkState{}, err
+	}
+	if _, err := networkCommand(ctx, "netplan", "try", "--timeout", "30"); err != nil {
+		_, _ = networkCommand(ctx, "netplan", "rollback")
+		return NetworkState{}, err
+	}
+	if _, err := networkCommand(ctx, "netplan", "apply"); err != nil {
+		_, _ = networkCommand(ctx, "netplan", "rollback")
+		return NetworkState{}, err
+	}
+	updated, err := NetworkSnapshotRead(ctx)
+	if err != nil {
+		return NetworkState{}, err
+	}
+	return NetworkState{Snapshot: updated, Action: operation.Action, Committed: true, Rollback: false, Warning: "Netplan try completed and runtime state was re-read before reporting success."}, nil
 }
 
 func contains(values []string, value string) bool {

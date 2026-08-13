@@ -107,7 +107,7 @@ func ValidateFirewallOperation(operation FirewallOperation) error {
 	if operation.ExpectedFingerprint == "" && operation.Action != "preview" {
 		return ErrInvalidFirewallOperation
 	}
-	if operation.Action != "preview" && operation.Confirmation != "CONFIRM FIREWALL CHANGE" {
+	if operation.Action != "preview" && operation.Confirmation != "CONFIRM FIREWALL CHANGE" && operation.Confirmation != "CONFIRM FIREWALL ACCESS" {
 		return ErrInvalidFirewallOperation
 	}
 	if (operation.Action == "disable" || operation.Action == "remove-service" || operation.Action == "remove-port") && operation.Confirmation != "CONFIRM FIREWALL ACCESS" {

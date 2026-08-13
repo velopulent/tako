@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { MediaPreview } from "@/components/media-preview"
 
 const encodePath = (path: string) => encodeURIComponent(path)
 
@@ -51,6 +52,9 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
   const [path, setPath] = React.useState(".")
   const [showHidden, setShowHidden] = React.useState(false)
   const [query, setQuery] = React.useState("")
+  const [selected, setSelected] = React.useState<FileEntry | null>(null)
+  const [uploading, setUploading] = React.useState(false)
+  const inputRef = React.useRef<HTMLInputElement>(null)
   const files = useQuery({
     queryKey: ["files", path, showHidden],
     queryFn: () =>
@@ -75,18 +79,66 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
   )
   const open = (entry: FileEntry) => {
     if (entry.permissionDenied) return
-    if (entry.kind === "directory") setPath(entry.path)
-    else
-      window.open(
-        `/api/v1/files/content?path=${encodePath(entry.path)}`,
-        "_blank"
-      )
+    if (entry.kind === "directory") {
+      setSelected(null)
+      setPath(entry.path)
+    } else setSelected(entry)
   }
   const download = (entry: FileEntry) => {
     const anchor = document.createElement("a")
     anchor.href = `/api/v1/files/content?path=${encodePath(entry.path)}`
     anchor.download = entry.name
     anchor.click()
+  }
+  const upload = async (file: File) => {
+    setUploading(true)
+    try {
+      const destination = path === "." ? file.name : `${path}/${file.name}`
+      if (file.size === 0) {
+        await api<FileResult>("/files", {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken },
+          body: JSON.stringify({
+            action: "create",
+            path: destination,
+            kind: "file",
+          }),
+        })
+        void queryClient.invalidateQueries({ queryKey: ["files"] })
+        return
+      }
+      let offset = 0
+      const chunkSize = 4 * 1024 * 1024
+      while (offset < file.size || (file.size === 0 && offset === 0)) {
+        const chunk = file.slice(offset, offset + chunkSize)
+        const payload = await chunk.arrayBuffer()
+        const digest = await crypto.subtle.digest("SHA-256", payload)
+        const checksum = Array.from(new Uint8Array(digest))
+          .map((value) => value.toString(16).padStart(2, "0"))
+          .join("")
+        const response = await fetch(
+          `/api/v1/files/upload?path=${encodePath(destination)}&offset=${offset}&total=${file.size}`,
+          {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "X-CSRF-Token": csrfToken,
+              "X-Content-SHA256": checksum,
+              "Content-Type": "application/octet-stream",
+            },
+            body: payload,
+          }
+        )
+        if (!response.ok) throw new Error("upload failed")
+        const result = (await response.json()) as { offset?: number }
+        offset = result.offset ?? offset + payload.byteLength
+        if (file.size === 0) break
+      }
+      void queryClient.invalidateQueries({ queryKey: ["files"] })
+    } finally {
+      setUploading(false)
+      if (inputRef.current) inputRef.current.value = ""
+    }
   }
 
   return (
@@ -108,6 +160,24 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
           >
             <RefreshCwIcon aria-hidden="true" />
             Refresh
+          </Button>
+          <input
+            ref={inputRef}
+            type="file"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) void upload(file)
+            }}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+          >
+            <UploadIcon aria-hidden="true" />{" "}
+            {uploading ? "Uploading…" : "Upload"}
           </Button>
           <Button
             variant="outline"
@@ -259,6 +329,7 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
             ))}
           </div>
         )}
+        <MediaPreview entry={selected} csrfToken={csrfToken} />
         {mutation.isError && (
           <Alert variant="destructive">
             <AlertTitle>File action failed</AlertTitle>
@@ -269,10 +340,8 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
           </Alert>
         )}
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
-          <UploadIcon className="size-3.5" aria-hidden="true" /> Uploads and
-          large transfers are available through the bounded file API;
-          drag-and-drop is intentionally disabled until a destination is
-          selected.
+          <UploadIcon className="size-3.5" aria-hidden="true" /> Uploads use
+          resumable 4 MiB chunks with per-chunk SHA-256 verification.
         </p>
       </CardContent>
     </Card>

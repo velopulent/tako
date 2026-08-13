@@ -406,9 +406,11 @@ func (server *Server) routes() http.Handler {
 			router.Get("/notifications", server.notificationsList)
 			router.With(server.requireCSRF).Post("/notifications/{id}/{state}", server.notificationTransition)
 			router.Get("/files", server.filesList)
+			router.Get("/files/search", server.filesSearch)
 			router.Get("/files/content", server.fileContent)
 			router.Get("/files/text-window", server.fileTextWindow)
 			router.With(server.requireCSRF).Post("/files", server.fileOperation)
+			router.With(server.requireCSRF).Post("/files/upload", server.fileUpload)
 			router.Get("/processes", server.processes)
 			router.Get("/processes/{pid}", server.processDetail)
 			router.With(server.requireCSRF).Post("/processes/{pid}/signal/preview", server.processSignalPreview)
@@ -1230,6 +1232,27 @@ func (server *Server) filesList(writer http.ResponseWriter, request *http.Reques
 	}
 }
 
+func (server *Server) filesSearch(writer http.ResponseWriter, request *http.Request) {
+	path := request.URL.Query().Get("path")
+	if path == "" {
+		path = "."
+	}
+	query := request.URL.Query().Get("query")
+	maxEntries := 1000
+	if raw := request.URL.Query().Get("maxEntries"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			problem(writer, http.StatusBadRequest, "invalid-file-search", "Search limit is invalid")
+			return
+		}
+		maxEntries = parsed
+	}
+	result, ok := server.applyFileOperation(writer, request, platform.FileOperation{Action: "search", Path: path, Query: query, MaxEntries: maxEntries})
+	if ok {
+		writeJSON(writer, http.StatusOK, result)
+	}
+}
+
 func (server *Server) fileContent(writer http.ResponseWriter, request *http.Request) {
 	path := request.URL.Query().Get("path")
 	if path == "" {
@@ -1267,12 +1290,20 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 	if !ok {
 		return
 	}
+	if result.Total > 0 && offset >= result.Total {
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", result.Total))
+		problem(writer, http.StatusRequestedRangeNotSatisfiable, "invalid-file-range", "The requested range is outside the file")
+		return
+	}
 	writer.Header().Set("Accept-Ranges", "bytes")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	if result.Mime != "" {
 		writer.Header().Set("Content-Type", result.Mime)
 	} else {
 		writer.Header().Set("Content-Type", http.DetectContentType(result.Content))
+	}
+	if result.Fingerprint != "" {
+		writer.Header().Set("X-File-Fingerprint", result.Fingerprint)
 	}
 	if status == http.StatusPartialContent {
 		end := result.Offset + int64(len(result.Content)) - 1
@@ -1323,6 +1354,39 @@ func (server *Server) fileOperation(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	if result, ok := server.applyFileOperation(writer, request, operation); ok {
+		writeJSON(writer, http.StatusOK, result)
+	}
+}
+
+func (server *Server) fileUpload(writer http.ResponseWriter, request *http.Request) {
+	path := request.URL.Query().Get("path")
+	if path == "" || len(path) > platform.MaxFilePath {
+		problem(writer, http.StatusBadRequest, "invalid-file-operation", "An upload path is required")
+		return
+	}
+	offset, total := int64(0), int64(0)
+	var err error
+	if raw := request.URL.Query().Get("offset"); raw != "" {
+		offset, err = strconv.ParseInt(raw, 10, 64)
+	}
+	if raw := request.URL.Query().Get("total"); raw != "" && err == nil {
+		total, err = strconv.ParseInt(raw, 10, 64)
+	}
+	if err != nil || offset < 0 || total < 0 || (total > 0 && offset > total) {
+		problem(writer, http.StatusBadRequest, "invalid-file-range", "The resumable upload range is invalid")
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, int64(platform.MaxFileChunk)+1)
+	content, readErr := io.ReadAll(request.Body)
+	if readErr != nil || len(content) > platform.MaxFileChunk {
+		problem(writer, http.StatusRequestEntityTooLarge, "file-chunk-too-large", "Upload chunks are bounded to 4 MiB")
+		return
+	}
+	checksum := request.Header.Get("X-Content-SHA256")
+	operation := platform.FileOperation{Action: "write-chunk", Path: path, Offset: offset, TotalSize: total, Content: content, ContentSHA256: checksum}
+	result, ok := server.applyFileOperation(writer, request, operation)
+	if ok {
+		writer.Header().Set("Upload-Offset", strconv.FormatInt(result.Offset, 10))
 		writeJSON(writer, http.StatusOK, result)
 	}
 }

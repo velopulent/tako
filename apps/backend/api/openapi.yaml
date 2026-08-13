@@ -1138,6 +1138,24 @@ paths:
         '416': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+  /files/search:
+    get:
+      operationId: searchFiles
+      parameters:
+        - in: query
+          name: path
+          schema: { type: string, maxLength: 4096, default: . }
+        - in: query
+          name: query
+          required: true
+          schema: { type: string, maxLength: 512 }
+        - in: query
+          name: maxEntries
+          schema: { type: integer, minimum: 1, maximum: 10000, default: 1000 }
+      responses:
+        '200': { description: Bounded filename search, content: { application/json: { schema: { $ref: '#/components/schemas/FileResult' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /files/text-window:
     get:
       operationId: readTextWindow
@@ -1156,6 +1174,33 @@ paths:
         '200': { description: Windowed JSON text lines }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
+  /files/upload:
+    post:
+      operationId: uploadFileChunk
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string, maxLength: 4096 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: total
+          schema: { type: integer, minimum: 0, maximum: 1099511627776 }
+        - in: header
+          name: X-Content-SHA256
+          schema: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: { schema: { type: string, format: binary, maxLength: 4194304 } }
+      responses:
+        '200': { description: Chunk receipt with the next Upload-Offset }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
   /processes:
     get:
       operationId: listProcesses
@@ -1296,7 +1341,7 @@ components:
       additionalProperties: false
       required: [action]
       properties:
-        action: { type: string, enum: [list, stat, read, read-window, write, create, rename, move, copy, trash, delete, search, archive, extract, metadata] }
+        action: { type: string, enum: [list, stat, read, read-window, write, write-text, write-chunk, create, rename, move, copy, trash, delete, search, archive, extract, metadata] }
         path: { type: string, maxLength: 4096 }
         destination: { type: string, maxLength: 4096 }
         kind: { type: string, enum: [file, directory] }
@@ -1304,6 +1349,7 @@ components:
         contentSha256: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         offset: { type: integer, minimum: 0, maximum: 4194304 }
         limit: { type: integer, minimum: 0, maximum: 4194304 }
+        totalSize: { type: integer, minimum: 0, maximum: 1099511627776 }
         lineOffset: { type: integer, minimum: 0 }
         lineLimit: { type: integer, minimum: 1, maximum: 1000 }
         expectedFingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
@@ -1334,6 +1380,7 @@ components:
         expectedFingerprint: { type: string, maxLength: 128 }
         confirmation: { type: string, maxLength: 128 }
         reconnectToken: { type: string, maxLength: 256 }
+        checkpoint: { type: string, maxLength: 256 }
     NetworkState:
       type: object
       required: [snapshot, action, committed, rollback]

@@ -229,7 +229,7 @@ func readFrame(reader io.Reader) (frame, error) {
 	if err := binary.Read(reader, binary.BigEndian, &size); err != nil {
 		return frame{}, err
 	}
-	if size == 0 || size > 1<<20 {
+	if size == 0 || size > 8<<20 {
 		return frame{}, fmt.Errorf("invalid frame size: %d", size)
 	}
 	payload := make([]byte, size)

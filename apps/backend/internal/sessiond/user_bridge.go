@@ -164,7 +164,7 @@ func (process *userBridgeProcess) call(ctx context.Context, id, method string, p
 			return
 		}
 		var size uint32
-		if err = binary.Read(process.reader, binary.BigEndian, &size); err == nil && (size == 0 || size > 1<<20) {
+		if err = binary.Read(process.reader, binary.BigEndian, &size); err == nil && (size == 0 || size > 8<<20) {
 			err = fmt.Errorf("invalid user bridge response frame: %d", size)
 		}
 		if err != nil {
