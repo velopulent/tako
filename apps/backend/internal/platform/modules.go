@@ -442,28 +442,12 @@ type LogEntry struct {
 	Priority  string `json:"priority"`
 	Unit      string `json:"unit"`
 	Message   string `json:"message"`
+	Cursor    string `json:"-"`
 }
 
 func Logs(ctx context.Context, limit int) ([]LogEntry, error) {
-	if limit < 1 || limit > 500 {
-		limit = 200
-	}
-	command := exec.CommandContext(ctx, "journalctl", "--no-pager", "--output=json", "--reverse", "-n", strconv.Itoa(limit))
-	output, err := command.Output()
-	if err != nil {
-		return nil, err
-	}
-	result := []LogEntry{}
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	scanner.Buffer(make([]byte, 64<<10), 1<<20)
-	for scanner.Scan() {
-		entry, ok := parseLogEntry(scanner.Bytes())
-		if !ok {
-			continue
-		}
-		result = append(result, entry)
-	}
-	return result, scanner.Err()
+	page, err := QueryLogs(ctx, JournalQuery{Limit: limit})
+	return page.Items, err
 }
 
 // FollowLogs emits new journal entries until ctx is cancelled. The subprocess
@@ -503,7 +487,11 @@ func parseLogEntry(payload []byte) (LogEntry, bool) {
 		return LogEntry{}, false
 	}
 	micros, _ := strconv.ParseInt(stringValue(row["__REALTIME_TIMESTAMP"]), 10, 64)
-	return LogEntry{Timestamp: time.UnixMicro(micros).UTC().Format(time.RFC3339Nano), Priority: stringValue(row["PRIORITY"]), Unit: stringValue(row["_SYSTEMD_UNIT"]), Message: stringValue(row["MESSAGE"])}, true
+	unit := stringValue(row["_SYSTEMD_UNIT"])
+	if unit == "" {
+		unit = stringValue(row["_SYSTEMD_USER_UNIT"])
+	}
+	return LogEntry{Timestamp: time.UnixMicro(micros).UTC().Format(time.RFC3339Nano), Priority: stringValue(row["PRIORITY"]), Unit: unit, Message: stringValue(row["MESSAGE"]), Cursor: stringValue(row["__CURSOR"])}, true
 }
 
 func stringValue(value any) string {

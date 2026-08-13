@@ -261,6 +261,10 @@ export type LogEntry = {
   unit: string
   message: string
 }
+export type JournalPage = {
+  items: LogEntry[]
+  nextCursor?: string
+}
 export type UpdateStatus = {
   available: boolean
   backend: string

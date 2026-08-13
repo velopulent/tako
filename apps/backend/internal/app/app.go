@@ -63,6 +63,7 @@ type Server struct {
 	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
 	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
+	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -109,6 +110,7 @@ func New(cfg config.Config) (*Server, error) {
 		applyOverride: func(ctx context.Context, request auth.OverrideRequest) (platform.OverrideState, error) {
 			return auth.ApplyOverride(ctx, cfg.SessionSocket, request)
 		},
+		queryLogs: platform.QueryLogs,
 	}
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
@@ -1034,18 +1036,58 @@ func (server *Server) recordOperation(ctx context.Context, actor, target string,
 }
 
 func (server *Server) logs(writer http.ResponseWriter, request *http.Request) {
-	limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
-	items, err := platform.Logs(request.Context(), limit)
-	if unit := request.URL.Query().Get("unit"); unit != "" {
-		filtered := items[:0]
-		for _, item := range items {
-			if item.Unit == unit {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
+	query, err := parseJournalQuery(request)
+	if err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-journal-query", "Unsupported journal filter, cursor, or time range")
+		return
 	}
-	server.writeModule(writer, "logs", items, err)
+	page, err := server.queryLogs(request.Context(), query)
+	if err != nil {
+		if request.Context().Err() != nil {
+			return
+		}
+		problem(writer, http.StatusServiceUnavailable, "logs-unavailable", "The journal could not be queried")
+		return
+	}
+	writeJSON(writer, http.StatusOK, page)
+}
+
+func parseJournalQuery(request *http.Request) (platform.JournalQuery, error) {
+	values := request.URL.Query()
+	limit := 200
+	if raw := values.Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return platform.JournalQuery{}, err
+		}
+		limit = parsed
+	}
+	cursor, err := platform.DecodeJournalCursor(values.Get("cursor"))
+	if err != nil {
+		return platform.JournalQuery{}, err
+	}
+	query := platform.JournalQuery{
+		Limit:      limit,
+		Cursor:     cursor,
+		Boot:       values.Get("boot"),
+		Priority:   values.Get("priority"),
+		Unit:       values.Get("unit"),
+		Executable: values.Get("executable"),
+		Text:       values.Get("text"),
+	}
+	for key, destination := range map[string]*time.Time{"since": &query.Since, "until": &query.Until} {
+		if raw := values.Get(key); raw != "" {
+			parsed, parseErr := time.Parse(time.RFC3339Nano, raw)
+			if parseErr != nil {
+				return platform.JournalQuery{}, parseErr
+			}
+			*destination = parsed
+		}
+	}
+	if err := query.Validate(); err != nil {
+		return platform.JournalQuery{}, err
+	}
+	return query, nil
 }
 
 func (server *Server) logStream(writer http.ResponseWriter, request *http.Request) {

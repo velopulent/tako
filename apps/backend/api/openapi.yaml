@@ -110,12 +110,38 @@ paths:
       parameters:
         - in: query
           name: limit
-          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+        - in: query
+          name: cursor
+          schema: { type: string, maxLength: 8192 }
+        - in: query
+          name: boot
+          schema: { type: string, pattern: '^(current|[a-fA-F0-9]{32})$' }
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          schema: { type: string, format: date-time }
+        - in: query
+          name: priority
+          schema: { type: string, pattern: '^[0-7](\.\.[0-7])?$' }
         - in: query
           name: unit
           schema: { type: string }
+        - in: query
+          name: executable
+          schema: { type: string, maxLength: 4096 }
+        - in: query
+          name: text
+          schema: { type: string, maxLength: 512 }
       responses:
-        '200': { description: Recent journal entries }
+        '200':
+          description: Bounded structured journal page with an opaque next cursor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JournalPage' }
+        '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /logs/stream:
     get:
@@ -832,6 +858,23 @@ components:
         status: { type: integer }
         code: { type: string }
         detail: { type: string }
+    JournalPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/JournalEntry' }
+        nextCursor: { type: string, maxLength: 8192 }
+    JournalEntry:
+      type: object
+      required: [timestamp, priority, unit, message]
+      properties:
+        timestamp: { type: string, format: date-time }
+        priority: { type: string, maxLength: 2 }
+        unit: { type: string, maxLength: 256 }
+        message: { type: string, maxLength: 1048576 }
     MetricSample:
       type: object
       required: [timestamp, cpuPercent, memoryUsed, memoryTotal, networkRx, networkTx, diskRead, diskWrite]

@@ -487,6 +487,38 @@ func TestServiceOverrideRoutesNormalizePreviewAndRejectStaleWrites(t *testing.T)
 	}
 }
 
+func TestLogsRouteParsesBoundedFiltersAndOpaqueCursor(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	var received platform.JournalQuery
+	server.queryLogs = func(_ context.Context, query platform.JournalQuery) (platform.JournalPage, error) {
+		received = query
+		return platform.JournalPage{Items: []platform.LogEntry{{Timestamp: "2023-11-14T22:13:20Z", Priority: "3", Unit: "worker.service", Message: "failed"}}, NextCursor: platform.EncodeJournalCursor("s=next")}, nil
+	}
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/logs?limit=25&boot="+strings.Repeat("a", 32)+"&priority=3..5&unit=worker.service&executable=/usr/bin/worker&text=failed&since=2023-11-14T00:00:00Z&until=2023-11-15T00:00:00Z", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte("nextCursor")) {
+		t.Fatalf("logs returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if received.Limit != 25 || received.Priority != "3..5" || received.Unit != "worker.service" || received.Executable != "/usr/bin/worker" || received.Text != "failed" || received.Since.IsZero() || received.Until.IsZero() {
+		t.Fatalf("journal query not parsed: %#v", received)
+	}
+	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/logs?limit=501", nil)
+	invalid.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, invalid)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid journal limit returned %d", recorder.Code)
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

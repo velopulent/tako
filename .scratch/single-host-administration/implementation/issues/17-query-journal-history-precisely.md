@@ -4,8 +4,8 @@
 
 **Blocked by:** 03 — Enrich capability reporting
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Opaque cursors, bounds, and cancellation work against large journals.
-- [ ] Structured journal output is parsed; localized human output is not.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Opaque cursors, bounded output, and request cancellation work against large journals.
+- [x] Structured journal output is parsed; localized human output is not.
+- [x] API changes, user-visible behavior, and applicable unit/UI/integration seams are tested and documented.

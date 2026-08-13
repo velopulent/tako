@@ -2,7 +2,7 @@ import * as React from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
-import { PauseIcon, PlayIcon, RefreshCwIcon, TerminalIcon } from "lucide-react"
+import { RefreshCwIcon, TerminalIcon } from "lucide-react"
 
 import {
   api,
@@ -19,7 +19,6 @@ import {
 } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -58,6 +57,7 @@ import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
 import { SettingsPage } from "@/routes/settings"
 import { JobsPage } from "@/routes/jobs"
 import { HostPage } from "@/routes/host"
+import { JournalBrowser } from "@/components/journal-browser"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -619,73 +619,9 @@ function NetworkPage() {
 }
 
 function LogsPage() {
-  const [live, setLive] = React.useState<LogEntry[]>([])
-  const [following, setFollowing] = React.useState(true)
-  const query = useQuery({
-    queryKey: ["logs"],
-    queryFn: () => api<{ items: LogEntry[] }>("/logs?limit=500"),
-  })
-  React.useEffect(() => {
-    if (!following) return
-    const source = new EventSource("/api/v1/logs/stream")
-    source.addEventListener("log", (event) =>
-      setLive((current) =>
-        [
-          JSON.parse((event as MessageEvent<string>).data) as LogEntry,
-          ...current,
-        ].slice(0, 2_000)
-      )
-    )
-    return () => source.close()
-  }, [following])
-  const items = [...live, ...(query.data?.items ?? [])]
-  const columns: ColumnDef<LogEntry>[] = [
-    {
-      accessorKey: "timestamp",
-      header: "Time",
-      cell: ({ row }) => new Date(row.original.timestamp).toLocaleString(),
-    },
-    {
-      accessorKey: "priority",
-      header: "Priority",
-      cell: ({ row }) => (
-        <Badge variant="outline">{row.original.priority || "-"}</Badge>
-      ),
-    },
-    { accessorKey: "unit", header: "Unit" },
-    {
-      accessorKey: "message",
-      header: "Message",
-      cell: ({ row }) => (
-        <span className="font-mono text-xs whitespace-normal">
-          {row.original.message}
-        </span>
-      ),
-    },
-  ]
   return (
     <Page description="Searchable, virtualized live journal with bounded browser memory.">
-      <State query={query} empty={!items.length}>
-        <DataTable
-          data={items}
-          columns={columns}
-          searchPlaceholder="Search unit, priority, or message"
-          toolbar={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setFollowing((value) => !value)}
-            >
-              {following ? (
-                <PauseIcon data-icon="inline-start" />
-              ) : (
-                <PlayIcon data-icon="inline-start" />
-              )}
-              {following ? "Pause" : "Follow"}
-            </Button>
-          }
-        />
-      </State>
+      <JournalBrowser />
     </Page>
   )
 }
