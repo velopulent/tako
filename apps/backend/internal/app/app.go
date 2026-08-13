@@ -312,6 +312,7 @@ func (server *Server) routes() http.Handler {
 			router.Post("/host/power/preview", server.previewPower)
 			router.With(server.requireCSRF).Post("/host/power", server.requestPower)
 			router.Get("/users", server.users)
+			router.Get("/groups", server.groups)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)
@@ -854,9 +855,14 @@ func writeProcessSignalError(writer http.ResponseWriter, err error) {
 	}
 }
 
-func (server *Server) users(writer http.ResponseWriter, _ *http.Request) {
-	items, err := platform.Users()
-	server.writeModule(writer, "users", items, err)
+func (server *Server) users(writer http.ResponseWriter, request *http.Request) {
+	inventory, err := platform.ListIdentityInventory(request.Context())
+	server.writeModule(writer, "users", inventory.Users, err)
+}
+
+func (server *Server) groups(writer http.ResponseWriter, request *http.Request) {
+	inventory, err := platform.ListIdentityInventory(request.Context())
+	server.writeModule(writer, "groups", inventory.Groups, err)
 }
 
 func (server *Server) storage(writer http.ResponseWriter, _ *http.Request) {

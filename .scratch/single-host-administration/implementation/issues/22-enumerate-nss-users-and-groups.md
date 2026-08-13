@@ -4,8 +4,8 @@
 
 **Blocked by:** 03 — Enrich capability reporting
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Local mutability and remote read-only status are explicit.
-- [ ] Large/slow identity sources are bounded and cancellable.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Local mutability and remote read-only status are explicit.
+- [x] Large/slow identity sources are bounded and cancellable.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

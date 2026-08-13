@@ -15,7 +15,6 @@ import {
   type ServiceInfo,
   type TerminalStatus,
   type UpdateStatus,
-  type UserInfo,
 } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -59,6 +58,7 @@ import { JobsPage } from "@/routes/jobs"
 import { HostPage } from "@/routes/host"
 import { JournalBrowser } from "@/components/journal-browser"
 import { ProcessDetails } from "@/components/process-details"
+import { UserInventory } from "@/components/user-inventory"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -633,23 +633,9 @@ function LogsPage() {
 }
 
 function UsersPage() {
-  const query = useQuery({
-    queryKey: ["users"],
-    queryFn: () => api<{ items: UserInfo[] }>("/users"),
-  })
-  const items = query.data?.items ?? []
-  const columns: ColumnDef<UserInfo>[] = [
-    { accessorKey: "username", header: "User" },
-    { accessorKey: "uid", header: "UID" },
-    { accessorKey: "name", header: "Name" },
-    { accessorKey: "home", header: "Home" },
-    { accessorKey: "shell", header: "Shell" },
-  ]
   return (
-    <Page description="Local account inventory.">
-      <State query={query} empty={!items.length}>
-        <DataTable data={items} columns={columns} />
-      </State>
+    <Page description="NSS account inventory. Local entries are explicitly mutable; remote identities remain read-only.">
+      <UserInventory />
     </Page>
   )
 }

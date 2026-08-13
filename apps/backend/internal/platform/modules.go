@@ -152,37 +152,18 @@ func processUID(pid string) string {
 }
 
 type User struct {
-	Username string `json:"username"`
-	UID      int    `json:"uid"`
-	GID      int    `json:"gid"`
-	Name     string `json:"name"`
-	Home     string `json:"home"`
-	Shell    string `json:"shell"`
-	System   bool   `json:"system"`
-}
-
-func Users() ([]User, error) {
-	file, err := os.Open("/etc/passwd")
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	result := []User{}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		fields := strings.Split(scanner.Text(), ":")
-		if len(fields) != 7 {
-			continue
-		}
-		uid, err1 := strconv.Atoi(fields[2])
-		gid, err2 := strconv.Atoi(fields[3])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		name := strings.Split(fields[4], ",")[0]
-		result = append(result, User{Username: fields[0], UID: uid, GID: gid, Name: name, Home: fields[5], Shell: fields[6], System: uid < 1000})
-	}
-	return result, scanner.Err()
+	Username string   `json:"username"`
+	UID      int      `json:"uid"`
+	GID      int      `json:"gid"`
+	Name     string   `json:"name"`
+	Home     string   `json:"home"`
+	Shell    string   `json:"shell"`
+	System   bool     `json:"system"`
+	Groups   []string `json:"groups"`
+	Source   string   `json:"source"`
+	Local    bool     `json:"local"`
+	Mutable  bool     `json:"mutable"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 type Mount struct {

@@ -238,6 +238,20 @@ export type UserInfo = {
   home: string
   shell: string
   system: boolean
+  groups: string[]
+  source: "local" | "nss-read-only"
+  local: boolean
+  mutable: boolean
+  reason?: string
+}
+export type GroupInfo = {
+  name: string
+  gid: number
+  members: string[]
+  source: "local" | "nss-read-only"
+  local: boolean
+  mutable: boolean
+  reason?: string
 }
 export type MountInfo = {
   source: string

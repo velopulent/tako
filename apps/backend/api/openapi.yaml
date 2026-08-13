@@ -285,7 +285,36 @@ paths:
     get:
       operationId: listUsers
       responses:
-        '200': { description: Local users }
+        '200':
+          description: NSS user inventory with local mutability and remote read-only status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100000
+                    items: { $ref: '#/components/schemas/NSSUser' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /groups:
+    get:
+      operationId: listGroups
+      responses:
+        '200':
+          description: NSS group inventory with local mutability and remote read-only status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100000
+                    items: { $ref: '#/components/schemas/NSSGroup' }
+        '503': { $ref: '#/components/responses/Problem' }
   /updates:
     get:
       operationId: getUpdateStatus
@@ -1129,6 +1158,39 @@ components:
         diskWrite: { type: integer, minimum: 0 }
         permissionDenied: { type: boolean }
         reason: { type: string, maxLength: 256 }
+    NSSUser:
+      type: object
+      required: [username, uid, gid, name, home, shell, system, groups, source, local, mutable]
+      properties:
+        username: { type: string, maxLength: 256 }
+        uid: { type: integer, minimum: 0 }
+        gid: { type: integer, minimum: 0 }
+        name: { type: string, maxLength: 1024 }
+        home: { type: string, maxLength: 4096 }
+        shell: { type: string, maxLength: 4096 }
+        system: { type: boolean }
+        groups:
+          type: array
+          maxItems: 4096
+          items: { type: string, maxLength: 256 }
+        source: { type: string, enum: [local, nss-read-only] }
+        local: { type: boolean }
+        mutable: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+    NSSGroup:
+      type: object
+      required: [name, gid, members, source, local, mutable]
+      properties:
+        name: { type: string, maxLength: 256 }
+        gid: { type: integer, minimum: 0 }
+        members:
+          type: array
+          maxItems: 4096
+          items: { type: string, maxLength: 256 }
+        source: { type: string, enum: [local, nss-read-only] }
+        local: { type: boolean }
+        mutable: { type: boolean }
+        reason: { type: string, maxLength: 512 }
     ProcessSocket:
       type: object
       required: [protocol, local]
