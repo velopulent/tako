@@ -17,6 +17,7 @@ import {
   ListChecksIcon,
   ClipboardListIcon,
   ServerIcon,
+  TimerIcon,
 } from "lucide-react"
 
 import type { User } from "@/lib/api"
@@ -48,6 +49,7 @@ const groups = [
     label: "System",
     items: [
       { title: "Services", to: "/services", icon: ServerCogIcon },
+      { title: "Timers", to: "/timers", icon: TimerIcon },
       { title: "Logs", to: "/logs", icon: FileClockIcon },
       { title: "Terminal", to: "/terminal", icon: SquareTerminalIcon },
     ],

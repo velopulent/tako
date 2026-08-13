@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -448,6 +449,64 @@ func TestServiceActionsUseTheMatchingUNIXGrant(t *testing.T) {
 				t.Fatalf("backend calls = %#v, want %#v", called, test.want)
 			}
 		})
+	}
+}
+
+type recordingTimerBackend struct {
+	operation platform.TimerOperation
+	bridge    io.Closer
+	state     platform.TimerState
+}
+
+func (backend *recordingTimerBackend) Apply(_ context.Context, operation platform.TimerOperation, bridge io.Closer) (platform.TimerState, error) {
+	backend.operation = operation
+	backend.bridge = bridge
+	return backend.state, nil
+}
+
+func TestTimerOperationUsesUserBridgeAndStructuredPayload(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridge := &trackingCloser{}
+	token, err := store.addGrant(auth.Identity{Username: "octopus", UID: 1000, GID: 1000}, bridge, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &recordingTimerBackend{state: platform.TimerState{Scope: "user", Name: "nightly", TimerUnit: "nightly.timer", ServiceUnit: "nightly.service"}}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handleWithTimerBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, backend)
+	operation := platform.TimerOperation{Action: "preview", Scope: "user", Name: "nightly"}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "timer", Token: token, Timer: &operation}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || response.TimerState == nil {
+		t.Fatalf("timer operation failed: %#v", response)
+	}
+	if backend.operation != operation || backend.bridge != bridge {
+		t.Fatalf("timer backend received operation=%#v bridge=%T, want operation=%#v bridge=%T", backend.operation, backend.bridge, operation, bridge)
+	}
+}
+
+func TestTimerOperationRejectsMixedFields(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	backend := &recordingTimerBackend{}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handleWithTimerBackends(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, backend)
+	operation := platform.TimerOperation{Action: "preview", Scope: "user", Name: "nightly"}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "timer", Token: "token", Unit: "unsafe", Timer: &operation}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "invalid-timer-request" {
+		t.Fatalf("mixed timer request error=%q", response.Error)
 	}
 }
 

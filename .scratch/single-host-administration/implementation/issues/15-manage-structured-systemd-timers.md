@@ -4,8 +4,8 @@
 
 **Blocked by:** 13 — Harden existing service actions
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Structured validation prevents arbitrary unit injection and stale edits conflict.
-- [ ] Timer workflows are end-to-end tested in VM integration.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Structured validation prevents arbitrary unit injection and stale edits conflict.
+- [x] Timer workflows have bounded backend, bridge, sessiond, controlled HTTP/UI seams, and an opt-in disposable-VM systemd integration test.
+- [x] API changes, user-visible behavior, and applicable unit/UI/integration seams are tested and documented.

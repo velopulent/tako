@@ -2,6 +2,7 @@ package sessiond
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -17,12 +18,15 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/platform"
 )
 
 type userBridgeProcess struct {
 	command *exec.Cmd
 	input   io.WriteCloser
 	output  io.ReadCloser
+	reader  *bufio.Reader
+	rpcMu   sync.Mutex
 	done    chan error
 	exited  chan struct{}
 	once    sync.Once
@@ -71,7 +75,7 @@ func startUserBridgeExecutable(session auth.UserSession, executable string) (*us
 		_ = output.Close()
 		return nil, err
 	}
-	process := &userBridgeProcess{command: command, input: input, output: output, done: make(chan error, 1), exited: make(chan struct{})}
+	process := &userBridgeProcess{command: command, input: input, output: output, reader: bufio.NewReader(output), done: make(chan error, 1), exited: make(chan struct{})}
 	go func() {
 		process.done <- command.Wait()
 		close(process.exited)
@@ -84,51 +88,99 @@ func startUserBridgeExecutable(session auth.UserSession, executable string) (*us
 }
 
 func (process *userBridgeProcess) ready() error {
-	result := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := process.call(ctx, "ready", "ping", nil)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.New("user bridge readiness check timed out")
+	}
+	if err != nil {
+		return errors.New("user bridge readiness check failed")
+	}
+	return nil
+}
+
+func (process *userBridgeProcess) applyTimer(ctx context.Context, operation platform.TimerOperation) (platform.TimerState, error) {
+	payload, err := process.call(ctx, "timer", "timer.apply", operation)
+	if err != nil {
+		return platform.TimerState{}, err
+	}
+	var state platform.TimerState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return platform.TimerState{}, err
+	}
+	return state, nil
+}
+
+func (process *userBridgeProcess) call(ctx context.Context, id, method string, payload any) (json.RawMessage, error) {
+	result := make(chan struct {
+		payload json.RawMessage
+		err     error
+	}, 1)
 	go func() {
-		request := []byte(`{"id":"ready","method":"ping"}`)
-		if err := binary.Write(process.input, binary.BigEndian, uint32(len(request))); err != nil {
-			result <- err
+		process.rpcMu.Lock()
+		defer process.rpcMu.Unlock()
+		request := struct {
+			ID      string `json:"id"`
+			Method  string `json:"method"`
+			Payload any    `json:"payload,omitempty"`
+		}{ID: id, Method: method, Payload: payload}
+		encoded, err := json.Marshal(request)
+		if err == nil {
+			err = binary.Write(process.input, binary.BigEndian, uint32(len(encoded)))
+		}
+		if err == nil {
+			_, err = process.input.Write(encoded)
+		}
+		if err != nil {
+			result <- struct {
+				payload json.RawMessage
+				err     error
+			}{err: err}
 			return
 		}
-		if _, err := process.input.Write(request); err != nil {
-			result <- err
-			return
-		}
-		reader := bufio.NewReader(process.output)
 		var size uint32
-		if err := binary.Read(reader, binary.BigEndian, &size); err != nil {
-			result <- err
+		if err = binary.Read(process.reader, binary.BigEndian, &size); err == nil && (size == 0 || size > 1<<20) {
+			err = fmt.Errorf("invalid user bridge response frame: %d", size)
+		}
+		if err != nil {
+			result <- struct {
+				payload json.RawMessage
+				err     error
+			}{err: err}
 			return
 		}
-		if size == 0 || size > 16<<10 {
-			result <- fmt.Errorf("invalid user bridge readiness frame: %d", size)
-			return
-		}
-		payload := make([]byte, size)
-		if _, err := io.ReadFull(reader, payload); err != nil {
-			result <- err
+		encoded = make([]byte, size)
+		if _, err = io.ReadFull(process.reader, encoded); err != nil {
+			result <- struct {
+				payload json.RawMessage
+				err     error
+			}{err: err}
 			return
 		}
 		var response struct {
-			ID    string `json:"id"`
-			Error string `json:"error"`
+			ID      string          `json:"id"`
+			Error   string          `json:"error"`
+			Payload json.RawMessage `json:"payload"`
 		}
-		if err := json.Unmarshal(payload, &response); err != nil {
-			result <- err
-			return
+		if err = json.Unmarshal(encoded, &response); err == nil && response.ID != id {
+			err = errors.New("user bridge response id mismatch")
 		}
-		if response.ID != "ready" || response.Error != "" {
-			result <- errors.New("user bridge readiness check failed")
-			return
+		if err == nil && response.Error != "" {
+			err = errors.New(response.Error)
 		}
-		result <- nil
+		result <- struct {
+			payload json.RawMessage
+			err     error
+		}{payload: response.Payload, err: err}
 	}()
 	select {
-	case err := <-result:
-		return err
-	case <-time.After(3 * time.Second):
-		return errors.New("user bridge readiness check timed out")
+	case response := <-result:
+		return response.payload, response.err
+	case <-ctx.Done():
+		_ = process.input.Close()
+		_ = process.output.Close()
+		return nil, ctx.Err()
 	}
 }
 

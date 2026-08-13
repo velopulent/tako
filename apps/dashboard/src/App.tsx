@@ -20,6 +20,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { DashboardPage } from "@/routes/dashboard"
 import { ModulePage } from "@/routes/module"
 import { ServiceDetailPage } from "@/routes/service-detail"
+import { TimersPage } from "@/routes/timers"
 import { api, type SessionResponse } from "@/lib/api"
 
 type RouterContext = {
@@ -86,10 +87,17 @@ const serviceDetailRoute = createRoute({
   component: ServiceDetailPage,
 })
 
+const timersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/timers",
+  component: TimersPage,
+})
+
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
   ...moduleRoutes,
   serviceDetailRoute,
+  timersRoute,
 ])
 const router = createRouter({
   routeTree,

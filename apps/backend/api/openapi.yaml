@@ -207,6 +207,44 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
+  /timers/preview:
+    post:
+      operationId: previewTimer
+      summary: Inspect a structured systemd timer pair without writing files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TimerOperation' }
+      responses:
+        '200':
+          description: Current timer pair state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TimerState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /timers:
+    post:
+      operationId: applyTimer
+      summary: Create, update, enable, disable, or delete a structured timer pair
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TimerOperation' }
+      responses:
+        '200':
+          description: Updated timer pair state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TimerState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
   /admin:
     get:
       operationId: getAdministrativeAccess
@@ -612,6 +650,43 @@ components:
         action: { type: string, enum: [reboot, shutdown] }
         confirmation: { type: string, enum: [REBOOT, SHUTDOWN] }
         expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
+    TimerOperation:
+      type: object
+      additionalProperties: false
+      required: [action, scope, name]
+      properties:
+        action: { type: string, enum: [preview, create, update, delete, enable, disable] }
+        scope: { type: string, enum: [system, user] }
+        name: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9@._-]+$' }
+        description: { type: string, maxLength: 256 }
+        onCalendar: { type: string, maxLength: 256 }
+        onBootSec: { type: string, maxLength: 256 }
+        onUnitActiveSec: { type: string, maxLength: 256 }
+        command: { type: string, minLength: 1, maxLength: 512 }
+        persistent: { type: boolean }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64, pattern: '^[a-fA-F0-9]{64}$' }
+    TimerState:
+      type: object
+      required: [scope, name, timerUnit, serviceUnit, exists, enabled]
+      properties:
+        scope: { type: string, enum: [system, user] }
+        name: { type: string, maxLength: 64 }
+        timerUnit: { type: string, maxLength: 80 }
+        serviceUnit: { type: string, maxLength: 80 }
+        exists: { type: boolean }
+        enabled: { type: boolean }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+        definition:
+          $ref: '#/components/schemas/TimerDefinition'
+    TimerDefinition:
+      type: object
+      properties:
+        description: { type: string, maxLength: 256 }
+        onCalendar: { type: string, maxLength: 256 }
+        onBootSec: { type: string, maxLength: 256 }
+        onUnitActiveSec: { type: string, maxLength: 256 }
+        command: { type: string, maxLength: 512 }
+        persistent: { type: boolean }
     LoginRequest:
       oneOf:
         - type: object

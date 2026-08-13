@@ -5,11 +5,18 @@ package bridge
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
 
+	"github.com/velopulent/tako/internal/platform"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -48,10 +55,70 @@ func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
 			response.Error = ""
 			response.Payload = json.RawMessage(`{"ok":true}`)
 		}
+		if message.Method == "timer.apply" {
+			state, err := applyTimer(message.Payload)
+			if err != nil {
+				response.Error = timerErrorCode(err)
+			} else {
+				response.Error = ""
+				response.Payload, _ = json.Marshal(state)
+			}
+		}
 		if err := writeFrame(writer, response); err != nil {
 			logger.Error("bridge frame write failed", zap.Error(err))
 			return err
 		}
+	}
+}
+
+func applyTimer(payload json.RawMessage) (platform.TimerState, error) {
+	var operation platform.TimerOperation
+	if err := json.Unmarshal(payload, &operation); err != nil {
+		return platform.TimerState{}, platform.ErrInvalidTimerOperation
+	}
+	if operation.Scope != "user" {
+		return platform.TimerState{}, platform.ErrInvalidTimerOperation
+	}
+	if err := platform.ValidateTimerOperation(operation); err != nil {
+		return platform.TimerState{}, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return platform.TimerState{}, err
+	}
+	root := filepath.Join(home, ".config", "systemd", "user")
+	if operation.Action != "preview" {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return platform.TimerState{}, err
+		}
+	}
+	state, err := platform.ApplyTimerFiles(root, operation)
+	if err != nil || operation.Action == "preview" {
+		return state, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); err != nil {
+		if ctx.Err() != nil {
+			return platform.TimerState{}, context.DeadlineExceeded
+		}
+		return platform.TimerState{}, err
+	}
+	return state, nil
+}
+
+func timerErrorCode(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrInvalidTimerOperation):
+		return "invalid-timer-operation"
+	case errors.Is(err, platform.ErrTimerConflict):
+		return "timer-conflict"
+	case errors.Is(err, platform.ErrTimerNotFound):
+		return "timer-not-found"
+	case errors.Is(err, platform.ErrTimerPairIncomplete):
+		return "timer-pair-incomplete"
+	default:
+		return "timer-operation-failed"
 	}
 }
 

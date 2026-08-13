@@ -371,6 +371,79 @@ func TestServicePreviewAndConfigurationUseControlledReadSeams(t *testing.T) {
 	}
 }
 
+func TestTimerRoutesUseStructuredOperationsAndConflictResponses(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	created, err := server.sessions.Create(auth.Identity{Username: "octopus", BridgeToken: "bridge-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
+	var applied []platform.TimerOperation
+	server.applyTimer = func(_ context.Context, request auth.TimerRequest) (platform.TimerState, error) {
+		applied = append(applied, request.Operation)
+		if request.Operation.Action != "preview" {
+			return platform.TimerState{}, errors.New("timer-conflict")
+		}
+		return platform.TimerState{Scope: "user", Name: request.Operation.Name, Exists: true, Fingerprint: "fingerprint"}, nil
+	}
+	body := `{"action":"create","scope":"user","name":"nightly","description":"Nightly backup","onCalendar":"*-*-* 03:00:00","command":"/usr/bin/backup","persistent":true}`
+	preview := httptest.NewRequest(http.MethodPost, "/api/v1/timers/preview", bytes.NewBufferString(body))
+	preview.AddCookie(cookie)
+	preview.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, preview)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"fingerprint":"fingerprint"`)) {
+		t.Fatalf("timer preview returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(applied) != 1 || applied[0].Action != "preview" {
+		t.Fatalf("preview operation was not normalized: %#v", applied)
+	}
+
+	apply := httptest.NewRequest(http.MethodPost, "/api/v1/timers", bytes.NewBufferString(`{"action":"update","scope":"user","name":"nightly","onCalendar":"*-*-* 03:00:00","command":"/usr/bin/backup","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	apply.AddCookie(cookie)
+	apply.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder = httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, apply)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("timer conflict returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	unsafe := httptest.NewRequest(http.MethodPost, "/api/v1/timers", bytes.NewBufferString(`{"action":"create","scope":"user","name":"nightly","onCalendar":"*-*-* 03:00:00","command":"/usr/bin/backup","unexpected":true}`))
+	unsafe.AddCookie(cookie)
+	unsafe.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder = httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, unsafe)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown timer field returned %d", recorder.Code)
+	}
+}
+
+func TestSystemTimerRouteRequiresAdministrativeAccess(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	created, err := server.sessions.Create(auth.Identity{Username: "octopus", BridgeToken: "bridge-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/timers", bytes.NewBufferString(`{"action":"create","scope":"system","name":"nightly","onCalendar":"*-*-* 03:00:00","command":"/usr/bin/backup"}`))
+	request.AddCookie(&http.Cookie{Name: session.CookieName, Value: created.ID})
+	request.Header.Set("X-CSRF-Token", created.CSRF)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("system timer without admin returned %d", recorder.Code)
+	}
+}
+
 func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	cfg := testConfig(t)
 	server, err := New(cfg)

@@ -61,6 +61,7 @@ type Server struct {
 	readPowerStatusFn     func(context.Context) (platform.PowerStatus, error)
 	readUnitDetails       func(context.Context, string, string) (platform.UnitDetail, error)
 	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
+	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	detectCapabilities    func(context.Context) []platform.Capability
 }
 
@@ -101,6 +102,9 @@ func New(cfg config.Config) (*Server, error) {
 		readPowerStatusFn:     platform.ReadPowerStatus,
 		readUnitDetails:       platform.UnitDetails,
 		readUnitConfiguration: platform.ReadUnitConfiguration,
+		applyTimer: func(ctx context.Context, request auth.TimerRequest) (platform.TimerState, error) {
+			return auth.ApplyTimer(ctx, cfg.SessionSocket, request)
+		},
 	}
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
@@ -288,6 +292,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/services/{scope}/{unit}/configuration", server.serviceConfiguration)
 			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/actions/preview", server.serviceActionPreview)
 			router.With(server.requireCSRF).Post("/services/{scope}/{unit}/actions", server.serviceAction)
+			router.With(server.requireCSRF).Post("/timers/preview", server.timerPreview)
+			router.With(server.requireCSRF).Post("/timers", server.timerAction)
 			router.Get("/storage", server.storage)
 			router.Get("/network", server.network)
 			router.Get("/processes", server.processes)
@@ -813,6 +819,102 @@ func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(writer, 200, item)
+}
+
+func decodeTimerOperation(writer http.ResponseWriter, request *http.Request) (platform.TimerOperation, bool) {
+	var operation platform.TimerOperation
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 16<<10))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&operation) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-request", "Invalid timer operation")
+		return platform.TimerOperation{}, false
+	}
+	if err := platform.ValidateTimerOperation(operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-timer-operation", "Unsupported timer scope, name, schedule, or command")
+		return platform.TimerOperation{}, false
+	}
+	return operation, true
+}
+
+func timerAuthority(current session.Session, operation platform.TimerOperation) (int, string, string, bool) {
+	if operation.Scope == "system" && (current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) || current.Identity.BridgeToken == "") {
+		return http.StatusForbidden, "administrative-access-required", "Gain Administrative access first", false
+	}
+	if operation.Scope == "user" && current.Identity.BridgeToken == "" {
+		return http.StatusForbidden, "user-session-required", "An authenticated UNIX session is required", false
+	}
+	return 0, "", "", true
+}
+
+func timerRequestFor(current session.Session, operation platform.TimerOperation) auth.TimerRequest {
+	request := auth.TimerRequest{Operation: operation}
+	if operation.Scope == "system" {
+		request.AdminToken = current.Identity.AdminToken
+	} else {
+		request.Token = current.Identity.BridgeToken
+	}
+	return request
+}
+
+func (server *Server) timerPreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	operation, ok := decodeTimerOperation(writer, request)
+	if !ok {
+		return
+	}
+	if status, code, message, authorized := timerAuthority(current, operation); !authorized {
+		problem(writer, status, code, message)
+		return
+	}
+	operation.Action = "preview"
+	operation.ExpectedFingerprint = ""
+	state, err := server.applyTimer(request.Context(), timerRequestFor(current, operation))
+	if err != nil {
+		writeTimerError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (server *Server) timerAction(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	startedAt := time.Now().UTC()
+	operation, ok := decodeTimerOperation(writer, request)
+	if !ok {
+		return
+	}
+	if operation.Action == "preview" {
+		problem(writer, http.StatusBadRequest, "invalid-timer-operation", "Use the preview endpoint for read-only inspection")
+		return
+	}
+	if status, code, message, authorized := timerAuthority(current, operation); !authorized {
+		problem(writer, status, code, message)
+		return
+	}
+	state, err := server.applyTimer(request.Context(), timerRequestFor(current, operation))
+	if err != nil {
+		server.recordOperation(request.Context(), current.Identity.Username, operation.Scope+"/"+operation.Name+"/"+operation.Action, startedAt, "failed", "timer operation failed", operation.Scope == "system")
+		writeTimerError(writer, err)
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, operation.Scope+"/"+operation.Name+"/"+operation.Action, startedAt, "succeeded", "", operation.Scope == "system")
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func writeTimerError(writer http.ResponseWriter, err error) {
+	code := err.Error()
+	switch code {
+	case "invalid-timer-operation":
+		problem(writer, http.StatusBadRequest, code, "Timer operation is invalid")
+	case "timer-conflict":
+		problem(writer, http.StatusConflict, code, "Timer changed; refresh it before applying this operation")
+	case "timer-not-found", "timer-pair-incomplete":
+		problem(writer, http.StatusConflict, code, "Timer files are not in a usable state")
+	case "invalid-bridge-token", "user-bridge-unavailable":
+		problem(writer, http.StatusForbidden, code, "The authenticated user session is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "timer-operation-failed", "Timer operation could not be completed; inspect operation history")
+	}
 }
 
 func (server *Server) recordOperation(ctx context.Context, actor, target string, startedAt time.Time, result, failure string, administrative bool) {

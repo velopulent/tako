@@ -272,6 +272,42 @@ export type MonitoringPreference = {
   revision: number
 }
 
+export type TimerAction =
+  "preview" | "create" | "update" | "delete" | "enable" | "disable"
+
+export type TimerOperation = {
+  action: TimerAction
+  scope: "system" | "user"
+  name: string
+  description?: string
+  onCalendar?: string
+  onBootSec?: string
+  onUnitActiveSec?: string
+  command?: string
+  persistent?: boolean
+  expectedFingerprint?: string
+}
+
+export type TimerDefinition = {
+  description?: string
+  onCalendar?: string
+  onBootSec?: string
+  onUnitActiveSec?: string
+  command?: string
+  persistent?: boolean
+}
+
+export type TimerState = {
+  scope: "system" | "user"
+  name: string
+  timerUnit: string
+  serviceUnit: string
+  exists: boolean
+  enabled: boolean
+  fingerprint?: string
+  definition?: TimerDefinition
+}
+
 type Problem = {
   code?: string
   detail?: string

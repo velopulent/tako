@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/msteinert/pam/v2"
+	"github.com/velopulent/tako/internal/platform"
 )
 
 var (
@@ -98,25 +99,32 @@ type UserSession struct {
 type Conversation func(PromptStyle, string) (string, error)
 
 type Request struct {
-	Operation           string           `json:"operation,omitempty"`
-	Username            string           `json:"username,omitempty"`
-	Password            string           `json:"password,omitempty"`
-	ConversationID      string           `json:"conversationId,omitempty"`
-	Responses           []PromptResponse `json:"responses,omitempty"`
-	Token               string           `json:"token,omitempty"`
-	AdminToken          string           `json:"adminToken,omitempty"`
-	AdminTTL            uint32           `json:"adminTtlSeconds,omitempty"`
-	Columns             uint16           `json:"columns,omitempty"`
-	Rows                uint16           `json:"rows,omitempty"`
-	Action              string           `json:"action,omitempty"`
-	Unit                string           `json:"unit,omitempty"`
-	Scope               string           `json:"scope,omitempty"`
-	Hostname            string           `json:"hostname,omitempty"`
-	Timezone            string           `json:"timezone,omitempty"`
-	NTPEnabled          bool             `json:"ntpEnabled,omitempty"`
-	ExpectedFingerprint string           `json:"expectedFingerprint,omitempty"`
-	PowerAction         string           `json:"powerAction,omitempty"`
-	PowerConfirmation   string           `json:"powerConfirmation,omitempty"`
+	Operation           string                   `json:"operation,omitempty"`
+	Username            string                   `json:"username,omitempty"`
+	Password            string                   `json:"password,omitempty"`
+	ConversationID      string                   `json:"conversationId,omitempty"`
+	Responses           []PromptResponse         `json:"responses,omitempty"`
+	Token               string                   `json:"token,omitempty"`
+	AdminToken          string                   `json:"adminToken,omitempty"`
+	AdminTTL            uint32                   `json:"adminTtlSeconds,omitempty"`
+	Columns             uint16                   `json:"columns,omitempty"`
+	Rows                uint16                   `json:"rows,omitempty"`
+	Action              string                   `json:"action,omitempty"`
+	Unit                string                   `json:"unit,omitempty"`
+	Scope               string                   `json:"scope,omitempty"`
+	Hostname            string                   `json:"hostname,omitempty"`
+	Timezone            string                   `json:"timezone,omitempty"`
+	NTPEnabled          bool                     `json:"ntpEnabled,omitempty"`
+	ExpectedFingerprint string                   `json:"expectedFingerprint,omitempty"`
+	PowerAction         string                   `json:"powerAction,omitempty"`
+	PowerConfirmation   string                   `json:"powerConfirmation,omitempty"`
+	Timer               *platform.TimerOperation `json:"timer,omitempty"`
+}
+
+type TimerRequest struct {
+	Token      string
+	AdminToken string
+	Operation  platform.TimerOperation
 }
 
 type HostConfigurationRequest struct {
@@ -161,6 +169,56 @@ func RequestPower(ctx context.Context, path string, request PowerRequest) error 
 		PowerConfirmation:   request.Confirmation,
 		ExpectedFingerprint: request.ExpectedFingerprint,
 	})
+}
+
+func ApplyTimer(ctx context.Context, path string, request TimerRequest) (platform.TimerState, error) {
+	response, err := socketRequest(ctx, path, Request{
+		Operation:  "timer",
+		Token:      request.Token,
+		AdminToken: request.AdminToken,
+		Timer:      &request.Operation,
+	})
+	if err != nil {
+		return platform.TimerState{}, err
+	}
+	if response.Error != "" {
+		return platform.TimerState{}, errors.New(response.Error)
+	}
+	if response.TimerState == nil {
+		return platform.TimerState{}, ErrServiceUnavailable
+	}
+	return *response.TimerState, nil
+}
+
+func socketRequest(ctx context.Context, path string, request Request) (Response, error) {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return Response{}, fmt.Errorf("%w: connect to %s: %v", ErrServiceUnavailable, path, err)
+	}
+	defer conn.Close()
+	stopCancelWatch := make(chan struct{})
+	defer close(stopCancelWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopCancelWatch:
+		}
+	}()
+	deadline := time.Now().Add(20 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
+		return Response{}, fmt.Errorf("%w: send request: %v", ErrServiceUnavailable, err)
+	}
+	var response Response
+	if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&response); err != nil {
+		return Response{}, fmt.Errorf("%w: read response: %v", ErrServiceUnavailable, err)
+	}
+	return response, nil
 }
 
 func serviceActionRequest(ctx context.Context, path string, request Request) error {
@@ -253,13 +311,14 @@ func bridgeTokenRequest(ctx context.Context, path, operation, token string) erro
 }
 
 type Response struct {
-	Identity       *Identity `json:"identity,omitempty"`
-	BridgeToken    string    `json:"bridgeToken,omitempty"`
-	ConversationID string    `json:"conversationId,omitempty"`
-	Prompts        []Prompt  `json:"prompts,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	AdminToken     string    `json:"adminToken,omitempty"`
-	AdminUntil     time.Time `json:"adminUntil,omitempty"`
+	Identity       *Identity            `json:"identity,omitempty"`
+	BridgeToken    string               `json:"bridgeToken,omitempty"`
+	ConversationID string               `json:"conversationId,omitempty"`
+	Prompts        []Prompt             `json:"prompts,omitempty"`
+	Error          string               `json:"error,omitempty"`
+	AdminToken     string               `json:"adminToken,omitempty"`
+	AdminUntil     time.Time            `json:"adminUntil,omitempty"`
+	TimerState     *platform.TimerState `json:"timerState,omitempty"`
 }
 
 type Authenticator interface {

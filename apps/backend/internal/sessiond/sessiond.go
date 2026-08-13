@@ -150,12 +150,19 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 }
 
 func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, serviceBackends ...serviceBackend) {
+	handleWithTimerBackends(conn, service, conversations, grants, policy, logger, backend, power, systemTimerBackend{}, serviceBackends...)
+}
+
+func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
 	}
 	if power == nil {
 		power = systemPowerBackend{}
+	}
+	if timer == nil {
+		timer = systemTimerBackend{}
 	}
 	serviceBackend := serviceBackend(systemServiceBackend{})
 	if len(serviceBackends) > 0 && serviceBackends[0] != nil {
@@ -175,6 +182,10 @@ func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversati
 		return
 	}
 	if request.Operation != "power" && hasPowerFields(request) {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "timer" && request.Timer != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -356,6 +367,59 @@ func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversati
 		errorCode := runServiceAction(serviceBackend, operation)
 		logger.Info("service action", zap.String("username", identity.Username), zap.String("scope", request.Scope), zap.String("unit", request.Unit), zap.String("action", request.Action), zap.String("result", errorCode))
 		_ = encoder.Encode(auth.Response{Error: errorCode})
+		return
+	}
+	if request.Operation == "timer" {
+		if request.Timer == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 {
+			_ = encoder.Encode(auth.Response{Error: "invalid-timer-request"})
+			return
+		}
+		operation := *request.Timer
+		if err := platform.ValidateTimerOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-timer-operation"})
+			return
+		}
+		var bridge io.Closer
+		var identity auth.Identity
+		var ok bool
+		if operation.Scope == "system" {
+			if request.Token != "" || request.AdminToken == "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-administrative-request"})
+				return
+			}
+			identity, ok = grants.adminIdentity(request.AdminToken)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+				return
+			}
+			bridge, _ = grants.adminBridge(request.AdminToken)
+		} else {
+			if request.Token == "" || request.AdminToken != "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-timer-request"})
+				return
+			}
+			identity, ok = grants.get(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+				return
+			}
+			bridge, ok = grants.bridgeFor(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "user-bridge-unavailable"})
+				return
+			}
+		}
+		timerCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		state, applyErr := timer.Apply(timerCtx, operation, bridge)
+		cancel()
+		if applyErr != nil {
+			code := timerErrorCode(applyErr)
+			logger.Warn("timer operation failed", zap.String("username", identity.Username), zap.String("scope", operation.Scope), zap.String("name", operation.Name), zap.String("error", code))
+			_ = encoder.Encode(auth.Response{Error: code})
+			return
+		}
+		logger.Info("timer operation", zap.String("username", identity.Username), zap.String("scope", operation.Scope), zap.String("name", operation.Name), zap.String("action", operation.Action))
+		_ = encoder.Encode(auth.Response{TimerState: &state})
 		return
 	}
 	if request.Operation == "host-config" {
@@ -598,6 +662,22 @@ func (store *grantStore) get(token string) (auth.Identity, bool) {
 	return grant.identity, true
 }
 
+func (store *grantStore) bridgeFor(token string) (io.Closer, bool) {
+	store.mu.Lock()
+	grant, ok := store.values[token]
+	expired := ok && time.Now().After(grant.expires)
+	if !ok || expired || grant.bridge == nil {
+		store.mu.Unlock()
+		if expired {
+			store.close(token)
+		}
+		return nil, false
+	}
+	bridge := grant.bridge
+	store.mu.Unlock()
+	return bridge, true
+}
+
 func (store *grantStore) authorize(ctx context.Context, token, password string, ttl uint32, policy administrativePolicy) (string, time.Time, error) {
 	store.mu.Lock()
 	grant, ok := store.values[token]
@@ -651,6 +731,21 @@ func (store *grantStore) adminIdentity(token string) (auth.Identity, bool) {
 		}
 	}
 	return auth.Identity{}, false
+}
+
+func (store *grantStore) adminBridge(token string) (io.Closer, bool) {
+	if token == "" {
+		return nil, false
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	now := time.Now()
+	for _, grant := range store.values {
+		if grant.adminToken == token && !grant.adminExpires.IsZero() && now.Before(grant.adminExpires) && now.Before(grant.expires) && grant.bridge != nil {
+			return grant.bridge, true
+		}
+	}
+	return nil, false
 }
 
 func (store *grantStore) revokeAdmin(token string) bool {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/velopulent/tako/internal/platform"
 )
 
 func TestIdentityDoesNotExposeBridgeToken(t *testing.T) {
@@ -138,6 +140,47 @@ func TestApplyHostConfigurationUsesAdminGrantAndStrictPayload(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("host configuration request was not received")
+	}
+}
+
+func TestApplyTimerUsesScopedStructuredRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
+	}
+	defer listener.Close()
+	requestSeen := make(chan Request, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request Request
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr == nil {
+			requestSeen <- request
+			_ = json.NewEncoder(connection).Encode(Response{TimerState: &platform.TimerState{Scope: "user", Name: "nightly"}})
+		}
+	}()
+	state, err := ApplyTimer(context.Background(), path, TimerRequest{
+		Token: "bridge-token",
+		Operation: platform.TimerOperation{
+			Action: "preview",
+			Scope:  "user",
+			Name:   "nightly",
+		},
+	})
+	if err != nil || state.Name != "nightly" {
+		t.Fatalf("timer request failed: %#v %v", state, err)
+	}
+	select {
+	case request := <-requestSeen:
+		if request.Operation != "timer" || request.Token != "bridge-token" || request.Timer == nil || request.Timer.Name != "nightly" {
+			t.Fatalf("unexpected timer request: %#v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timer request was not received")
 	}
 }
 

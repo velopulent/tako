@@ -9,6 +9,7 @@ const titles: Record<string, string> = {
   terminal: "Terminal",
   metrics: "Metrics",
   services: "Services",
+  timers: "Timers",
   storage: "Storage",
   network: "Network",
   processes: "Processes",
