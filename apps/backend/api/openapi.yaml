@@ -298,6 +298,41 @@ paths:
                     maxItems: 100000
                     items: { $ref: '#/components/schemas/NSSUser' }
         '503': { $ref: '#/components/responses/Problem' }
+  /users/account/preview:
+    post:
+      operationId: previewLocalAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalAccountOperation' }
+      responses:
+        '200':
+          description: Stale-aware local account impact preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalAccountPreview' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /users/account:
+    post:
+      operationId: applyLocalAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalAccountOperation' }
+      responses:
+        '200':
+          description: Verified local account state after the operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalAccountState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /groups:
     get:
       operationId: listGroups
@@ -1191,6 +1226,47 @@ components:
         local: { type: boolean }
         mutable: { type: boolean }
         reason: { type: string, maxLength: 512 }
+    LocalAccountOperation:
+      type: object
+      required: [action, username]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [create, update, lock, unlock, delete] }
+        username: { type: string, minLength: 1, maxLength: 32 }
+        name: { type: string, maxLength: 256 }
+        home: { type: string, maxLength: 4096 }
+        shell: { type: string, maxLength: 4096 }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
+        confirmation: { type: string, maxLength: 64 }
+    LocalAccountState:
+      type: object
+      required: [username, exists, locked, fingerprint]
+      properties:
+        username: { type: string, maxLength: 32 }
+        exists: { type: boolean }
+        user: { $ref: '#/components/schemas/NSSUser' }
+        locked: { type: boolean }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+        source: { type: string, enum: [local, nss-read-only] }
+    LocalAccountPreview:
+      type: object
+      required: [action, username, current, changes, warnings, stale, allowed, requiresConfirmation]
+      properties:
+        action: { type: string, enum: [create, update, lock, unlock, delete] }
+        username: { type: string, maxLength: 32 }
+        current: { $ref: '#/components/schemas/LocalAccountState' }
+        changes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        warnings:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 512 }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+        requiresConfirmation: { type: boolean }
     ProcessSocket:
       type: object
       required: [protocol, local]

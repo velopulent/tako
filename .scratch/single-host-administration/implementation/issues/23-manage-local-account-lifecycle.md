@@ -4,8 +4,8 @@
 
 **Blocked by:** 06 — Introduce typed privileged operations; 22 — Enumerate NSS users and groups
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Fixed shadow-utils adapters use strict argv and verify postconditions.
-- [ ] Destructive account actions show impact and protect current operator/session.
-- [ ] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.
+- [x] Fixed shadow-utils adapters use strict argv and verify postconditions.
+- [x] Destructive account actions show impact and protect current operator/session.
+- [x] API changes, user-visible behavior, and applicable unit/UI/VM integration seams are tested and documented.

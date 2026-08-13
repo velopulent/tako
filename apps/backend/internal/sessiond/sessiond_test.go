@@ -391,6 +391,73 @@ func TestSystemServiceActionRequiresAdministrativeGrant(t *testing.T) {
 	}
 }
 
+type recordingLocalAccountBackend struct {
+	previewed platform.LocalAccountOperation
+	applied   platform.LocalAccountOperation
+}
+
+func (backend *recordingLocalAccountBackend) Preview(_ context.Context, operation platform.LocalAccountOperation, _ auth.Identity) (platform.LocalAccountPreview, error) {
+	backend.previewed = operation
+	return platform.LocalAccountPreview{Action: operation.Action, Username: operation.Username, Allowed: true}, nil
+}
+
+func (backend *recordingLocalAccountBackend) Apply(_ context.Context, operation platform.LocalAccountOperation, _ auth.Identity) (platform.LocalAccountState, error) {
+	backend.applied = operation
+	return platform.LocalAccountState{Username: operation.Username, Exists: true, Fingerprint: strings.Repeat("a", 64)}, nil
+}
+
+func TestLocalAccountOperationsRequireAdminAndUseStructuredBackend(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "operator", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, err := store.authorize(context.Background(), bridgeToken, "secret", 300, func(context.Context, auth.Identity, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &recordingLocalAccountBackend{}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handleWithLocalAccountBackend(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, backend)
+	operation := platform.LocalAccountOperation{Action: "update", Username: "target", Name: "Target", Preview: true}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "local-account", AdminToken: adminToken, Account: &operation}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || response.AccountPreview == nil || backend.previewed != operation {
+		t.Fatalf("preview response=%#v operation=%#v", response, backend.previewed)
+	}
+
+	serverConn, clientConn = net.Pipe()
+	defer clientConn.Close()
+	go handleWithLocalAccountBackend(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, backend)
+	operation = platform.LocalAccountOperation{Action: "delete", Username: "target", ExpectedFingerprint: strings.Repeat("b", 64), Confirmation: "DELETE target"}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "local-account", AdminToken: adminToken, Account: &operation}); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || response.AccountState == nil || backend.applied != operation {
+		t.Fatalf("apply response=%#v operation=%#v", response, backend.applied)
+	}
+
+	serverConn, clientConn = net.Pipe()
+	defer clientConn.Close()
+	go handle(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop())
+	_ = json.NewEncoder(clientConn).Encode(auth.Request{Operation: "local-account", Token: bridgeToken, Account: &operation})
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "invalid-local-account-request" {
+		t.Fatalf("non-admin local account response=%q", response.Error)
+	}
+}
+
 type recordingServiceBackend struct {
 	mu     sync.Mutex
 	called []serviceOperation

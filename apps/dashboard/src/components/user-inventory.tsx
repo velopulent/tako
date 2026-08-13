@@ -1,9 +1,12 @@
+import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
 
-import { api, type UserInfo } from "@/lib/api"
+import { api, type SessionResponse, type UserInfo } from "@/lib/api"
+import { UserAccountManager } from "@/components/user-account-manager"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { DataTable } from "@/components/data-table"
 import {
   Empty,
@@ -36,9 +39,20 @@ const columns: ColumnDef<UserInfo>[] = [
 ]
 
 export function UserInventory() {
+  const [selected, setSelected] = React.useState<UserInfo>()
+  const [creating, setCreating] = React.useState(false)
   const query = useQuery({
     queryKey: ["users"],
     queryFn: () => api<{ items: UserInfo[] }>("/users"),
+  })
+  const session = useQuery({
+    queryKey: ["session"],
+    queryFn: () => api<SessionResponse>("/auth/session"),
+  })
+  const admin = useQuery({
+    queryKey: ["admin"],
+    queryFn: () => api<{ administrative: boolean }>("/admin"),
+    refetchInterval: 10_000,
   })
   const items = query.data?.items ?? []
   if (query.isPending) return <Skeleton className="h-72" />
@@ -68,10 +82,38 @@ export function UserInventory() {
         {items.length} identities · {localCount} local · {remoteCount} NSS
         read-only
       </p>
+      {(creating || selected) && (
+        <UserAccountManager
+          key={creating ? "create" : selected?.username}
+          user={creating ? undefined : selected}
+          csrfToken={session.data?.csrfToken ?? ""}
+          administrative={admin.data?.administrative === true}
+          onApplied={() => {
+            setCreating(false)
+            setSelected(undefined)
+          }}
+        />
+      )}
       <DataTable
         data={items}
         columns={columns}
         searchPlaceholder="Search users, groups, or identity source"
+        onRowClick={(row) => {
+          setCreating(false)
+          setSelected(row)
+        }}
+        toolbar={
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setSelected(undefined)
+              setCreating(true)
+            }}
+          >
+            Create local account
+          </Button>
+        }
       />
     </div>
   )

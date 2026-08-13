@@ -1,0 +1,43 @@
+package sessiond
+
+import (
+	"context"
+	"errors"
+
+	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/platform"
+)
+
+type localAccountBackend interface {
+	Preview(context.Context, platform.LocalAccountOperation, auth.Identity) (platform.LocalAccountPreview, error)
+	Apply(context.Context, platform.LocalAccountOperation, auth.Identity) (platform.LocalAccountState, error)
+}
+
+type systemLocalAccountBackend struct{}
+
+func (systemLocalAccountBackend) Preview(ctx context.Context, operation platform.LocalAccountOperation, identity auth.Identity) (platform.LocalAccountPreview, error) {
+	return platform.PreviewLocalAccount(ctx, operation, identity.Username)
+}
+
+func (systemLocalAccountBackend) Apply(ctx context.Context, operation platform.LocalAccountOperation, identity auth.Identity) (platform.LocalAccountState, error) {
+	return platform.ApplyLocalAccount(ctx, operation, identity.Username)
+}
+
+func localAccountErrorCode(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrInvalidLocalAccountOperation):
+		return "invalid-local-account-operation"
+	case errors.Is(err, platform.ErrLocalAccountConflict):
+		return "local-account-conflict"
+	case errors.Is(err, platform.ErrLocalAccountNotFound):
+		return "local-account-not-found"
+	case errors.Is(err, platform.ErrLocalAccountReadOnly):
+		return "local-account-read-only"
+	case errors.Is(err, platform.ErrLocalAccountProtected):
+		return "local-account-protected"
+	case errors.Is(err, platform.ErrLocalAccountVerification):
+		return "local-account-verification-failed"
+	default:
+		return "local-account-unavailable"
+	}
+}

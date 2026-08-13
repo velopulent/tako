@@ -253,6 +253,34 @@ export type GroupInfo = {
   mutable: boolean
   reason?: string
 }
+export type LocalAccountOperation = {
+  action: "create" | "update" | "lock" | "unlock" | "delete"
+  username: string
+  name?: string
+  home?: string
+  shell?: string
+  expectedFingerprint?: string
+  confirmation?: string
+}
+export type LocalAccountState = {
+  username: string
+  exists: boolean
+  user?: UserInfo
+  locked: boolean
+  fingerprint: string
+  source?: "local" | "nss-read-only"
+}
+export type LocalAccountPreview = {
+  action: LocalAccountOperation["action"]
+  username: string
+  current: LocalAccountState
+  changes: string[]
+  warnings: string[]
+  stale: boolean
+  allowed: boolean
+  reason?: string
+  requiresConfirmation: boolean
+}
 export type MountInfo = {
   source: string
   target: string

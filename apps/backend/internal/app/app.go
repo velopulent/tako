@@ -65,6 +65,8 @@ type Server struct {
 	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
 	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
+	previewAccountFn      func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
+	applyAccountFn        func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountState, error)
 	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
 	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
 	processTracker        *platform.ProcessTracker
@@ -116,6 +118,12 @@ func New(cfg config.Config) (*Server, error) {
 		},
 		applyOverride: func(ctx context.Context, request auth.OverrideRequest) (platform.OverrideState, error) {
 			return auth.ApplyOverride(ctx, cfg.SessionSocket, request)
+		},
+		previewAccountFn: func(ctx context.Context, request auth.LocalAccountRequest) (platform.LocalAccountPreview, error) {
+			return auth.PreviewLocalAccount(ctx, cfg.SessionSocket, request)
+		},
+		applyAccountFn: func(ctx context.Context, request auth.LocalAccountRequest) (platform.LocalAccountState, error) {
+			return auth.ApplyLocalAccount(ctx, cfg.SessionSocket, request)
 		},
 		queryLogs:          platform.QueryLogs,
 		processTracker:     processTracker,
@@ -313,6 +321,8 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/host/power", server.requestPower)
 			router.Get("/users", server.users)
 			router.Get("/groups", server.groups)
+			router.Post("/users/account/preview", server.previewLocalAccount)
+			router.With(server.requireCSRF).Post("/users/account", server.applyLocalAccount)
 			router.Get("/updates", server.updates)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)

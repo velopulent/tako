@@ -154,6 +154,10 @@ func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversati
 }
 
 func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, serviceBackends ...serviceBackend) {
+	handleWithLocalAccountBackend(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemLocalAccountBackend{}, serviceBackends...)
+}
+
+func handleWithLocalAccountBackend(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, account localAccountBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -166,6 +170,9 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 	}
 	if override == nil {
 		override = systemOverrideBackend{}
+	}
+	if account == nil {
+		account = systemLocalAccountBackend{}
 	}
 	serviceBackend := serviceBackend(systemServiceBackend{})
 	if len(serviceBackends) > 0 && serviceBackends[0] != nil {
@@ -197,6 +204,10 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 		return
 	}
 	if request.Operation != "signal-process" && request.Signal != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "local-account" && request.Account != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -530,6 +541,41 @@ func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conve
 		}
 		logger.Info("process signal", zap.String("username", identity.Username), zap.String("signal", operation.Signal), zap.Bool("tree", operation.Tree), zap.Int("targets", len(result.Targets)), zap.Bool("administrative", administrative))
 		_ = encoder.Encode(auth.Response{SignalResult: &result})
+		return
+	}
+	if request.Operation == "local-account" {
+		if request.Account == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-local-account-request"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.Account
+		if err := platform.ValidateLocalAccountOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-local-account-operation"})
+			return
+		}
+		accountCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		if operation.Preview {
+			preview, previewErr := account.Preview(accountCtx, operation, identity)
+			cancel()
+			if previewErr != nil {
+				_ = encoder.Encode(auth.Response{Error: localAccountErrorCode(previewErr)})
+				return
+			}
+			_ = encoder.Encode(auth.Response{AccountPreview: &preview})
+			return
+		}
+		state, applyErr := account.Apply(accountCtx, operation, identity)
+		cancel()
+		if applyErr != nil {
+			_ = encoder.Encode(auth.Response{Error: localAccountErrorCode(applyErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{AccountState: &state})
 		return
 	}
 	if request.Operation == "host-config" {
