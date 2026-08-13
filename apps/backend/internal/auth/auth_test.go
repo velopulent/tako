@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/msteinert/pam/v2"
 	"github.com/velopulent/tako/internal/platform"
 )
 
@@ -31,6 +32,71 @@ func TestIdentityDoesNotExposeAdministrativeToken(t *testing.T) {
 	}
 	if strings.Contains(string(payload), "admin-secret") || strings.Contains(string(payload), "AdminToken") {
 		t.Fatalf("administrative token leaked: %s", payload)
+	}
+}
+
+func TestPasswordChangeOperationValidationAndClearing(t *testing.T) {
+	change := PasswordChangeOperation{Action: "change", CurrentPassword: "old-secret", NewPassword: "new-secret", Confirmation: "new-secret"}
+	if err := ValidatePasswordChangeOperation(change); err != nil {
+		t.Fatal(err)
+	}
+	reset := PasswordChangeOperation{Action: "reset", Username: "target", NewPassword: "new-secret", Confirmation: "new-secret"}
+	if err := ValidatePasswordChangeOperation(reset); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []PasswordChangeOperation{
+		{Action: "change", CurrentPassword: "old", NewPassword: "new", Confirmation: "different"},
+		{Action: "change", Username: "target", CurrentPassword: "old", NewPassword: "new", Confirmation: "new"},
+		{Action: "reset", Username: "../target", NewPassword: "new", Confirmation: "new"},
+		{Action: "change", CurrentPassword: "old\x00", NewPassword: "new", Confirmation: "new"},
+	} {
+		if err := ValidatePasswordChangeOperation(invalid); !errors.Is(err, ErrPasswordInvalid) {
+			t.Fatalf("invalid operation accepted: %#v err=%v", invalid, err)
+		}
+	}
+	change.Clear()
+	if change.CurrentPassword != "" || change.NewPassword != "" || change.Confirmation != "" {
+		t.Fatalf("password operation was not cleared: %#v", change)
+	}
+}
+
+func TestPasswordConversationBoundsAndUsesReplacementOnlyAfterCurrent(t *testing.T) {
+	conversation := &passwordConversation{current: "old-secret", new: "new-secret"}
+	value, err := conversation.respond(PromptHidden, "Current password")
+	if err != nil || value != "old-secret" {
+		t.Fatalf("current password prompt returned %q, %v", value, err)
+	}
+	value, err = conversation.respond(PromptHidden, "New password")
+	if err != nil || value != "new-secret" {
+		t.Fatalf("replacement password prompt returned %q, %v", value, err)
+	}
+	for index := conversation.index; index < 6; index++ {
+		if _, err := conversation.respond(PromptHidden, "additional"); err != nil {
+			t.Fatalf("bounded prompt %d failed early: %v", index, err)
+		}
+	}
+	if _, err := conversation.respond(PromptHidden, "too many"); !errors.Is(err, ErrPasswordInvalid) {
+		t.Fatalf("unbounded hidden prompts accepted: %v", err)
+	}
+	conversation.current = ""
+	conversation.new = ""
+	if conversation.current != "" || conversation.new != "" {
+		t.Fatal("password conversation secrets were not clearable")
+	}
+}
+
+func TestPasswordErrorsAreSafeAndDistinct(t *testing.T) {
+	if !errors.Is(passwordError(pam.ErrAuth), ErrPasswordAuthenticationFailed) {
+		t.Fatal("PAM authentication error was not classified as authentication failure")
+	}
+	if !errors.Is(passwordError(pam.ErrNewAuthtokReqd), ErrPasswordExpired) {
+		t.Fatal("expired password error was not classified distinctly")
+	}
+	if !errors.Is(passwordError(pam.ErrAuthtok), ErrPasswordPolicy) {
+		t.Fatal("password policy error was not classified distinctly")
+	}
+	if strings.Contains(passwordError(pam.ErrAuthtok).Error(), "PAM") {
+		t.Fatal("password error exposed PAM implementation details")
 	}
 }
 

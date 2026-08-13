@@ -7,6 +7,7 @@ The package installs one `/usr/bin/tako` multicall executable and keeps the trus
 - `tako bridge` is launched by the session service for an authenticated UNIX user and is never reachable from the network gateway.
 
 Install the distribution-specific PAM file as `/etc/pam.d/tako`: use `pam/tako.debian` on Debian/Ubuntu and `pam/tako.redhat` on Fedora/RHEL-compatible systems. The generic `pam/tako` file is only a minimal development fixture; package builds should transform it to the host's standard stack.
+Password changes and administrative resets use the host's standard `passwd` PAM service. They do not invoke a password helper with secrets in argv, stdin, or the environment.
 
 Install `polkit/org.velopulent.tako.policy` when the deployment uses Polkit for Administrative access. The optional `sudoers.d/tako.example` documents the exact `NOPASSWD` probe; copy and edit it only for a dedicated local operator group. Do not grant the gateway service account unrestricted sudo.
 

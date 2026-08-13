@@ -154,18 +154,22 @@ func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversati
 }
 
 func handleWithTimerBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
 }
 
 func handleWithLocalAccountBackend(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, account localAccountBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, account, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, account, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
 }
 
 func handleWithGroupBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemLocalAccountBackend{}, groups, roles, serviceBackends...)
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, systemPasswordBackend{service: service}, systemLocalAccountBackend{}, groups, roles, serviceBackends...)
 }
 
-func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
+func handleWithPasswordBackend(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, serviceBackends ...serviceBackend) {
+	handleWithAllBackends(conn, service, conversations, grants, policy, logger, backend, power, timer, override, password, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, serviceBackends...)
+}
+
+func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -178,6 +182,9 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 	}
 	if override == nil {
 		override = systemOverrideBackend{}
+	}
+	if password == nil {
+		password = systemPasswordBackend{service: service}
 	}
 	if account == nil {
 		account = systemLocalAccountBackend{}
@@ -230,6 +237,10 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 		return
 	}
 	if request.Operation != "admin-role" && request.AdminRole != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "password-change" && request.PasswordChange != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -668,6 +679,60 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 			return
 		}
 		_ = encoder.Encode(auth.Response{AdminRoleState: &state})
+		return
+	}
+	if request.Operation == "password-change" {
+		if request.PasswordChange == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-password-operation"})
+			return
+		}
+		operation := *request.PasswordChange
+		request.PasswordChange.Clear()
+		request.PasswordChange = nil
+		defer operation.Clear()
+		if err := auth.ValidatePasswordChangeOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-password-operation"})
+			return
+		}
+		var identity auth.Identity
+		var ok bool
+		if operation.Action == "change" {
+			if request.Token == "" || request.AdminToken != "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-password-operation"})
+				return
+			}
+			identity, ok = grants.get(request.Token)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-bridge-token"})
+				return
+			}
+		} else {
+			if request.AdminToken == "" || request.Token != "" {
+				_ = encoder.Encode(auth.Response{Error: "invalid-password-operation"})
+				return
+			}
+			identity, ok = grants.adminIdentity(request.AdminToken)
+			if !ok {
+				_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+				return
+			}
+		}
+		passwordCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		var passwordErr error
+		if operation.Action == "change" {
+			passwordErr = password.Change(passwordCtx, identity.Username, operation.CurrentPassword, operation.NewPassword)
+		} else {
+			passwordErr = password.Reset(passwordCtx, operation.Username, operation.NewPassword)
+		}
+		cancel()
+		if passwordErr != nil {
+			code := passwordErrorCode(passwordErr)
+			logger.Warn("password operation failed", zap.String("username", identity.Username), zap.String("action", operation.Action), zap.String("result", code))
+			_ = encoder.Encode(auth.Response{Error: code})
+			return
+		}
+		logger.Info("password operation succeeded", zap.String("username", identity.Username), zap.String("action", operation.Action), zap.Bool("administrative", operation.Action == "reset"))
+		_ = encoder.Encode(auth.Response{})
 		return
 	}
 	if request.Operation == "host-config" {

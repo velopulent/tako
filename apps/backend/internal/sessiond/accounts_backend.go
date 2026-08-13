@@ -29,6 +29,23 @@ type administrativeRoleBackend interface {
 	Apply(context.Context, platform.AdministrativeRoleOperation, auth.Identity) (platform.AdministrativeRoleState, error)
 }
 
+type passwordBackend interface {
+	Change(context.Context, string, string, string) error
+	Reset(context.Context, string, string) error
+}
+
+type systemPasswordBackend struct {
+	service auth.PAMAuthenticator
+}
+
+func (backend systemPasswordBackend) Change(ctx context.Context, username, current, replacement string) error {
+	return backend.service.ChangePassword(ctx, username, current, replacement)
+}
+
+func (backend systemPasswordBackend) Reset(ctx context.Context, username, replacement string) error {
+	return backend.service.ResetPassword(ctx, username, replacement)
+}
+
 type systemGroupMembershipBackend struct{}
 
 func (systemGroupMembershipBackend) Preview(ctx context.Context, operation platform.GroupMembershipOperation, identity auth.Identity) (platform.GroupMembershipPreview, error) {
@@ -92,5 +109,24 @@ func groupErrorCode(err error) string {
 		return "administrative-role-protected"
 	default:
 		return "group-unavailable"
+	}
+}
+
+func passwordErrorCode(err error) string {
+	switch {
+	case errors.Is(err, auth.ErrPasswordInvalid):
+		return "invalid-password-operation"
+	case errors.Is(err, auth.ErrPasswordAuthenticationFailed):
+		return "password-authentication-failed"
+	case errors.Is(err, auth.ErrPasswordExpired):
+		return "password-expired"
+	case errors.Is(err, auth.ErrPasswordPolicy):
+		return "password-policy-failed"
+	case errors.Is(err, auth.ErrPasswordUnavailable), errors.Is(err, auth.ErrServiceUnavailable):
+		return "password-unavailable"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "password-unavailable"
+	default:
+		return "password-unavailable"
 	}
 }

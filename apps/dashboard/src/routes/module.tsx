@@ -60,6 +60,7 @@ import { JournalBrowser } from "@/components/journal-browser"
 import { ProcessDetails } from "@/components/process-details"
 import { UserInventory } from "@/components/user-inventory"
 import { GroupInventory } from "@/components/group-inventory"
+import { PasswordManager } from "@/components/password-manager"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -638,6 +639,7 @@ function UsersPage() {
     <Page description="NSS account inventory. Local entries are explicitly mutable; remote identities remain read-only.">
       <UserInventory />
       <GroupInventory />
+      <PasswordManager />
     </Page>
   )
 }

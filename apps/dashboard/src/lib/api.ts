@@ -281,6 +281,19 @@ export type LocalAccountPreview = {
   reason?: string
   requiresConfirmation: boolean
 }
+export type PasswordChangeOperation =
+  | {
+      action: "change"
+      currentPassword: string
+      newPassword: string
+      confirmation: string
+    }
+  | {
+      action: "reset"
+      username: string
+      newPassword: string
+      confirmation: string
+    }
 export type GroupMembershipOperation = {
   action: "add" | "remove"
   username: string

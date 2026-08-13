@@ -333,6 +333,23 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /users/password:
+    post:
+      operationId: changeOrResetPassword
+      description: Change the signed-in user's password or, with Administrative access, reset a local user's password. Secret fields are processed only in memory and are never returned or recorded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChangeOperation' }
+      responses:
+        '204': { description: Password changed or reset successfully }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /groups:
     get:
       operationId: listGroups
@@ -1337,6 +1354,24 @@ components:
         allowed: { type: boolean }
         reason: { type: string, maxLength: 512 }
         requiresConfirmation: { type: boolean }
+    PasswordChangeOperation:
+      oneOf:
+        - type: object
+          required: [action, currentPassword, newPassword, confirmation]
+          additionalProperties: false
+          properties:
+            action: { type: string, enum: [change] }
+            currentPassword: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+            newPassword: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+            confirmation: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+        - type: object
+          required: [action, username, newPassword, confirmation]
+          additionalProperties: false
+          properties:
+            action: { type: string, enum: [reset] }
+            username: { type: string, minLength: 1, maxLength: 32, pattern: '^[a-z_][a-z0-9_$-]*$' }
+            newPassword: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+            confirmation: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
     GroupMembershipOperation:
       type: object
       required: [action, username, group]

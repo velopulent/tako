@@ -755,3 +755,107 @@ func TestHostConfigurationUsesAdminGrantAndRejectsStaleWrites(t *testing.T) {
 		t.Fatalf("stale host configuration returned %q", response.Error)
 	}
 }
+
+type recordingPasswordBackend struct {
+	changedUsername  string
+	current          string
+	replacement      string
+	resetUsername    string
+	resetReplacement string
+	changeErr        error
+	resetErr         error
+}
+
+func (backend *recordingPasswordBackend) Change(_ context.Context, username, current, replacement string) error {
+	backend.changedUsername = username
+	backend.current = current
+	backend.replacement = replacement
+	return backend.changeErr
+}
+
+func (backend *recordingPasswordBackend) Reset(_ context.Context, username, replacement string) error {
+	backend.resetUsername = username
+	backend.resetReplacement = replacement
+	return backend.resetErr
+}
+
+func TestPasswordOperationsUseScopedGrantsAndSafeErrors(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "operator", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, err := store.authorize(context.Background(), bridgeToken, "policy-secret", 300, func(context.Context, auth.Identity, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &recordingPasswordBackend{}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handleWithPasswordBackend(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, backend)
+	change := auth.PasswordChangeOperation{Action: "change", CurrentPassword: "old-secret", NewPassword: "new-secret", Confirmation: "new-secret"}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "password-change", Token: bridgeToken, PasswordChange: &change}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || backend.changedUsername != "operator" || backend.current != "old-secret" || backend.replacement != "new-secret" {
+		t.Fatalf("self-service password change failed: response=%#v backend=%+v", response, backend)
+	}
+
+	serverConn, clientConn = net.Pipe()
+	defer clientConn.Close()
+	go handleWithPasswordBackend(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, backend)
+	reset := auth.PasswordChangeOperation{Action: "reset", Username: "target", NewPassword: "reset-secret", Confirmation: "reset-secret"}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "password-change", AdminToken: adminToken, PasswordChange: &reset}); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "" || backend.resetUsername != "target" || backend.resetReplacement != "reset-secret" {
+		t.Fatalf("administrative password reset failed: response=%#v backend=%+v", response, backend)
+	}
+
+	backend.changeErr = auth.ErrPasswordPolicy
+	serverConn, clientConn = net.Pipe()
+	defer clientConn.Close()
+	go handleWithPasswordBackend(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, backend)
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "password-change", Token: bridgeToken, PasswordChange: &change}); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "password-policy-failed" {
+		t.Fatalf("policy error was not distinct: %q", response.Error)
+	}
+	encoded, _ := json.Marshal(response)
+	if strings.Contains(string(encoded), "old-secret") || strings.Contains(string(encoded), "new-secret") {
+		t.Fatalf("password secret leaked in response: %s", encoded)
+	}
+}
+
+func TestPasswordResetRejectsUserGrant(t *testing.T) {
+	store := &grantStore{values: make(map[string]bridgeGrant)}
+	bridgeToken, err := store.add(auth.Identity{Username: "operator", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handleWithPasswordBackend(serverConn, auth.PAMAuthenticator{}, nil, store, nil, zap.NewNop(), systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, &recordingPasswordBackend{})
+	operation := auth.PasswordChangeOperation{Action: "reset", Username: "target", NewPassword: "new-secret", Confirmation: "new-secret"}
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "password-change", Token: bridgeToken, PasswordChange: &operation}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "invalid-password-operation" {
+		t.Fatalf("user reset returned %q", response.Error)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"net"
 	"os/user"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,8 +20,13 @@ import (
 )
 
 var (
-	ErrAuthenticationFailed = errors.New("authentication failed")
-	ErrServiceUnavailable   = errors.New("authentication service unavailable")
+	ErrAuthenticationFailed         = errors.New("authentication failed")
+	ErrServiceUnavailable           = errors.New("authentication service unavailable")
+	ErrPasswordInvalid              = errors.New("invalid password operation")
+	ErrPasswordAuthenticationFailed = errors.New("password authentication failed")
+	ErrPasswordPolicy               = errors.New("password policy rejected")
+	ErrPasswordExpired              = errors.New("password expired")
+	ErrPasswordUnavailable          = errors.New("password service unavailable")
 )
 
 type Identity struct {
@@ -124,6 +130,67 @@ type Request struct {
 	Account             *platform.LocalAccountOperation       `json:"account,omitempty"`
 	GroupMembership     *platform.GroupMembershipOperation    `json:"groupMembership,omitempty"`
 	AdminRole           *platform.AdministrativeRoleOperation `json:"adminRole,omitempty"`
+	PasswordChange      *PasswordChangeOperation              `json:"passwordChange,omitempty"`
+}
+
+// PasswordChangeOperation is deliberately wire-only. Secret fields are sent
+// over the protected session socket and are cleared immediately after the PAM
+// transaction; they are never included in an operation receipt or persisted
+// by the gateway.
+type PasswordChangeOperation struct {
+	Action          string `json:"action"`
+	Username        string `json:"username,omitempty"`
+	CurrentPassword string `json:"currentPassword,omitempty"`
+	NewPassword     string `json:"newPassword"`
+	Confirmation    string `json:"confirmation"`
+}
+
+func (operation *PasswordChangeOperation) Clear() {
+	if operation == nil {
+		return
+	}
+	operation.Username = ""
+	operation.CurrentPassword = ""
+	operation.NewPassword = ""
+	operation.Confirmation = ""
+}
+
+func ValidatePasswordChangeOperation(operation PasswordChangeOperation) error {
+	if operation.Action != "change" && operation.Action != "reset" {
+		return ErrPasswordInvalid
+	}
+	if operation.NewPassword == "" || operation.NewPassword != operation.Confirmation || len(operation.NewPassword) > 4096 || len(operation.Confirmation) > 4096 || len(operation.CurrentPassword) > 4096 || len(operation.Username) > 32 || strings.ContainsAny(operation.CurrentPassword+operation.NewPassword+operation.Confirmation, "\x00") {
+		return ErrPasswordInvalid
+	}
+	if operation.Action == "change" {
+		if operation.Username != "" || operation.CurrentPassword == "" {
+			return ErrPasswordInvalid
+		}
+	} else if operation.Username == "" || operation.CurrentPassword != "" {
+		return ErrPasswordInvalid
+	}
+	if !validPasswordUsername(operation.Username) && operation.Username != "" {
+		return ErrPasswordInvalid
+	}
+	return nil
+}
+
+func validPasswordUsername(username string) bool {
+	if username == "" || username == "." || username == ".." {
+		return false
+	}
+	for index, character := range username {
+		if index == 0 {
+			if (character < 'a' || character > 'z') && character != '_' {
+				return false
+			}
+			continue
+		}
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' && character != '-' && character != '$' {
+			return false
+		}
+	}
+	return true
 }
 
 type TimerRequest struct {
@@ -157,6 +224,12 @@ type GroupMembershipRequest struct {
 type AdministrativeRoleRequest struct {
 	AdminToken string
 	Operation  platform.AdministrativeRoleOperation
+}
+
+type PasswordChangeRequest struct {
+	Token      string
+	AdminToken string
+	Operation  PasswordChangeOperation
 }
 
 type HostConfigurationRequest struct {
@@ -356,6 +429,37 @@ func ApplyAdministrativeRole(ctx context.Context, path string, request Administr
 	return *response.AdminRoleState, nil
 }
 
+func ChangePassword(ctx context.Context, path string, request PasswordChangeRequest) error {
+	operation := request.Operation
+	defer operation.Clear()
+	response, err := socketRequest(ctx, path, Request{
+		Operation:      "password-change",
+		Token:          request.Token,
+		AdminToken:     request.AdminToken,
+		PasswordChange: &operation,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Error != "" {
+		switch response.Error {
+		case "password-authentication-failed":
+			return ErrPasswordAuthenticationFailed
+		case "password-policy-failed":
+			return ErrPasswordPolicy
+		case "password-expired":
+			return ErrPasswordExpired
+		case "password-unavailable":
+			return ErrPasswordUnavailable
+		case "invalid-password-operation":
+			return ErrPasswordInvalid
+		default:
+			return errors.New(response.Error)
+		}
+	}
+	return nil
+}
+
 func socketRequest(ctx context.Context, path string, request Request) (Response, error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", path)
@@ -514,7 +618,146 @@ type AdministrativeController interface {
 	RevokeAdministrative(context.Context, string) error
 }
 
-type PAMAuthenticator struct{ Service string }
+type PAMAuthenticator struct {
+	Service         string
+	PasswordService string
+}
+
+func (auth PAMAuthenticator) passwordService() string {
+	if auth.PasswordService != "" {
+		return auth.PasswordService
+	}
+	return "passwd"
+}
+
+type passwordConversation struct {
+	current string
+	new     string
+	index   int
+}
+
+func (conversation *passwordConversation) respond(style PromptStyle, _ string) (string, error) {
+	switch style {
+	case PromptHidden:
+		if conversation.index >= 6 {
+			return "", ErrPasswordInvalid
+		}
+		if conversation.current != "" && conversation.index == 0 {
+			conversation.index++
+			return conversation.current, nil
+		}
+		if conversation.new == "" {
+			return "", ErrPasswordInvalid
+		}
+		conversation.index++
+		return conversation.new, nil
+	case PromptText:
+		return "", nil
+	case PromptInfo, PromptError:
+		return "", nil
+	default:
+		return "", ErrPasswordInvalid
+	}
+}
+
+func passwordError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, pam.ErrNewAuthtokReqd), errors.Is(err, pam.ErrAuthtokExpired), errors.Is(err, pam.ErrAcctExpired):
+		return ErrPasswordExpired
+	case errors.Is(err, pam.ErrAuth), errors.Is(err, pam.ErrPermDenied), errors.Is(err, pam.ErrUserUnknown), errors.Is(err, pam.ErrMaxtries):
+		return ErrPasswordAuthenticationFailed
+	case errors.Is(err, pam.ErrAuthtok), errors.Is(err, pam.ErrAuthtokRecovery), errors.Is(err, pam.ErrAuthtokLockBusy), errors.Is(err, pam.ErrAuthtokDisableAging), errors.Is(err, pam.ErrTryAgain), errors.Is(err, pam.ErrConv):
+		return ErrPasswordPolicy
+	default:
+		return ErrPasswordUnavailable
+	}
+}
+
+// ChangePassword authenticates the current password and asks the host PAM
+// password stack to set a replacement. It intentionally uses PAM's
+// conversation, never argv, environment, files, or a child process stdin.
+func (auth PAMAuthenticator) ChangePassword(ctx context.Context, username, current, replacement string) error {
+	if ctx == nil || ctx.Err() != nil || username == "" || current == "" || replacement == "" {
+		return ErrPasswordInvalid
+	}
+	conversation := &passwordConversation{current: current, new: replacement}
+	defer func() {
+		conversation.current = ""
+		conversation.new = ""
+	}()
+	transaction, err := pam.StartFunc(auth.passwordService(), username, func(style pam.Style, message string) (string, error) {
+		switch style {
+		case pam.PromptEchoOff:
+			return conversation.respond(PromptHidden, message)
+		case pam.PromptEchoOn:
+			return conversation.respond(PromptText, message)
+		case pam.TextInfo:
+			return conversation.respond(PromptInfo, message)
+		case pam.ErrorMsg:
+			return conversation.respond(PromptError, message)
+		default:
+			return "", ErrPasswordInvalid
+		}
+	})
+	if err != nil {
+		return passwordError(err)
+	}
+	defer transaction.End()
+	if err := transaction.Authenticate(0); err != nil {
+		return passwordError(err)
+	}
+	flags := pam.Flags(0)
+	if err := transaction.AcctMgmt(0); err != nil {
+		if errors.Is(err, pam.ErrNewAuthtokReqd) || errors.Is(err, pam.ErrAuthtokExpired) {
+			flags = pam.ChangeExpiredAuthtok
+		} else {
+			return passwordError(err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return passwordError(transaction.ChangeAuthTok(flags))
+}
+
+// ResetPassword performs a root-owned PAM password reset. No old password is
+// accepted, and the target is selected by the authenticated administrative
+// grant in sessiond rather than by a gateway-supplied command line.
+func (auth PAMAuthenticator) ResetPassword(ctx context.Context, username, replacement string) error {
+	if ctx == nil || ctx.Err() != nil || username == "" || replacement == "" {
+		return ErrPasswordInvalid
+	}
+	conversation := &passwordConversation{new: replacement}
+	defer func() {
+		conversation.current = ""
+		conversation.new = ""
+	}()
+	transaction, err := pam.StartFunc(auth.passwordService(), username, func(style pam.Style, message string) (string, error) {
+		switch style {
+		case pam.PromptEchoOff:
+			return conversation.respond(PromptHidden, message)
+		case pam.PromptEchoOn:
+			return conversation.respond(PromptText, message)
+		case pam.TextInfo:
+			return conversation.respond(PromptInfo, message)
+		case pam.ErrorMsg:
+			return conversation.respond(PromptError, message)
+		default:
+			return "", ErrPasswordInvalid
+		}
+	})
+	if err != nil {
+		return passwordError(err)
+	}
+	defer transaction.End()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return passwordError(transaction.ChangeAuthTok(pam.ChangeExpiredAuthtok))
+}
 
 func (auth PAMAuthenticator) Authenticate(_ context.Context, username, password string) (Identity, error) {
 	secret := password

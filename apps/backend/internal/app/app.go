@@ -71,6 +71,7 @@ type Server struct {
 	applyGroupFn          func(context.Context, auth.GroupMembershipRequest) (platform.GroupMembershipState, error)
 	previewAdminRoleFn    func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRolePreview, error)
 	applyAdminRoleFn      func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRoleState, error)
+	changePasswordFn      func(context.Context, auth.PasswordChangeRequest) error
 	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
 	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
 	processTracker        *platform.ProcessTracker
@@ -140,6 +141,9 @@ func New(cfg config.Config) (*Server, error) {
 		},
 		applyAdminRoleFn: func(ctx context.Context, request auth.AdministrativeRoleRequest) (platform.AdministrativeRoleState, error) {
 			return auth.ApplyAdministrativeRole(ctx, cfg.SessionSocket, request)
+		},
+		changePasswordFn: func(ctx context.Context, request auth.PasswordChangeRequest) error {
+			return auth.ChangePassword(ctx, cfg.SessionSocket, request)
 		},
 		queryLogs:          platform.QueryLogs,
 		processTracker:     processTracker,
@@ -339,6 +343,7 @@ func (server *Server) routes() http.Handler {
 			router.Get("/groups", server.groups)
 			router.Post("/users/account/preview", server.previewLocalAccount)
 			router.With(server.requireCSRF).Post("/users/account", server.applyLocalAccount)
+			router.With(server.requireCSRF).Post("/users/password", server.changePassword)
 			router.Post("/groups/membership/preview", server.previewGroupMembership)
 			router.With(server.requireCSRF).Post("/groups/membership", server.applyGroupMembership)
 			router.Post("/groups/admin-role/preview", server.previewAdministrativeRole)
