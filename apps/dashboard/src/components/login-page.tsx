@@ -84,6 +84,13 @@ export function LoginPage({
           setError(
             "Authentication service is unavailable. Start tako sessiond, then try again."
           )
+        } else if (
+          caught instanceof APIError &&
+          caught.code === "session-failed"
+        ) {
+          setError(
+            "Signed in, but the user session could not start. Check tako-sessiond on the host."
+          )
         } else {
           setError(
             challenge
