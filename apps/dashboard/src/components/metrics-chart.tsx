@@ -268,6 +268,7 @@ function ResourceChart({
                   key={String(key)}
                   dataKey={String(key)}
                   type="monotone"
+                  isAnimationActive={false}
                   fill={`var(--color-${String(key)})`}
                   fillOpacity={0.12}
                   stroke={`var(--color-${String(key)})`}
@@ -277,6 +278,7 @@ function ResourceChart({
                   key={String(key)}
                   dataKey={String(key)}
                   type="monotone"
+                  isAnimationActive={false}
                   dot={false}
                   stroke={`var(--color-${String(key)})`}
                 />
