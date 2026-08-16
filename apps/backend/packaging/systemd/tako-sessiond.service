@@ -7,15 +7,19 @@ User=root
 Group=tako-session
 Restart=on-failure
 RestartSec=2s
-NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
+# Sessiond setuid-execs `tako bridge` as the authenticated user. That child
+# inherits this unit's sandbox, so the unit must look like a login helper
+# (cockpit-session), not like the network gateway. NoNewPrivileges,
+# ProtectSystem=strict, ProtectControlGroups, and RestrictAddressFamilies
+# block non-root bridge spawn or leave /home read-only.
+ProtectSystem=true
 ProtectHome=false
 ProtectKernelTunables=true
 ProtectKernelModules=true
-ProtectControlGroups=true
 UMask=0077
-RuntimeDirectory=tako
-RuntimeDirectoryMode=0750
-RestrictAddressFamilies=AF_UNIX
+# Host PAM session stacks may record login events through wtmpdb. SQLite needs
+# directory write access for its journal files.
+ReadWritePaths=/var/log
+ReadWritePaths=-/var/lib/wtmpdb
 SystemCallArchitectures=native

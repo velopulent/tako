@@ -35,6 +35,10 @@ status="$(curl --silent --show-error --insecure --output /dev/null --write-out '
 test "$status" = 401
 
 if [[ -n "${TAKO_SMOKE_USER:-}" && -n "${TAKO_SMOKE_PASSWORD:-}" ]]; then
+  if [[ "${TAKO_SMOKE_USER}" == "root" ]]; then
+    echo "TAKO_SMOKE_USER must be a non-root UNIX account" >&2
+    exit 1
+  fi
   response="$(printf '%s' "$(TAKO_USER="$TAKO_SMOKE_USER" TAKO_PASSWORD="$TAKO_SMOKE_PASSWORD" python3 -c 'import json,os; print(json.dumps({"username":os.environ["TAKO_USER"],"password":os.environ["TAKO_PASSWORD"]}))')" | curl --silent --show-error --insecure --fail --header 'Origin: https://127.0.0.1:9090' --header 'Content-Type: application/json' --data-binary @- "$base_url/api/v1/auth/login")"
   printf '%s' "$response" | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value.get("user",{}).get("username")'
   echo "PAM login smoke test passed"
