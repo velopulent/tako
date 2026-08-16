@@ -149,6 +149,49 @@ func (opener *multiRoundOpener) OpenSessionWithConversation(username string, con
 	}, nil
 }
 
+type immediateOpener struct{}
+
+func (*immediateOpener) OpenSessionWithConversation(username string, _ auth.Conversation) (auth.UserSession, error) {
+	return auth.UserSession{
+		Identity: auth.Identity{Username: username, UID: 1000, GID: 1000},
+		Close:    func() {},
+	}, nil
+}
+
+func TestConversationCompleteFailureIsSessionFailed(t *testing.T) {
+	store := newConversationStore(&immediateOpener{}, func(auth.UserSession) (string, error) {
+		return "", errors.New("fork/exec /usr/bin/tako: operation not permitted")
+	})
+	defer store.closeAll()
+	_, err := store.advance(context.Background(), auth.ConversationRequest{Username: "krishna", Password: "secret"})
+	if !errors.Is(err, errSessionFailed) {
+		t.Fatalf("complete failure = %v, want session-failed", err)
+	}
+	if errors.Is(err, errConversationInvalid) {
+		t.Fatal("bridge spawn failure classified as invalid conversation")
+	}
+}
+
+func TestConversationCompleteFailureIsNotAuthenticationFailedOnWire(t *testing.T) {
+	conversations := newConversationStore(&immediateOpener{}, func(auth.UserSession) (string, error) {
+		return "", errors.New("fork/exec /usr/bin/tako: operation not permitted")
+	})
+	defer conversations.closeAll()
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go handle(serverConn, auth.PAMAuthenticator{}, conversations, &grantStore{values: make(map[string]bridgeGrant)}, nil, zap.NewNop())
+	if err := json.NewEncoder(clientConn).Encode(auth.Request{Operation: "conversation", Username: "krishna", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	var response auth.Response
+	if err := json.NewDecoder(clientConn).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "session-failed" {
+		t.Fatalf("wire error = %q, want session-failed", response.Error)
+	}
+}
+
 func TestConversationSupportsMultiplePromptTypesAndRounds(t *testing.T) {
 	opener := &multiRoundOpener{}
 	store := newConversationStore(opener, func(session auth.UserSession) (string, error) {

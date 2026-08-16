@@ -3,6 +3,7 @@ package sessiond
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -21,6 +22,7 @@ var (
 	errConversationInvalid = errors.New("invalid conversation")
 	errConversationBounds  = errors.New("conversation bounds exceeded")
 	errConversationBusy    = errors.New("too many authentication conversations")
+	errSessionFailed       = errors.New("session-failed")
 )
 
 type sessionOpener interface {
@@ -127,7 +129,7 @@ func (store *conversationStore) advance(ctx context.Context, request auth.Conver
 			token, err := store.complete(result.session)
 			if err != nil {
 				result.session.Close()
-				return auth.ConversationResponse{}, err
+				return auth.ConversationResponse{}, fmt.Errorf("%w: %v", errSessionFailed, err)
 			}
 			identity := result.session.Identity
 			return auth.ConversationResponse{Identity: &identity, BridgeToken: token}, nil

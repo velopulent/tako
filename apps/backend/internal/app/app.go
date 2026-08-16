@@ -490,6 +490,12 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 				problem(writer, http.StatusServiceUnavailable, "authentication-busy", "Authentication service is busy; try again shortly")
 				return
 			}
+			if result.Error == "session-failed" {
+				server.loginAttempts.Reset(request.RemoteAddr)
+				server.logger.Error("user session setup failed", zap.String("username", credentials.Username))
+				problem(writer, http.StatusInternalServerError, "session-failed", "Could not create session")
+				return
+			}
 			err = auth.ErrAuthenticationFailed
 		} else if len(result.Prompts) > 0 {
 			writeJSON(writer, http.StatusAccepted, map[string]any{"conversationId": result.ConversationID, "prompts": result.Prompts})

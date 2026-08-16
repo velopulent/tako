@@ -73,7 +73,7 @@ func startUserBridgeExecutable(session auth.UserSession, executable string) (*us
 	if err := command.Start(); err != nil {
 		_ = input.Close()
 		_ = output.Close()
-		return nil, err
+		return nil, fmt.Errorf("start user bridge executable %s uid=%d gid=%d: %w", executable, session.Identity.UID, session.Identity.GID, err)
 	}
 	process := &userBridgeProcess{command: command, input: input, output: output, reader: bufio.NewReader(output), done: make(chan error, 1), exited: make(chan struct{})}
 	go func() {

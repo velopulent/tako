@@ -321,6 +321,17 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 			if errors.Is(err, errConversationInvalid) || errors.Is(err, errConversationBounds) {
 				code = "invalid-conversation"
 			}
+			if errors.Is(err, errSessionFailed) {
+				code = "session-failed"
+			}
+			// Keep the client response generic, but retain the underlying PAM or
+			// user-bridge failure in the privileged service journal. Secret fields
+			// have been cleared before this point.
+			logger.Warn("authentication conversation failed",
+				zap.String("username", conversationRequest.Username),
+				zap.String("reason", code),
+				zap.Error(err),
+			)
 			_ = encoder.Encode(auth.Response{Error: code})
 			return
 		}

@@ -31,6 +31,8 @@ paths:
           $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/Problem'
+        '500':
+          $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
   /auth/session:

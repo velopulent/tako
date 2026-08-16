@@ -122,6 +122,42 @@ func TestLoginRelaysMultiplePAMRounds(t *testing.T) {
 	}
 }
 
+func TestLoginReportsSessionSetupFailure(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	server.config.Development = false
+	server.authenticator = sessionFailedAuthenticator{}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"krishna","password":"secret"}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	request.Header.Set("Origin", server.config.AllowedOrigins[0])
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("session setup failure returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"session-failed"`)) || bytes.Contains(recorder.Body.Bytes(), []byte(`"authentication-failed"`)) {
+		t.Fatalf("session setup failure mapped as credentials: %s", recorder.Body.String())
+	}
+}
+
+type sessionFailedAuthenticator struct{}
+
+func (sessionFailedAuthenticator) Authenticate(context.Context, string, string) (auth.Identity, error) {
+	return auth.Identity{}, errors.New("one-shot authentication should not be used")
+}
+
+func (sessionFailedAuthenticator) AdvanceConversation(context.Context, *auth.ConversationRequest) (auth.ConversationResponse, error) {
+	return auth.ConversationResponse{Error: "session-failed"}, nil
+}
+
+func (sessionFailedAuthenticator) CancelConversation(context.Context, string) error {
+	return nil
+}
+
 func TestLoginConversationCanBeCanceled(t *testing.T) {
 	server, err := New(testConfig(t))
 	if err != nil {
