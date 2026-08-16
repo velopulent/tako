@@ -4,6 +4,7 @@ The package installs one `/usr/bin/tako` multicall executable and keeps the trus
 
 - `tako.service` is the unprivileged HTTPS gateway (`tako:tako`) and writes only to `/var/lib/tako`.
 - `tako-sessiond.socket` exposes a mode-`0660` UNIX socket to `tako-session`; `tako-sessiond.service` is the root-owned PAM/session boundary.
+- `tmpfiles.d/tako.conf` creates `/run/tako` as `root:tako-session` with mode `0750` before socket activation; the gateway receives `tako-session` as a supplementary group.
 - `tako bridge` is launched by the session service for an authenticated UNIX user and is never reachable from the network gateway.
 
 Install the distribution-specific PAM file as `/etc/pam.d/tako`: use `pam/tako.debian` on Debian/Ubuntu and `pam/tako.redhat` on Fedora/RHEL-compatible systems. The generic `pam/tako` file is only a minimal development fixture; package builds should transform it to the host's standard stack.
