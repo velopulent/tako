@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -19,6 +20,26 @@ import (
 	"github.com/velopulent/tako/internal/platform"
 	"go.uber.org/zap"
 )
+
+func TestEnsureSocketParentCreatesNestedDirectory(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "run", "tako", "session.sock")
+	if err := ensureSocketParent(socket); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Dir(socket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatal("socket parent is not a directory")
+	}
+}
+
+func TestEnsureSocketParentSkipsBareFilename(t *testing.T) {
+	if err := ensureSocketParent("session.sock"); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestGrantStore(t *testing.T) {
 	store := &grantStore{values: make(map[string]bridgeGrant)}

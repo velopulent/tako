@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,7 +80,7 @@ func Run(args []string) error {
 		return err
 	}
 	if !activated {
-		if err := os.MkdirAll("/run/tako", 0o750); err != nil {
+		if err := ensureSocketParent(*socket); err != nil {
 			return err
 		}
 		_ = os.Remove(*socket)
@@ -126,6 +127,14 @@ func Run(args []string) error {
 		}
 		go handle(conn, service, conversations, grants, policy, logger)
 	}
+}
+
+func ensureSocketParent(socket string) error {
+	dir := filepath.Dir(socket)
+	if dir == "" || dir == "." {
+		return nil
+	}
+	return os.MkdirAll(dir, 0o750)
 }
 
 func activatedListener() (net.Listener, bool, error) {
