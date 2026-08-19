@@ -13,7 +13,8 @@
         "command": "go run ./cmd/tako serve --dev",
         "cwd": "apps/backend",
         "env": {
-          "GOCACHE": "/tmp/tako-go-cache"
+          "GOCACHE": "/tmp/tako-go-cache",
+          "TAKO_DASHBOARD_DIR": ""
         }
       }
     },
@@ -30,7 +31,8 @@
         ],
         "cwd": "apps/backend",
         "env": {
-          "GOCACHE": "/tmp/tako-go-cache"
+          "GOCACHE": "/tmp/tako-go-cache",
+          "TAKO_DASHBOARD_DIR": ""
         },
         "parallel": false
       }
@@ -43,7 +45,8 @@
         "command": "go test ./...",
         "cwd": "apps/backend",
         "env": {
-          "GOCACHE": "/tmp/tako-go-cache"
+          "GOCACHE": "/tmp/tako-go-cache",
+          "TAKO_DASHBOARD_DIR": ""
         }
       }
     },
@@ -55,7 +58,8 @@
         "command": "go test -race ./...",
         "cwd": "apps/backend",
         "env": {
-          "GOCACHE": "/tmp/tako-go-cache"
+          "GOCACHE": "/tmp/tako-go-cache",
+          "TAKO_DASHBOARD_DIR": ""
         }
       }
     },
@@ -67,7 +71,8 @@
         "command": "go vet ./...",
         "cwd": "apps/backend",
         "env": {
-          "GOCACHE": "/tmp/tako-go-cache"
+          "GOCACHE": "/tmp/tako-go-cache",
+          "TAKO_DASHBOARD_DIR": ""
         }
       }
     },

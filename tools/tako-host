@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+# Host-integrated development helper (Cockpit-style).
+# Installs systemd units, PAM, and a checkout overlay so `tako serve` /
+# `tako sessiond` run like production on the developer machine.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PACKAGING="$ROOT/apps/backend/packaging"
+BIN="$ROOT/bin/tako"
+# systemd ProtectHome=true hides /home; ExecStart must live outside the checkout.
+HOST_BIN="/usr/local/libexec/tako"
+DIST="$ROOT/apps/backend/internal/dashboard/dist"
+OVERLAY="/run/tako/dashboard"
+CONFIG_DIR="/etc/tako"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+UNIT_DIR="/etc/systemd/system"
+DROPIN_MARKER="# Managed by tools/tako-host — do not edit by hand"
+
+usage() {
+  cat <<'EOF'
+usage: tools/tako-host <command>
+
+  setup      Install users, PAM, tmpfiles, units, config, overlay (needs root)
+  reload     Build bin/tako and restart systemd units
+  start      Ensure units are active
+  stop       Stop and disable Tako units
+  uninstall  Stop units and remove host files installed by setup
+  status     Show unit and overlay status
+  watch      Build once, start host stack, then vite build --watch
+
+Linux only. Prefer `bun run dev` (calls watch) after `sudo tools/tako-host setup`.
+EOF
+}
+
+need_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "tools/tako-host: this command needs root (try: sudo $0 $*)" >&2
+    exit 1
+  fi
+}
+
+detect_pam_source() {
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "${ID:-}:${ID_LIKE:-}" in
+      debian:*|ubuntu:*|*debian*|*ubuntu*)
+        echo "$PACKAGING/pam/tako.debian"
+        return
+        ;;
+      fedora:*|rhel:*|centos:*|*fedora*|*rhel*)
+        echo "$PACKAGING/pam/tako.redhat"
+        return
+        ;;
+      arch:*|*arch*)
+        echo "$PACKAGING/pam/tako"
+        return
+        ;;
+    esac
+  fi
+  echo "$PACKAGING/pam/tako"
+}
+
+ensure_group() {
+  local name="$1"
+  if ! getent group "$name" >/dev/null; then
+    groupadd --system "$name"
+  fi
+}
+
+ensure_user() {
+  local name="$1"
+  local primary_group="$2"
+  if ! getent passwd "$name" >/dev/null; then
+    useradd --system --home-dir /var/lib/tako --shell /usr/sbin/nologin \
+      --gid "$primary_group" --create-home "$name" 2>/dev/null \
+      || useradd --system --home-dir /var/lib/tako --shell /sbin/nologin \
+      --gid "$primary_group" --create-home "$name"
+  fi
+}
+
+install_unit() {
+  local name="$1"
+  install -m 0644 "$PACKAGING/systemd/$name" "$UNIT_DIR/$name"
+}
+
+write_dropin() {
+  local unit="$1"
+  local body="$2"
+  local dir="$UNIT_DIR/${unit}.d"
+  mkdir -p "$dir"
+  cat >"$dir/10-tako-host.conf" <<EOF
+$DROPIN_MARKER
+[Service]
+$body
+EOF
+}
+
+install_host_binary() {
+  if [[ ! -x "$BIN" ]]; then
+    echo "tools/tako-host: missing $BIN — build first (bun nx build backend)" >&2
+    exit 1
+  fi
+  install -d -m 0755 "$(dirname "$HOST_BIN")"
+  install -m 0755 "$BIN" "$HOST_BIN"
+  if command -v chcon >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null || true)" == "Enforcing" ]]; then
+    chcon -t bin_t "$HOST_BIN" 2>/dev/null || true
+  fi
+}
+
+write_host_dropins() {
+  # ProtectHome=true makes ExecStart under /home fail with 203/EXEC even when the
+  # file exists. Run the installed copy outside /home; bind-mount the checkout
+  # dashboard dist for Vite watch updates.
+  write_dropin tako.service "ExecStart=
+ExecStart=$HOST_BIN serve --config $CONFIG_FILE
+Environment=TAKO_DASHBOARD_DIR=$OVERLAY
+ProtectHome=read-only
+BindReadOnlyPaths=$DIST:$OVERLAY"
+
+  write_dropin tako-sessiond.service "ExecStart=
+ExecStart=$HOST_BIN sessiond --socket /run/tako/session.sock"
+}
+
+selinux_hint() {
+  if command -v getenforce >/dev/null 2>&1; then
+    local mode
+    mode="$(getenforce 2>/dev/null || true)"
+    if [[ "$mode" == "Enforcing" ]]; then
+      cat >&2 <<'EOF'
+
+SELinux is enforcing. Tree-built binaries often lack the expected type.
+For host development, either:
+  sudo setenforce 0
+or label the binary (example):
+  sudo chcon -t bin_t ./bin/tako
+EOF
+    fi
+  fi
+}
+
+cmd_setup() {
+  need_root setup
+
+  ensure_group tako
+  ensure_group tako-session
+  ensure_user tako tako
+  usermod -aG tako-session tako
+
+  install -d -m 0755 "$CONFIG_DIR"
+  install -m 0644 "$(detect_pam_source)" /etc/pam.d/tako
+  install -m 0644 "$PACKAGING/tmpfiles.d/tako.conf" /etc/tmpfiles.d/tako.conf
+  systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf
+
+  if [[ -d /usr/share/polkit-1/actions ]] && [[ -f "$PACKAGING/polkit/org.velopulent.tako.policy" ]]; then
+    install -m 0644 "$PACKAGING/polkit/org.velopulent.tako.policy" \
+      /usr/share/polkit-1/actions/org.velopulent.tako.policy
+  fi
+
+  install_unit tako.service
+  install_unit tako.socket
+  install_unit tako-sessiond.service
+  install_unit tako-sessiond.socket
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cat >"$CONFIG_FILE" <<EOF
+[server]
+address = "127.0.0.1:9090"
+data_dir = "/var/lib/tako"
+session_socket = "/run/tako/session.sock"
+allowed_origin = "https://localhost:9090, https://127.0.0.1:9090"
+
+[monitoring]
+default_interval = "1m"
+history_retention = "24h"
+
+[admin]
+idle_timeout = "5m"
+EOF
+    chown root:tako "$CONFIG_FILE"
+    chmod 0640 "$CONFIG_FILE"
+  fi
+
+  install -d -m 0700 -o tako -g tako /var/lib/tako
+
+  # Ensure the checkout dist exists so the bind path is valid at first start.
+  mkdir -p "$DIST"
+  if [[ ! -f "$DIST/index.html" ]]; then
+    printf '%s\n' '<!doctype html><title>Tako</title><p>Build the dashboard (bun run dev).</p>' >"$DIST/index.html"
+  fi
+
+  if [[ ! -x "$BIN" ]]; then
+    echo "Building $BIN before installing units…"
+    # setup runs as root; build as the invoking user when possible
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+      sudo -u "$SUDO_USER" -H bash -lc "cd '$ROOT' && bun nx build backend"
+    else
+      build_binary
+    fi
+  fi
+  install_host_binary
+  write_host_dropins
+
+  systemctl daemon-reload
+  systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf
+  systemctl enable --now tako-sessiond.socket
+  systemctl enable --now tako.socket
+  systemctl reset-failed tako.service 2>/dev/null || true
+  systemctl enable --now tako.service
+
+  echo "Host development stack installed."
+  echo "Binary: $HOST_BIN (from $BIN)"
+  echo "Login:  https://127.0.0.1:9090 (your UNIX user/password)"
+  selinux_hint
+}
+
+build_binary() {
+  if [[ ! -x "$(command -v bun)" ]]; then
+    echo "tools/tako-host: bun not found in PATH" >&2
+    exit 1
+  fi
+  (
+    cd "$ROOT"
+    bun nx build backend
+  )
+}
+
+refresh_overlay() {
+  # Unit drop-in BindReadOnlyPaths mounts DIST at OVERLAY when the gateway starts.
+  # Vite watch writes into DIST; the bind makes new assets visible without restart.
+  mkdir -p "$DIST"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf 2>/dev/null || true
+  fi
+}
+
+units_installed() {
+  [[ -f "$UNIT_DIR/tako.service" ]] && [[ -f "$UNIT_DIR/tako-sessiond.socket" ]]
+}
+
+cmd_reload() {
+  if ! units_installed; then
+    echo "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup" >&2
+    exit 1
+  fi
+  build_binary
+  if [[ "$(id -u)" -eq 0 ]]; then
+    refresh_overlay
+    install_host_binary
+    write_host_dropins
+    systemctl daemon-reload
+    systemctl reset-failed tako.service 2>/dev/null || true
+    systemctl restart tako-sessiond.socket tako.socket tako.service
+  else
+    echo "Built $BIN. Installing binary and restarting units with sudo…"
+    sudo "$ROOT/tools/tako-host" _restart
+  fi
+  echo "Reloaded. Open https://127.0.0.1:9090"
+  selinux_hint
+}
+
+cmd_restart_as_root() {
+  need_root _restart
+  refresh_overlay
+  install_host_binary
+  write_host_dropins
+  systemctl daemon-reload
+  systemctl reset-failed tako.service 2>/dev/null || true
+  systemctl restart tako-sessiond.socket tako.socket tako.service
+}
+
+cmd_start() {
+  if ! units_installed; then
+    echo "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup" >&2
+    exit 1
+  fi
+  if [[ ! -x "$BIN" ]]; then
+    build_binary
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    refresh_overlay
+    systemctl start tako-sessiond.socket tako.socket tako.service
+  else
+    sudo "$ROOT/tools/tako-host" _start_root
+  fi
+}
+
+cmd_start_root() {
+  need_root _start_root
+  refresh_overlay
+  if [[ -x "$BIN" ]]; then
+    install_host_binary
+  fi
+  systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf 2>/dev/null || true
+  systemctl reset-failed tako.service 2>/dev/null || true
+  systemctl start tako-sessiond.socket tako.socket tako.service
+}
+
+cmd_stop() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    sudo "$ROOT/tools/tako-host" stop
+    return
+  fi
+  systemctl stop tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
+  systemctl disable tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
+  echo "Tako units stopped."
+}
+
+cmd_uninstall() {
+  need_root uninstall
+  systemctl stop tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
+  systemctl disable tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
+  rm -f "$UNIT_DIR/tako.service" "$UNIT_DIR/tako.socket" \
+    "$UNIT_DIR/tako-sessiond.service" "$UNIT_DIR/tako-sessiond.socket"
+  rm -rf "$UNIT_DIR/tako.service.d" "$UNIT_DIR/tako-sessiond.service.d"
+  rm -f /etc/tmpfiles.d/tako.conf /etc/pam.d/tako
+  rm -f /usr/share/polkit-1/actions/org.velopulent.tako.policy
+  rm -f "$HOST_BIN"
+  rm -f "$OVERLAY"
+  systemctl daemon-reload
+  echo "Host development files removed. Checkout and /var/lib/tako left in place."
+}
+
+cmd_status() {
+  echo "checkout: $BIN$([ -x "$BIN" ] && echo ' (present)' || echo ' (missing)')"
+  echo "host bin: $HOST_BIN$([ -x "$HOST_BIN" ] && echo ' (present)' || echo ' (missing)')"
+  echo "dist:     $DIST$([ -f "$DIST/index.html" ] && echo ' (ready)' || echo ' (missing index.html)')"
+  echo "overlay:  $OVERLAY (bind-mounted from dist by tako.service)"
+  if units_installed; then
+    systemctl --no-pager --full status tako.service tako-sessiond.socket 2>/dev/null || true
+  else
+    echo "units: not installed (sudo tools/tako-host setup)"
+  fi
+}
+
+cmd_watch() {
+  if ! units_installed; then
+    echo "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup" >&2
+    exit 1
+  fi
+  build_binary
+  cmd_start
+  echo
+  echo "Host stack running. Watching dashboard → $DIST"
+  echo "Open https://127.0.0.1:9090 and log in with your UNIX credentials."
+  echo "Refresh the browser after Vite finishes a rebuild."
+  echo
+  (
+    cd "$ROOT/apps/dashboard"
+    exec bunx vite build --watch
+  )
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    setup) cmd_setup ;;
+    reload) cmd_reload ;;
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    uninstall) cmd_uninstall ;;
+    status) cmd_status ;;
+    watch) cmd_watch ;;
+    _restart) cmd_restart_as_root ;;
+    _start_root) cmd_start_root ;;
+    -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 2 ;;
+    *)
+      echo "unknown command: $cmd" >&2
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

@@ -11,7 +11,9 @@ Frontend source lives in `apps/dashboard/src/`. Reusable shadcn components belon
 ## Build, Test, and Development Commands
 
 - `bun install`: install all workspace dependencies from the root `bun.lock`.
-- `bun run dev`: run the dashboard on port 5173 and loopback Go gateway on port 9090.
+- `sudo ./tools/tako-host setup`: one-time host install of users, PAM, and systemd units pointed at this checkout.
+- `bun run dev`: host-integrated stack (real sessiond/PAM) plus `vite build --watch`; open https://127.0.0.1:9090.
+- `bun run dev:ui`: passwordless `serve --dev` + Vite on :5173 (no PAM/PTY; UI-only).
 - `bun run build`: type-check and build the dashboard, then produce the stripped `bin/tako` executable.
 - `bun run test`: run Go tests and dashboard type checking through Nx.
 - `bun run lint`: run `go vet` and ESLint through Nx.

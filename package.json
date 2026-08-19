@@ -7,7 +7,8 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "nx run-many -t dev --projects=backend,dashboard --parallel=2",
+    "dev": "./tools/tako-host watch",
+    "dev:ui": "nx run-many -t dev --projects=backend,dashboard --parallel=2",
     "build": "nx build backend",
     "test": "nx run-many -t test,typecheck",
     "lint": "nx run-many -t lint",

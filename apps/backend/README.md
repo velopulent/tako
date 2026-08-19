@@ -1,11 +1,12 @@
 # Tako backend
 
-Go backend for Tako. One multicall executable provides `serve`, `sessiond`, and `bridge` modes. Dashboard production assets are embedded from `internal/dashboard/dist`.
+Go backend for Tako. One multicall executable provides `serve`, `sessiond`, and `bridge` modes. Dashboard production assets are embedded from `internal/dashboard/dist`. Host development can overlay that directory via `/run/tako/dashboard` (see root [`HACKING.md`](../../HACKING.md)).
 
 Run tasks from repository root through Nx:
 
 ```sh
-bun nx dev backend
+bun run dev
+bun run dev:ui
 bun nx test backend
 bun nx lint backend
 bun nx race backend

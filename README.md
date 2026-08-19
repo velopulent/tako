@@ -4,14 +4,32 @@ Tako is a lightweight, modern Linux administration dashboard written in Go and R
 
 ## Development
 
-Requirements: Go 1.26+, Bun 1.3+, Linux procfs, and optional system D-Bus services.
+Requirements:
+
+- Go 1.26+
+- Bun 1.3+
+- systemd, Linux procfs
+- pam-devel (or distro equivalent) and optional system D-Bus / Polkit services
+
+Linux only (Arch, Fedora, Debian/Ubuntu). Full workflow is documented in [`HACKING.md`](HACKING.md).
 
 ```bash
 bun install
+sudo ./tools/tako-host setup   # once per machine
 bun run dev
 ```
 
-Open `http://127.0.0.1:5173`. Nx runs the Vite dashboard and Go backend together; Vite proxies `/api` requests to the backend on `http://127.0.0.1:9090`. Development mode accepts a local UNIX username without a password and is restricted to loopback HTTP. Production mode uses HTTPS and `/run/tako/session.sock` for PAM authentication.
+Open **https://127.0.0.1:9090** and log in with your UNIX username and password.
+`bun run dev` builds `bin/tako`, runs the real systemd gateway + sessiond stack,
+and watches the dashboard into the checkout overlay. That is the same process
+model as packaging (PAM, PTY, bridge grants). Refresh the browser after Vite
+rebuilds.
+
+For passwordless loopback UI-only work (no PAM, no terminals):
+
+```bash
+bun run dev:ui
+```
 
 Common workspace commands:
 
@@ -22,24 +40,18 @@ bun run lint
 bun run typecheck
 bun run race
 bun run graph
+./tools/tako-host reload   # after Go changes
 ```
 
 `bun run build` builds `apps/dashboard` first, embeds its output in `apps/backend`, and writes the multicall executable to `bin/tako`.
 
-For local production-mode PAM testing, run both process modes in separate terminals:
-
-```bash
-sudo -g "$(id -gn)" ./bin/tako sessiond
-./bin/tako serve --config ./local-config.toml
-```
-
-Set `data_dir` in `local-config.toml` to a directory writable only by your user; other server values can follow `apps/backend/config.example.toml`. Running `sudo ./bin/tako serve` alone does not start the privileged PAM service. Keep the network gateway unprivileged. Logs are JSON on stderr; set `TAKO_LOG_LEVEL=debug` for more detail.
+Logs are JSON on the service journal (`journalctl -u tako.service -u tako-sessiond.service -f`). Set `TAKO_LOG_LEVEL=debug` for more detail.
 
 ## Implemented
 
 The gateway includes HTTPS certificate bootstrapping, systemd socket activation, PAM authentication, in-memory sessions, CSRF/origin protections, capability discovery, an embedded responsive SPA, and bounded live metrics over SSE.
 
-Dashboard, metrics, journal logs, systemd services, processes, users, mounted storage, network interfaces, PackageKit readiness, hardware, boot history, and restart status expose real host snapshots. Metrics retain a configurable 24-hour in-memory window and adapt collection to active browser intervals. Production PAM sessions receive a short-lived opaque bridge grant and can open a binary WebSocket PTY running under the authenticated UNIX UID/GID. Development mode deliberately disables terminals.
+Dashboard, metrics, journal logs, systemd services, processes, users, mounted storage, network interfaces, PackageKit readiness, hardware, boot history, and restart status expose real host snapshots. Metrics retain a configurable 24-hour in-memory window and adapt collection to active browser intervals. Production PAM sessions receive a short-lived opaque bridge grant and can open a binary WebSocket PTY running under the authenticated UNIX UID/GID. The UI-only `serve --dev` lane deliberately disables terminals.
 
 The Services page inventories service, target, socket, timer, and path units, exposes unit relationships and journal entries, and supports allowlisted lifecycle actions after time-bounded Administrative access. System actions are audited by the local privileged session service; the HTTPS gateway remains unprivileged. Current elevation uses password-backed PAM. Sudo `NOPASSWD`, interactive MFA, and fully functional user-manager actions remain follow-up compatibility work.
 
