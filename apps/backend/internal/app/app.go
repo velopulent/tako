@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"math/big"
 	"net"
 	"net/http"
@@ -433,7 +432,7 @@ func (server *Server) routes() http.Handler {
 			router.Get("/terminal", server.terminalStatus)
 		})
 	})
-	router.Handle("/*", spaHandler(dashboard.Files()))
+	router.Handle("/*", spaHandler())
 	return router
 }
 
@@ -2434,9 +2433,10 @@ func (server *Server) ensureCertificate() (string, string, error) {
 	return certificate, key, nil
 }
 
-func spaHandler(files fs.FS) http.Handler {
-	fileServer := http.FileServer(http.FS(files))
+func spaHandler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		files := dashboard.Files()
+		fileServer := http.FileServer(http.FS(files))
 		path := strings.TrimPrefix(request.URL.Path, "/")
 		if path != "" {
 			if file, err := files.Open(path); err == nil {
