@@ -42,6 +42,21 @@ func TestDevelopmentDefaultsUseLoopback(t *testing.T) {
 	}
 }
 
+func TestAllowedOriginAcceptsCommaSeparatedList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	payload := "[server]\nallowed_origin = \"https://localhost:9090, https://127.0.0.1:9090\"\n"
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowedOrigins) != 2 || cfg.AllowedOrigins[0] != "https://localhost:9090" || cfg.AllowedOrigins[1] != "https://127.0.0.1:9090" {
+		t.Fatalf("origins=%q", cfg.AllowedOrigins)
+	}
+}
+
 func TestRejectsUnsafeMonitoringInterval(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[monitoring]\ndefault_interval = \"100ms\"\n"), 0o600); err != nil {

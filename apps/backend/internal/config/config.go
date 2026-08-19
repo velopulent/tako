@@ -86,7 +86,7 @@ func Load(path string, development bool) (Config, error) {
 		case "server.session_socket":
 			cfg.SessionSocket = value
 		case "server.allowed_origin":
-			cfg.AllowedOrigins = []string{value}
+			cfg.AllowedOrigins = splitOrigins(value)
 		case "monitoring.default_interval":
 			cfg.MonitoringInterval, err = parseDuration(value, time.Second, 5*time.Minute)
 		case "monitoring.history_retention":
@@ -101,6 +101,18 @@ func Load(path string, development bool) (Config, error) {
 		}
 	}
 	return cfg, scanner.Err()
+}
+
+func splitOrigins(value string) []string {
+	parts := strings.Split(value, ",")
+	origins := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			origins = append(origins, part)
+		}
+	}
+	return origins
 }
 
 func parseDuration(value string, minimum, maximum time.Duration) (time.Duration, error) {

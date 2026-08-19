@@ -2,7 +2,7 @@
 address = ":9090"
 data_dir = "/var/lib/tako"
 session_socket = "/run/tako/session.sock"
-allowed_origin = "https://localhost:9090"
+allowed_origin = "https://localhost:9090, https://127.0.0.1:9090"
 # certificate = "/etc/tako/tako.crt"
 # certificate_key = "/etc/tako/tako.key"
 
