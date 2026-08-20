@@ -1,6 +1,6 @@
 # Tako glossary
 
-- **Gateway**: unprivileged HTTPS process serving UI and browser API.
+- **Gateway**: unprivileged HTTPS process serving UI and browser API. Production packaging runs it as a systemd `DynamicUser` (`tako-gateway`) in group `tako-session`.
 - **Session service**: local privileged process limited to PAM authentication and user-session creation.
 - **User bridge**: process running with logged-in UNIX user's identity and system permissions.
 - **Privileged bridge**: short-lived bridge started only after system policy authorizes escalation.

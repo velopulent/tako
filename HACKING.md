@@ -24,10 +24,14 @@ One-time bootstrap (idempotent):
 sudo ./tools/tako-host setup
 ```
 
-This creates the `tako` / `tako-session` accounts, installs PAM and systemd
-units, writes `/etc/tako/config.toml`, and points the units at `bin/tako` in
-this checkout. Dashboard assets are bind-mounted from
-`apps/backend/internal/dashboard/dist` to `/run/tako/dashboard`.
+This installs the `tako-session` group (`sysusers.d`), PAM, systemd units,
+`/etc/tako/config.toml`, and a copy of `bin/tako` at `/usr/local/libexec/tako`
+(file context `bin_t`). The gateway runs as a systemd `DynamicUser`
+(`tako-gateway`) with primary group `tako-session`. Dashboard assets are
+**copied** to `/run/tako/dashboard` (not bind-mounted from `/home`) so SELinux
+sees `var_run_t` rather than `user_home_t`. While `bun run dev` is running, a
+user-space watcher recopies `dist/` after Vite rebuilds (systemd does not
+inotify `/home`).
 
 Day-to-day UI work:
 
@@ -66,19 +70,13 @@ TAKO_LOG_LEVEL=debug   # set in a drop-in or the environment if needed
 
 ### SELinux
 
-Tree-built binaries are copied to `/usr/local/libexec/tako` for systemd
-(`ProtectHome` hides ExecStart under `/home`). On enforcing SELinux hosts
-(Fedora/RHEL), `tools/tako-host` labels that copy `bin_t`. If it still fails:
+Host-dev installs `/usr/local/libexec/tako` with a persistent `bin_t` file
+context (`semanage fcontext` + `restorecon`) and serves the SPA from a copy
+under `/run/tako/dashboard`. Bind-mounting the checkout would keep
+`user_home_t` and generate AVC alerts; do not do that.
 
-```bash
-sudo setenforce 0
-```
-
-or re-label the installed host binary:
-
-```bash
-sudo chcon -t bin_t /usr/local/libexec/tako
-```
+A confined `tako_t` domain belongs with distro packaging. Until then, default
+`unconfined_service_t` plus correct labels is enough for enforcing mode.
 
 ### Overlay
 

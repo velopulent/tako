@@ -61,6 +61,6 @@ Other destructive administration actions remain adapter boundaries: Tako does no
 
 ## Production layout
 
-Install the single `bin/tako` multicall executable, systemd units from `apps/backend/packaging/systemd`, and PAM policy from `apps/backend/packaging/pam`. Systemd launches `tako serve` as the unprivileged network gateway and `tako sessiond` as the socket-activated PAM/PTY boundary. `tako bridge` is launched per user when module mutations need it. These remain isolated processes with distinct users and sandboxes; no gateway process retains root privileges.
+Install the single `bin/tako` multicall executable, systemd units from `apps/backend/packaging/systemd`, `sysusers.d` for the `tako-session` group, and PAM policy from `apps/backend/packaging/pam`. Systemd launches `tako serve` as a dynamic unprivileged gateway (`tako-gateway`) and `tako sessiond` as the socket-activated PAM/PTY boundary. `tako bridge` is launched per user when module mutations need it. These remain isolated processes with distinct users and sandboxes; no gateway process retains root privileges.
 
 Distribution-specific PAM variants, the optional Polkit action, exact-command sudoers guidance, reverse-proxy notes, and the disposable-VM packaging smoke seam are documented in [`apps/backend/packaging/README.md`](apps/backend/packaging/README.md).
