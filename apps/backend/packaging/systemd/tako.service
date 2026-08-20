@@ -5,9 +5,9 @@ Wants=network-online.target
 Requires=tako-sessiond.socket
 
 [Service]
-User=tako
-Group=tako
-SupplementaryGroups=tako-session
+DynamicUser=yes
+User=tako-gateway
+Group=tako-session
 ExecStart=/usr/bin/tako serve --config /etc/tako/config.toml
 Restart=on-failure
 RestartSec=2s

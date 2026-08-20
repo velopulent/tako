@@ -2,11 +2,14 @@
 
 The package installs one `/usr/bin/tako` multicall executable and keeps the trust domains separate:
 
-- `tako.service` is the unprivileged HTTPS gateway (`tako:tako`) and writes only to `/var/lib/tako`.
-- `tako-sessiond.socket` exposes a mode-`0660` UNIX socket to `tako-session`; `tako-sessiond.service` is the root-owned PAM/session boundary.
-- `tmpfiles.d/tako.conf` creates `/run/tako` as `root:tako-session` with mode `0750` before socket activation; the gateway receives `tako-session` as a supplementary group.
+- `tako.service` is the unprivileged HTTPS gateway. It uses systemd `DynamicUser=yes` (`User=tako-gateway`) with primary group `tako-session`, and writes only to `/var/lib/tako` via `StateDirectory`.
+- `sysusers.d/tako.conf` creates the persistent `tako-session` group used for session-socket ACLs. There is no static `tako` login or system user.
+- `tako-sessiond.socket` listens on `/run/tako/session.sock` as `root:tako-session` mode `0660`; `tako-sessiond.service` is the root-owned PAM/session boundary.
+- `tmpfiles.d/tako.conf` creates `/run/tako` as `root:tako-session` with mode `0750` before socket activation.
 - `tako bridge` is launched by the session service for an authenticated UNIX user and is never reachable from the network gateway.
 - `tako-sessiond.service` is a login helper: it PAM-authenticates, then setuid-execs `tako bridge` as that user. The child inherits the unit sandbox, so sessiond is not locked down like `tako.service`. `tako serve --dev` skips PAM and the user bridge; it is not a production auth test.
+
+Hosts must resolve systemd dynamic users. `nsswitch.conf` `passwd` (and typically `group`) must include `systemd`, for example `passwd: files systemd`. Without that, `DynamicUser` fails with status 217/USER.
 
 Install the distribution-specific PAM file as `/etc/pam.d/tako`: use `pam/tako.debian` on Debian/Ubuntu and `pam/tako.redhat` on Fedora/RHEL-compatible systems. The generic `pam/tako` file is only a minimal development fixture; package builds should transform it to the host's standard stack.
 Password changes and administrative resets use the host's standard `passwd` PAM service. They do not invoke a password helper with secrets in argv, stdin, or the environment.

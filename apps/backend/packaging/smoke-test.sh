@@ -20,14 +20,16 @@ systemctl start "$session_service_unit"
 systemctl is-active "$session_service_unit" >/dev/null
 test -S /run/tako/session.sock
 test "$(stat -c '%a %U %G' /run/tako)" = "750 root tako-session"
-test "$(stat -c '%a %U %G' /run/tako/session.sock)" = "660 tako tako-session"
+test "$(stat -c '%a %U %G' /run/tako/session.sock)" = "660 root tako-session"
 
+gateway_dynamic="$(systemctl show -p DynamicUser --value "$gateway_unit")"
 gateway_user="$(systemctl show -p User --value "$gateway_unit")"
+gateway_group="$(systemctl show -p Group --value "$gateway_unit")"
 session_user="$(systemctl show -p User --value "$session_service_unit")"
-test "$gateway_user" = tako
+test "$gateway_dynamic" = yes
+test "$gateway_user" = tako-gateway
+test "$gateway_group" = tako-session
 test "$session_user" = root
-gateway_groups="$(systemctl show -p SupplementaryGroups --value "$gateway_unit")"
-printf '%s\n' "$gateway_groups" | tr ' ' '\n' | grep -qx tako-session
 
 # An unauthenticated request proves TLS/socket reachability without attempting
 # PAM. The production gateway must not expose a dashboard without a session.

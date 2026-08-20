@@ -4,7 +4,7 @@ Description=Tako PAM session socket
 [Socket]
 ListenStream=/run/tako/session.sock
 DirectoryMode=0750
-SocketUser=tako
+SocketUser=root
 SocketGroup=tako-session
 SocketMode=0660
 RemoveOnStop=true
