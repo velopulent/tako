@@ -44,6 +44,16 @@ export function qSearch(search: Record<string, unknown>): { q?: string } {
   return { q: optionalString(search.q) }
 }
 
+export function processDetailSearch(search: Record<string, unknown>): {
+  q?: string
+  started?: string
+} {
+  return {
+    q: optionalString(search.q),
+    started: optionalString(search.started),
+  }
+}
+
 export function metricsSearch(search: Record<string, unknown>): {
   q?: string
   range?: MetricRange

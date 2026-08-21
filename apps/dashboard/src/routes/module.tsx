@@ -64,7 +64,6 @@ import { SettingsPage } from "@/routes/settings"
 import { JobsPage } from "@/routes/jobs"
 import { HostPage } from "@/routes/host"
 import { JournalBrowser } from "@/components/journal-browser"
-import { ProcessDetails } from "@/components/process-details"
 import { UserInventory } from "@/components/user-inventory"
 import { GroupInventory } from "@/components/group-inventory"
 import { PasswordManager } from "@/components/password-manager"
@@ -332,7 +331,7 @@ function ProcessesTable({
   search?: string
   onSearchChange?: (value: string) => void
 }) {
-  const [selected, setSelected] = React.useState<ProcessInfo | null>(null)
+  const navigate = useNavigate({ from: "/processes" })
   const previous = React.useRef<{
     at: number
     items: Map<string, ProcessInfo>
@@ -371,37 +370,40 @@ function ProcessesTable({
   })
   const items = query.data?.items ?? []
   return (
-    <>
-      <State query={query} empty={!items.length}>
-        <Card>
-          <CardHeader>
-            <CardTitle>Processes</CardTitle>
-            <CardDescription>
-              {items.length} processes · per-process network requires optional
-              eBPF collector
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <DataTable
-              data={items}
-              columns={processColumns}
-              searchPlaceholder="Search PID, program, command, or user"
-              search={search}
-              onSearchChange={onSearchChange}
-              onRowClick={setSelected}
-              initialVisibility={{
-                virtualMemory: false,
-                diskRead: false,
-                diskWrite: false,
-                diskReadRate: false,
-                diskWriteRate: false,
-              }}
-            />
-          </CardContent>
-        </Card>
-      </State>
-      <ProcessDetails process={selected} onClose={() => setSelected(null)} />
-    </>
+    <State query={query} empty={!items.length}>
+      <Card>
+        <CardHeader>
+          <CardTitle>Processes</CardTitle>
+          <CardDescription>
+            {items.length} processes · per-process network requires optional
+            eBPF collector
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            data={items}
+            columns={processColumns}
+            searchPlaceholder="Search PID, program, command, or user"
+            search={search}
+            onSearchChange={onSearchChange}
+            onRowClick={(row) =>
+              navigate({
+                to: "/processes/$pid",
+                params: { pid: String(row.pid) },
+                search: { started: String(row.started) },
+              })
+            }
+            initialVisibility={{
+              virtualMemory: false,
+              diskRead: false,
+              diskWrite: false,
+              diskReadRate: false,
+              diskWriteRate: false,
+            }}
+          />
+        </CardContent>
+      </Card>
+    </State>
   )
 }
 function ProcessesPage() {

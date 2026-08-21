@@ -19,6 +19,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { DashboardPage } from "@/routes/dashboard"
 import { ModulePage } from "@/routes/module"
+import { ProcessDetailPage } from "@/routes/process-detail"
 import { ServiceDetailPage } from "@/routes/service-detail"
 import { TimersPage } from "@/routes/timers"
 import { IncidentsPage } from "@/routes/incidents"
@@ -26,6 +27,7 @@ import { api, type SessionResponse } from "@/lib/api"
 import {
   logsSearch,
   metricsSearch,
+  processDetailSearch,
   qSearch,
   servicesSearch,
 } from "@/lib/search"
@@ -125,6 +127,13 @@ const serviceDetailRoute = createRoute({
   component: ServiceDetailPage,
 })
 
+const processDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/processes/$pid",
+  validateSearch: processDetailSearch,
+  component: ProcessDetailPage,
+})
+
 const timersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/timers",
@@ -141,6 +150,7 @@ const routeTree = rootRoute.addChildren([
   dashboardRoute,
   ...moduleRoutes,
   serviceDetailRoute,
+  processDetailRoute,
   timersRoute,
   incidentsRoute,
 ])
