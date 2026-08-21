@@ -208,14 +208,14 @@ export function SSHKeyManager() {
               {state.data && (
                 <div className="space-y-2" aria-live="polite">
                   <p className="text-sm text-muted-foreground">
-                    {state.data.keys.length} authorized key
-                    {state.data.keys.length === 1 ? "" : "s"} ·{" "}
+                    {(state.data.keys ?? []).length} authorized key
+                    {(state.data.keys ?? []).length === 1 ? "" : "s"} ·{" "}
                     {state.data.authority} authority
                   </p>
                   <p className="text-xs break-all text-muted-foreground">
                     Path: <code>{state.data.path}</code>
                   </p>
-                  {!state.data.keys.length ? (
+                  {!(state.data.keys ?? []).length ? (
                     <Empty>
                       <EmptyHeader>
                         <EmptyTitle>No authorized keys</EmptyTitle>
@@ -227,7 +227,7 @@ export function SSHKeyManager() {
                     </Empty>
                   ) : (
                     <div className="divide-y rounded-md border">
-                      {state.data.keys.map((item) => (
+                      {(state.data.keys ?? []).map((item) => (
                         <div
                           key={item.fingerprint}
                           className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between"
@@ -285,7 +285,7 @@ export function SSHKeyManager() {
                       <Button
                         type="button"
                         variant={action === "remove" ? "secondary" : "outline"}
-                        disabled={pending || !state.data?.keys.length}
+                        disabled={pending || !(state.data?.keys ?? []).length}
                         onClick={() => {
                           setAction("remove")
                           setKey("")
