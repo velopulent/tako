@@ -7,6 +7,7 @@ import {
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type Header,
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table"
@@ -41,6 +42,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { cn } from "@/lib/utils"
+
+function columnSize(header: Header<unknown, unknown>) {
+  return header.getSize()
+}
+
+function headerLabel(header: string | undefined, id: string): string {
+  return header ?? id
+}
 
 export function DataTable<T>({
   data,
@@ -51,6 +61,8 @@ export function DataTable<T>({
   onVisibilityChange,
   onRowClick,
   toolbar,
+  search,
+  onSearchChange,
 }: {
   data: T[]
   columns: ColumnDef<T>[]
@@ -60,9 +72,13 @@ export function DataTable<T>({
   onVisibilityChange?: (value: VisibilityState) => void
   onRowClick?: (row: T) => void
   toolbar?: React.ReactNode
+  search?: string
+  onSearchChange?: (value: string) => void
 }) {
   const [sorting, setSorting] = React.useState<SortingState>([])
-  const [filter, setFilter] = React.useState("")
+  const [uncontrolledFilter, setUncontrolledFilter] = React.useState("")
+  const filter = search ?? uncontrolledFilter
+  const setFilter = onSearchChange ?? setUncontrolledFilter
   const [visibility, setVisibility] = React.useState<VisibilityState>(
     initialVisibility ?? {}
   )
@@ -72,9 +88,13 @@ export function DataTable<T>({
   const table = useReactTable({
     data,
     columns,
+    defaultColumn: { size: 160, minSize: 72, maxSize: 640 },
     state: { sorting, globalFilter: filter, columnVisibility: visibility },
     onSortingChange: setSorting,
-    onGlobalFilterChange: setFilter,
+    onGlobalFilterChange: (updater) => {
+      const next = typeof updater === "function" ? updater(filter) : updater
+      setFilter(String(next ?? ""))
+    },
     onColumnVisibilityChange: (updater) => {
       setVisibility((current) => {
         const next = typeof updater === "function" ? updater(current) : updater
@@ -94,6 +114,7 @@ export function DataTable<T>({
     overscan: 12,
   })
   const virtualRows = virtualizer.getVirtualItems()
+  const totalSize = table.getTotalSize()
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -128,7 +149,12 @@ export function DataTable<T>({
                       column.toggleVisibility(Boolean(checked))
                     }
                   >
-                    {String(column.columnDef.header ?? column.id)}
+                    {headerLabel(
+                      typeof column.columnDef.header === "string"
+                        ? column.columnDef.header
+                        : undefined,
+                      column.id
+                    )}
                   </DropdownMenuCheckboxItem>
                 ))}
             </DropdownMenuGroup>
@@ -140,33 +166,57 @@ export function DataTable<T>({
         className="rounded-lg border"
         style={{ height }}
       >
-        <Table>
+        <Table
+          containerClassName="overflow-visible"
+          style={{ minWidth: totalSize }}
+        >
           <TableHeader className="sticky top-0 z-10 bg-background">
             {table.getHeaderGroups().map((group) => (
-              <TableRow key={group.id}>
-                {group.headers.map((header) => (
-                  <TableHead key={header.id}>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={!header.column.getCanSort()}
-                      onClick={header.column.getToggleSortingHandler()}
-                    >
-                      {flexRender(
-                        header.column.columnDef.header,
-                        header.getContext()
+              <TableRow
+                key={group.id}
+                className="flex w-full"
+                style={{ minWidth: totalSize }}
+              >
+                {group.headers.map((header) => {
+                  const align = header.column.columnDef.meta?.align ?? "start"
+                  return (
+                    <TableHead
+                      key={header.id}
+                      className={cn(
+                        "flex h-10 min-w-0 items-center overflow-hidden",
+                        align === "end" && "text-right"
                       )}
-                      {header.column.getCanSort() &&
-                        (header.column.getIsSorted() === "asc" ? (
-                          <ChevronUpIcon data-icon="inline-end" />
-                        ) : header.column.getIsSorted() === "desc" ? (
-                          <ChevronDownIcon data-icon="inline-end" />
-                        ) : (
-                          <ChevronsUpDownIcon data-icon="inline-end" />
-                        ))}
-                    </Button>
-                  </TableHead>
-                ))}
+                      style={{
+                        width: columnSize(header as Header<unknown, unknown>),
+                        flex: `${header.getSize()} 0 auto`,
+                      }}
+                    >
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className={cn(
+                          "w-full",
+                          align === "end" ? "justify-end" : "justify-start"
+                        )}
+                        disabled={!header.column.getCanSort()}
+                        onClick={header.column.getToggleSortingHandler()}
+                      >
+                        {flexRender(
+                          header.column.columnDef.header,
+                          header.getContext()
+                        )}
+                        {header.column.getCanSort() &&
+                          (header.column.getIsSorted() === "asc" ? (
+                            <ChevronUpIcon data-icon="inline-end" />
+                          ) : header.column.getIsSorted() === "desc" ? (
+                            <ChevronDownIcon data-icon="inline-end" />
+                          ) : (
+                            <ChevronsUpDownIcon data-icon="inline-end" />
+                          ))}
+                      </Button>
+                    </TableHead>
+                  )
+                })}
               </TableRow>
             ))}
           </TableHeader>
@@ -182,7 +232,7 @@ export function DataTable<T>({
                 <TableRow
                   key={row.id}
                   tabIndex={onRowClick ? 0 : undefined}
-                  className={onRowClick ? "cursor-pointer" : undefined}
+                  className={cn("flex", onRowClick && "cursor-pointer")}
                   onClick={() => onRowClick?.(row.original)}
                   onKeyDown={(event) => {
                     if (
@@ -195,18 +245,42 @@ export function DataTable<T>({
                     position: "absolute",
                     transform: `translateY(${virtualRow.start}px)`,
                     width: "100%",
-                    display: "table",
-                    tableLayout: "fixed",
+                    minWidth: totalSize,
+                    display: "flex",
                   }}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </TableCell>
-                  ))}
+                  {row.getVisibleCells().map((cell) => {
+                    const align = cell.column.columnDef.meta?.align ?? "start"
+                    const wrap = cell.column.columnDef.meta?.wrap === true
+                    return (
+                      <TableCell
+                        key={cell.id}
+                        className={cn(
+                          "flex min-w-0 items-center overflow-hidden",
+                          wrap ? "whitespace-normal" : "whitespace-nowrap",
+                          align === "end" && "justify-end text-right tabular-nums"
+                        )}
+                        style={{
+                          width: cell.column.getSize(),
+                          flex: `${cell.column.getSize()} 0 auto`,
+                        }}
+                      >
+                        {wrap ? (
+                          flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )
+                        ) : (
+                          <div className="min-w-0 truncate">
+                            {flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext()
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
+                    )
+                  })}
                 </TableRow>
               )
             })}
