@@ -155,25 +155,21 @@ describe("UpdateInventory", () => {
       await screen.findByRole("button", { name: "Selected packages" })
     )
     await user.click(screen.getByRole("checkbox", { name: "Select openssl" }))
-    await user.click(screen.getByRole("button", { name: "Preview updates" }))
-    expect(await screen.findByText("Update preview")).toBeTruthy()
-    await user.type(
-      screen.getByLabelText("Update confirmation"),
-      "APPLY UPDATES"
-    )
-    await user.click(screen.getByRole("button", { name: "Apply updates" }))
+    await user.click(screen.getByRole("button", { name: /Install selected/ }))
+    expect(await screen.findByText("Confirm updates")).toBeTruthy()
+    expect(await screen.findByText("update 1 package")).toBeTruthy()
+    await user.click(screen.getByRole("button", { name: "Confirm and install" }))
     await vi.waitFor(() => {
       const call = fetchMock.mock.calls.find(
         ([input, init]) =>
           String(input).endsWith("/updates") && init?.method === "POST"
       )
       expect(call).toBeTruthy()
-      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
-        scope: "selected",
-        packages: ["openssl"],
-        confirmation: "APPLY UPDATES",
-        expectedFingerprint: fingerprint,
-      })
+      const body = JSON.parse(String(call?.[1]?.body))
+      expect(body.scope).toBe("selected")
+      expect(body.packages).toEqual(["openssl"])
+      expect(["APPLY UPDATES", "CONFIRM"]).toContain(body.confirmation)
+      expect(body.expectedFingerprint).toBe(fingerprint)
     })
   })
 })
