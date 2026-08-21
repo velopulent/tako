@@ -101,9 +101,9 @@ export function ProcessDetails({
                 </div>
                 <div>
                   <span className="text-muted-foreground">Children: </span>
-                  {details.children.length ? (
+                  {(details.children ?? []).length ? (
                     <ul className="mt-1 list-disc pl-5">
-                      {details.children.map((child) => (
+                      {(details.children ?? []).map((child) => (
                         <li key={`${child.pid}:${child.started}`}>
                           <ProcessLink process={child} />
                         </li>
@@ -121,9 +121,9 @@ export function ProcessDetails({
                 <CardTitle>Resource history</CardTitle>
               </CardHeader>
               <CardContent>
-                {details.history.length ? (
+                {(details.history ?? []).length ? (
                   <div className="max-h-48 overflow-auto text-xs">
-                    {details.history.map((sample) => (
+                    {(details.history ?? []).map((sample) => (
                       <div
                         className="grid grid-cols-4 gap-2 border-b py-1 last:border-0"
                         key={sample.timestamp}
@@ -156,12 +156,12 @@ export function ProcessDetails({
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Open files ({details.openFiles.length})</CardTitle>
+                <CardTitle>Open files ({(details.openFiles ?? []).length})</CardTitle>
               </CardHeader>
               <CardContent>
-                {details.openFiles.length ? (
+                {(details.openFiles ?? []).length ? (
                   <ul className="max-h-48 space-y-1 overflow-auto font-mono text-xs">
-                    {details.openFiles.map((file, index) => (
+                    {(details.openFiles ?? []).map((file, index) => (
                       <li key={`${file}:${index}`}>{file}</li>
                     ))}
                   </ul>
@@ -180,12 +180,12 @@ export function ProcessDetails({
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Sockets ({details.sockets.length})</CardTitle>
+                <CardTitle>Sockets ({(details.sockets ?? []).length})</CardTitle>
               </CardHeader>
               <CardContent>
-                {details.sockets.length ? (
+                {(details.sockets ?? []).length ? (
                   <div className="space-y-1 text-xs">
-                    {details.sockets.map((socket, index) => (
+                    {(details.sockets ?? []).map((socket, index) => (
                       <div
                         className="flex flex-wrap gap-2"
                         key={`${socket.protocol}:${socket.local}:${index}`}
