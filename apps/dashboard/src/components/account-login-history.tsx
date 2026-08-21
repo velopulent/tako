@@ -169,7 +169,7 @@ export function AccountLoginHistory({ username }: { username?: string }) {
                   {identityLabel(history.data.identity.source)}
                 </Badge>
               </div>
-              {history.data.items.length === 0 ? (
+              {(history.data.items ?? []).length === 0 ? (
                 <Empty>
                   <EmptyHeader>
                     <EmptyTitle>No login events</EmptyTitle>

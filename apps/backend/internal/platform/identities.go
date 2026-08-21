@@ -81,6 +81,9 @@ func ListIdentityInventory(ctx context.Context) (IdentityInventory, error) {
 }
 
 func uniqueStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
 	if len(values) < 2 {
 		return values
 	}

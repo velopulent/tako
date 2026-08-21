@@ -27,7 +27,7 @@ const columns: ColumnDef<GroupInfo>[] = [
   {
     accessorKey: "members",
     header: "Members",
-    cell: ({ row }) => row.original.members.join(", ") || "-",
+    cell: ({ row }) => (row.original.members ?? []).join(", ") || "-",
   },
   {
     accessorKey: "source",

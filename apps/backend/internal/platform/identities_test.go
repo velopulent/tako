@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +21,13 @@ func TestParseNSSUsersAndGroupsMarksRemoteReadOnly(t *testing.T) {
 	groups, err := parseNSSGroups("local:x:1000:local\nremote:x:2000:remote\n", map[string]bool{"local": true})
 	if err != nil || len(groups) != 2 || !groups[0].Mutable || groups[1].Mutable {
 		t.Fatalf("groups=%#v err=%v", groups, err)
+	}
+}
+
+func TestEmptyGroupMembershipEncodesAsJSONArray(t *testing.T) {
+	encoded, err := json.Marshal(User{Username: "nobody", Groups: uniqueStrings(nil)})
+	if err != nil || !strings.Contains(string(encoded), `"groups":[]`) {
+		t.Fatalf("nil groups encoded as %s err=%v", encoded, err)
 	}
 }
 
