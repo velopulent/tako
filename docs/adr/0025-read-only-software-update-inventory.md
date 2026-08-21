@@ -12,8 +12,10 @@ queries are used; none of these paths installs packages or refreshes metadata.
 Every response declares the selected backend and contract, bounds the package
 list to 500 entries and command output to 4 MiB, and reports a package-manager
 lock when a non-blocking lock probe detects one. Package fields include
-installed/candidate versions, architecture, severity, size, and summary when
-the selected backend provides them.
+installed/candidate versions, architecture, severity, size, summary, advisory
+identity, CVE/Bug/Vendor URLs, description, grouping key, and dependency
+siblings when the selected backend provides them. Each response also includes
+a `lastChecked` timestamp.
 
 ## Consequences
 

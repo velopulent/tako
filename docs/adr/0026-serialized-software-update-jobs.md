@@ -6,7 +6,8 @@ Status: accepted
 
 Tako applies selected or all installed-software updates through a durable,
 serialized job. The browser first previews the current inventory and submits
-the inventory fingerprint with an explicit `APPLY UPDATES` confirmation. The
+the inventory fingerprint with a dialog confirmation (legacy `APPLY UPDATES`
+typed confirmation remains accepted for backward compatibility). The
 privileged session boundary rechecks the fingerprint and advisory package
 manager lock immediately before invoking the selected PackageKit, APT, or DNF
 adapter.
