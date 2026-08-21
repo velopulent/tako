@@ -19,7 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 
 const columns: ColumnDef<UserInfo>[] = [
   { accessorKey: "username", header: "User" },
-  { accessorKey: "uid", header: "UID" },
+  { accessorKey: "uid", header: "UID", meta: { align: "end" }, size: 88 },
   { accessorKey: "name", header: "Name" },
   { accessorKey: "home", header: "Home" },
   { accessorKey: "shell", header: "Shell" },
@@ -39,7 +39,13 @@ const columns: ColumnDef<UserInfo>[] = [
   },
 ]
 
-export function UserInventory() {
+export function UserInventory({
+  search,
+  onSearchChange,
+}: {
+  search?: string
+  onSearchChange?: (value: string) => void
+}) {
   const [selected, setSelected] = React.useState<UserInfo>()
   const [creating, setCreating] = React.useState(false)
   const query = useQuery({
@@ -99,6 +105,8 @@ export function UserInventory() {
         data={items}
         columns={columns}
         searchPlaceholder="Search users, groups, or identity source"
+        search={search}
+        onSearchChange={onSearchChange}
         onRowClick={(row) => {
           setCreating(false)
           setSelected(row)

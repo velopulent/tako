@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useNavigate } from "@tanstack/react-router"
+import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
 import { TerminalIcon } from "lucide-react"
@@ -52,6 +52,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import { usePreference } from "@/hooks/use-preference"
 import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
+import {
+  metricRanges,
+  serviceActiveStates,
+  serviceFileStates,
+  serviceScopes,
+  serviceTypes,
+  type MetricRange,
+} from "@/lib/search"
 import { SettingsPage } from "@/routes/settings"
 import { JobsPage } from "@/routes/jobs"
 import { HostPage } from "@/routes/host"
@@ -184,19 +192,34 @@ function SecurityPage() {
 
 function MetricsPage() {
   const interval = usePageInterval("metrics")
-  const [range, setRange] = React.useState("1h")
+  const search = getRouteApi("/metrics").useSearch()
+  const navigate = useNavigate({ from: "/metrics" })
   const query = useQuery({
-    queryKey: ["metrics", range],
-    queryFn: () => api<{ samples: MetricSample[] }>(`/metrics?range=${range}`),
+    queryKey: ["metrics", search.range ?? "1h"],
+    queryFn: () =>
+      api<{ samples: MetricSample[] }>(
+        `/metrics?range=${search.range ?? "1h"}`
+      ),
   })
   return (
     <Page
       description="Live CPU, memory, storage, network, and process telemetry."
       interval={interval}
     >
-      <Tabs value={range} onValueChange={setRange}>
+      <Tabs
+        value={search.range ?? "1h"}
+        onValueChange={(range) =>
+          navigate({
+            search: (previous) => ({
+              ...previous,
+              range: range === "1h" ? undefined : (range as MetricRange),
+            }),
+            replace: true,
+          })
+        }
+      >
         <TabsList>
-          {["15m", "1h", "6h", "24h"].map((value) => (
+          {metricRanges.map((value) => (
             <TabsTrigger key={value} value={value}>
               {value}
             </TabsTrigger>
@@ -204,16 +227,27 @@ function MetricsPage() {
         </TabsList>
       </Tabs>
       <MetricsCharts
+        key={`${search.range ?? "1h"}:${interval.value}`}
+        range={search.range ?? "1h"}
         initialSamples={query.data?.samples ?? []}
         interval={interval.value}
       />
-      <ProcessesTable interval={interval} />
+      <ProcessesTable
+        interval={interval}
+        search={search.q}
+        onSearchChange={(q) =>
+          navigate({
+            search: (previous) => ({ ...previous, q: q || undefined }),
+            replace: true,
+          })
+        }
+      />
     </Page>
   )
 }
 
 const processColumns: ColumnDef<ProcessInfo>[] = [
-  { accessorKey: "pid", header: "PID" },
+  { accessorKey: "pid", header: "PID", meta: { align: "end" }, size: 88 },
   { accessorKey: "program", header: "Program" },
   { accessorKey: "user", header: "User" },
   {
@@ -221,50 +255,64 @@ const processColumns: ColumnDef<ProcessInfo>[] = [
     header: "State",
     cell: ({ row }) => <Badge variant="outline">{row.original.state}</Badge>,
   },
-  { accessorKey: "threads", header: "Threads" },
+  {
+    accessorKey: "threads",
+    header: "Threads",
+    meta: { align: "end" },
+    size: 96,
+  },
   {
     accessorKey: "cpuPercent",
     header: "CPU",
+    meta: { align: "end" },
     cell: ({ row }) => `${(row.original.cpuPercent ?? 0).toFixed(1)}%`,
   },
   {
     accessorKey: "cpuTime",
     header: "CPU time",
+    meta: { align: "end" },
     cell: ({ row }) => `${row.original.cpuTime.toFixed(1)}s`,
   },
   {
     accessorKey: "memory",
     header: "Memory",
+    meta: { align: "end" },
     cell: ({ row }) => bytes(row.original.memory),
   },
   {
     accessorKey: "virtualMemory",
     header: "Virtual",
+    meta: { align: "end" },
     cell: ({ row }) => bytes(row.original.virtualMemory),
   },
   {
     accessorKey: "diskRead",
     header: "Disk read",
+    meta: { align: "end" },
     cell: ({ row }) => bytes(row.original.diskRead),
   },
   {
     accessorKey: "diskWrite",
     header: "Disk write",
+    meta: { align: "end" },
     cell: ({ row }) => bytes(row.original.diskWrite),
   },
   {
     accessorKey: "diskReadRate",
     header: "Read/s",
+    meta: { align: "end" },
     cell: ({ row }) => bytes(row.original.diskReadRate ?? 0),
   },
   {
     accessorKey: "diskWriteRate",
     header: "Write/s",
+    meta: { align: "end" },
     cell: ({ row }) => bytes(row.original.diskWriteRate ?? 0),
   },
   {
     accessorKey: "command",
     header: "Command",
+    size: 360,
     cell: ({ row }) => (
       <span
         className="block max-w-xl truncate font-mono text-xs"
@@ -277,8 +325,12 @@ const processColumns: ColumnDef<ProcessInfo>[] = [
 ]
 function ProcessesTable({
   interval,
+  search,
+  onSearchChange,
 }: {
   interval: ReturnType<typeof usePageInterval>
+  search?: string
+  onSearchChange?: (value: string) => void
 }) {
   const [selected, setSelected] = React.useState<ProcessInfo | null>(null)
   const previous = React.useRef<{
@@ -334,6 +386,8 @@ function ProcessesTable({
               data={items}
               columns={processColumns}
               searchPlaceholder="Search PID, program, command, or user"
+              search={search}
+              onSearchChange={onSearchChange}
               onRowClick={setSelected}
               initialVisibility={{
                 virtualMemory: false,
@@ -352,23 +406,41 @@ function ProcessesTable({
 }
 function ProcessesPage() {
   const interval = usePageInterval("processes")
+  const search = getRouteApi("/processes").useSearch()
+  const navigate = useNavigate({ from: "/processes" })
   return (
     <Page
       description="Sortable, filterable live process inventory."
       interval={interval}
     >
-      <ProcessesTable interval={interval} />
+      <ProcessesTable
+        interval={interval}
+        search={search.q}
+        onSearchChange={(q) =>
+          navigate({
+            search: (previous) => ({ ...previous, q: q || undefined }),
+            replace: true,
+          })
+        }
+      />
     </Page>
   )
 }
 
 function ServicesPage() {
   const interval = usePageInterval("services")
-  const [scope, setScope] = React.useState("system")
-  const [type, setType] = React.useState("service")
-  const [activeState, setActiveState] = React.useState("all")
-  const [fileState, setFileState] = React.useState("all")
-  const navigate = useNavigate()
+  const search = getRouteApi("/services").useSearch()
+  const navigate = useNavigate({ from: "/services" })
+  const type = search.type ?? "service"
+  const scope = search.scope ?? "system"
+  const active = search.active ?? "all"
+  const file = search.file ?? "all"
+  const patch = (next: Partial<typeof search>) =>
+    navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: true,
+    })
+  const navigateDetail = useNavigate()
   const query = useQuery({
     queryKey: ["services", scope, type],
     queryFn: () =>
@@ -397,8 +469,8 @@ function ServicesPage() {
   ]
   const items = (query.data?.items ?? []).filter(
     (item) =>
-      (activeState === "all" || item.activeState === activeState) &&
-      (fileState === "all" || item.fileState === fileState)
+      (active === "all" || item.activeState === active) &&
+      (file === "all" || item.fileState === file)
   )
   return (
     <Page
@@ -406,19 +478,42 @@ function ServicesPage() {
       interval={interval}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Tabs value={type} onValueChange={setType}>
+        <Tabs
+          value={type}
+          onValueChange={(next) =>
+            patch({
+              type:
+                next === "service"
+                  ? undefined
+                  : (next as (typeof serviceTypes)[number]),
+            })
+          }
+        >
           <TabsList>
-            {["service", "target", "socket", "timer", "path"].map((value) => (
+            {serviceTypes.map((value) => (
               <TabsTrigger key={value} value={value}>
                 {value[0].toUpperCase() + value.slice(1)}s
               </TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
-        <Tabs value={scope} onValueChange={setScope}>
+        <Tabs
+          value={scope}
+          onValueChange={(next) =>
+            patch({
+              scope:
+                next === "system"
+                  ? undefined
+                  : (next as (typeof serviceScopes)[number]),
+            })
+          }
+        >
           <TabsList>
-            <TabsTrigger value="system">System</TabsTrigger>
-            <TabsTrigger value="user">User</TabsTrigger>
+            {serviceScopes.map((value) => (
+              <TabsTrigger key={value} value={value}>
+                {value[0].toUpperCase() + value.slice(1)}
+              </TabsTrigger>
+            ))}
           </TabsList>
         </Tabs>
       </div>
@@ -427,24 +522,40 @@ function ServicesPage() {
           data={items}
           columns={columns}
           searchPlaceholder="Search units and descriptions"
+          search={search.q}
+          onSearchChange={(q) => patch({ q: q || undefined })}
           toolbar={
             <>
               <FilterSelect
                 label="Active state"
-                value={activeState}
-                values={["all", "active", "inactive", "failed"]}
-                onChange={setActiveState}
+                value={active}
+                values={[...serviceActiveStates]}
+                onChange={(next) =>
+                  patch({
+                    active:
+                      next === "all"
+                        ? undefined
+                        : (next as (typeof serviceActiveStates)[number]),
+                  })
+                }
               />
               <FilterSelect
                 label="File state"
-                value={fileState}
-                values={["all", "enabled", "disabled", "static", "masked"]}
-                onChange={setFileState}
+                value={file}
+                values={[...serviceFileStates]}
+                onChange={(next) =>
+                  patch({
+                    file:
+                      next === "all"
+                        ? undefined
+                        : (next as (typeof serviceFileStates)[number]),
+                  })
+                }
               />
             </>
           }
           onRowClick={(unit) =>
-            navigate({
+            navigateDetail({
               to: "/services/$scope/$unit",
               params: { scope: unit.scope, unit: unit.name },
             })
@@ -466,8 +577,16 @@ function FilterSelect({
   values: string[]
   onChange: (value: string) => void
 }) {
+  const items = values.map((item) => ({
+    value: item,
+    label: item === "all" ? `All ${label.toLowerCase()}s` : item,
+  }))
   return (
-    <Select value={value} onValueChange={(next) => onChange(String(next))}>
+    <Select
+      items={items}
+      value={value}
+      onValueChange={(next) => onChange(String(next))}
+    >
       <SelectTrigger size="sm" aria-label={label}>
         <SelectValue />
       </SelectTrigger>
@@ -486,6 +605,8 @@ function FilterSelect({
 
 function StoragePage() {
   const interval = usePageInterval("storage")
+  const search = getRouteApi("/storage").useSearch()
+  const navigate = useNavigate({ from: "/storage" })
   const metrics = useQuery({
     queryKey: ["storage-metrics"],
     queryFn: () => api<{ samples: MetricSample[] }>("/metrics?range=1h"),
@@ -503,16 +624,20 @@ function StoragePage() {
     {
       accessorKey: "used",
       header: "Used",
+      meta: { align: "end" },
       cell: ({ row }) => bytes(row.original.used),
     },
     {
       accessorKey: "available",
       header: "Available",
+      meta: { align: "end" },
       cell: ({ row }) => bytes(row.original.available),
     },
     {
       accessorKey: "percent",
       header: "Usage",
+      meta: { wrap: true },
+      size: 220,
       cell: ({ row }) => (
         <div className="min-w-32">
           <Progress value={row.original.percent} />
@@ -540,6 +665,13 @@ function StoragePage() {
           columns={columns}
           searchPlaceholder="Search mounts, devices, and filesystems"
           height="45vh"
+          search={search.q}
+          onSearchChange={(q) =>
+            navigate({
+              search: (previous) => ({ ...previous, q: q || undefined }),
+              replace: true,
+            })
+          }
         />
       </State>
     </Page>
@@ -548,6 +680,13 @@ function StoragePage() {
 
 function NetworkPage() {
   const interval = usePageInterval("network")
+  const search = getRouteApi("/network").useSearch()
+  const navigate = useNavigate({ from: "/network" })
+  const setQ = (q: string) =>
+    navigate({
+      search: (previous) => ({ ...previous, q: q || undefined }),
+      replace: true,
+    })
   const metrics = useQuery({
     queryKey: ["network-metrics"],
     queryFn: () => api<{ samples: MetricSample[] }>("/metrics?range=1h"),
@@ -580,16 +719,18 @@ function NetworkPage() {
       cell: ({ row }) => row.original.addresses.join(", ") || "—",
     },
     { accessorKey: "hardware", header: "MAC" },
-    { accessorKey: "mtu", header: "MTU" },
+    { accessorKey: "mtu", header: "MTU", meta: { align: "end" }, size: 88 },
     { accessorKey: "manager", header: "Manager" },
     {
       accessorKey: "rx",
       header: "Received",
+      meta: { align: "end" },
       cell: ({ row }) => bytes(row.original.rx),
     },
     {
       accessorKey: "tx",
       header: "Sent",
+      meta: { align: "end" },
       cell: ({ row }) => bytes(row.original.tx),
     },
   ]
@@ -608,6 +749,8 @@ function NetworkPage() {
     {
       accessorKey: "message",
       header: "Message",
+      size: 360,
+      meta: { wrap: true },
       cell: ({ row }) => (
         <span className="font-mono text-xs whitespace-normal">
           {row.original.message}
@@ -632,6 +775,8 @@ function NetworkPage() {
           columns={columns}
           searchPlaceholder="Search devices, addresses, or managers"
           height="45vh"
+          search={search.q}
+          onSearchChange={setQ}
         />
       </State>
       <NetworkControls />
@@ -649,6 +794,8 @@ function NetworkPage() {
             columns={logColumns}
             height="32vh"
             searchPlaceholder="Search network logs"
+            search={search.q}
+            onSearchChange={setQ}
           />
         </CardContent>
       </Card>
@@ -665,10 +812,17 @@ function LogsPage() {
 }
 
 function UsersPage() {
+  const search = getRouteApi("/users").useSearch()
+  const navigate = useNavigate({ from: "/users" })
+  const setQ = (q: string) =>
+    navigate({
+      search: (previous) => ({ ...previous, q: q || undefined }),
+      replace: true,
+    })
   return (
     <Page description="NSS account inventory. Local entries are explicitly mutable; remote identities remain read-only.">
-      <UserInventory />
-      <GroupInventory />
+      <UserInventory search={search.q} onSearchChange={setQ} />
+      <GroupInventory search={search.q} onSearchChange={setQ} />
       <PasswordManager />
       <SSHKeyManager />
     </Page>
@@ -683,6 +837,8 @@ function UpdatesPage() {
 }
 
 function OperationsPage() {
+  const search = getRouteApi("/operations").useSearch()
+  const navigate = useNavigate({ from: "/operations" })
   const query = useQuery({
     queryKey: ["operations"],
     queryFn: () => api<{ items: OperationReceipt[] }>("/operations?limit=100"),
@@ -723,6 +879,13 @@ function OperationsPage() {
           columns={columns}
           height="60vh"
           searchPlaceholder="Search actors, targets, or results"
+          search={search.q}
+          onSearchChange={(q) =>
+            navigate({
+              search: (previous) => ({ ...previous, q: q || undefined }),
+              replace: true,
+            })
+          }
         />
       </State>
     </Page>

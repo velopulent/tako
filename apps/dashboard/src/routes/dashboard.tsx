@@ -1,4 +1,5 @@
 import * as React from "react"
+import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
 import {
@@ -55,6 +56,8 @@ const duration = (seconds: number) => {
 }
 
 export function DashboardPage() {
+  const search = getRouteApi("/").useSearch()
+  const navigate = useNavigate({ from: "/" })
   const defaultInterval =
     useMonitoringPreference().data?.defaultInterval ?? "1m"
   const [interval, setInterval] = usePreference<RefreshInterval>(
@@ -126,17 +129,19 @@ export function DashboardPage() {
     []
   const top = (processes.data?.items ?? []).slice(0, 10)
   const processColumns: ColumnDef<ProcessInfo>[] = [
-    { accessorKey: "pid", header: "PID" },
+    { accessorKey: "pid", header: "PID", meta: { align: "end" }, size: 88 },
     { accessorKey: "program", header: "Program" },
     { accessorKey: "user", header: "User" },
     {
       accessorKey: "memory",
       header: "Memory",
+      meta: { align: "end" },
       cell: ({ row }) => bytes(row.original.memory),
     },
     {
       accessorKey: "cpuTime",
       header: "CPU time",
+      meta: { align: "end" },
       cell: ({ row }) => `${row.original.cpuTime.toFixed(1)}s`,
     },
   ]
@@ -214,7 +219,18 @@ export function DashboardPage() {
             <CardDescription>Highest resident memory usage.</CardDescription>
           </CardHeader>
           <CardContent>
-            <DataTable data={top} columns={processColumns} height="22rem" />
+            <DataTable
+              data={top}
+              columns={processColumns}
+              height="22rem"
+              search={search.q}
+              onSearchChange={(q) =>
+                navigate({
+                  search: (previous) => ({ ...previous, q: q || undefined }),
+                  replace: true,
+                })
+              }
+            />
           </CardContent>
         </Card>
         <Card>

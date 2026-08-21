@@ -1,4 +1,5 @@
 import * as React from "react"
+import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowDownToLineIcon, EyeIcon, PauseIcon, PlayIcon } from "lucide-react"
 import type { ColumnDef } from "@tanstack/react-table"
@@ -19,6 +20,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -32,6 +34,13 @@ import {
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { SavedLogViews } from "@/components/saved-log-views"
+
+const journalPriorityItems = [
+  { value: "all", label: "All priorities" },
+  { value: "0..3", label: "Emergency–Error" },
+  { value: "4", label: "Warning" },
+  { value: "5..7", label: "Notice–Debug" },
+]
 
 const columns: ColumnDef<LogEntry>[] = [
   {
@@ -50,6 +59,8 @@ const columns: ColumnDef<LogEntry>[] = [
   {
     accessorKey: "message",
     header: "Message",
+    size: 360,
+    meta: { wrap: true },
     cell: ({ row }) => (
       <span className="font-mono text-xs whitespace-normal">
         {row.original.message}
@@ -86,19 +97,49 @@ function makeParams(filters: {
 }
 
 export function JournalBrowser() {
-  const [priority, setPriority] = React.useState("")
-  const [boot, setBoot] = React.useState("")
-  const [since, setSince] = React.useState("")
-  const [until, setUntil] = React.useState("")
-  const [unit, setUnit] = React.useState("")
-  const [executable, setExecutable] = React.useState("")
-  const [text, setText] = React.useState("")
-  const [activeUnit, setActiveUnit] = React.useState("")
-  const [activeBoot, setActiveBoot] = React.useState("")
-  const [activeSince, setActiveSince] = React.useState("")
-  const [activeUntil, setActiveUntil] = React.useState("")
-  const [activeExecutable, setActiveExecutable] = React.useState("")
-  const [activeText, setActiveText] = React.useState("")
+  const search = getRouteApi("/logs").useSearch()
+  const navigate = useNavigate({ from: "/logs" })
+  const patch = (next: Partial<typeof search>) =>
+    navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: true,
+    })
+  const committed = {
+    boot: search.boot ?? "",
+    since: search.since ?? "",
+    until: search.until ?? "",
+    unit: search.unit ?? "",
+    executable: search.executable ?? "",
+    text: search.text ?? "",
+  }
+  const [draft, setDraft] = React.useState(committed)
+  const [seen, setSeen] = React.useState(committed)
+  if (
+    committed.boot !== seen.boot ||
+    committed.since !== seen.since ||
+    committed.until !== seen.until ||
+    committed.unit !== seen.unit ||
+    committed.executable !== seen.executable ||
+    committed.text !== seen.text
+  ) {
+    setSeen(committed)
+    setDraft(committed)
+  }
+  const boot = draft.boot
+  const since = draft.since
+  const until = draft.until
+  const unit = draft.unit
+  const executable = draft.executable
+  const text = draft.text
+  const setBoot = (value: string) => setDraft((current) => ({ ...current, boot: value }))
+  const setSince = (value: string) =>
+    setDraft((current) => ({ ...current, since: value }))
+  const setUntil = (value: string) =>
+    setDraft((current) => ({ ...current, until: value }))
+  const setUnit = (value: string) => setDraft((current) => ({ ...current, unit: value }))
+  const setExecutable = (value: string) =>
+    setDraft((current) => ({ ...current, executable: value }))
+  const setText = (value: string) => setDraft((current) => ({ ...current, text: value }))
   const [details, setDetails] = React.useState(false)
   const [cursor, setCursor] = React.useState("")
   const [following, setFollowing] = React.useState(true)
@@ -113,13 +154,13 @@ export function JournalBrowser() {
     setAtLatest(value)
   }
   const filterValues = {
-    priority,
-    boot: activeBoot,
-    since: activeSince,
-    until: activeUntil,
-    unit: activeUnit,
-    executable: activeExecutable,
-    text: activeText,
+    priority: search.priority ?? "",
+    boot: search.boot ?? "",
+    since: search.since ?? "",
+    until: search.until ?? "",
+    unit: search.unit ?? "",
+    executable: search.executable ?? "",
+    text: search.text ?? "",
     details,
   }
   const query = useQuery({
@@ -129,48 +170,53 @@ export function JournalBrowser() {
         `/logs?${makeParams({ ...filterValues, cursor }).toString()}`
       ),
   })
-  const streamParams = React.useMemo(
-    () => makeParams(filterValues).toString(),
-    [
-      priority,
-      activeBoot,
-      activeSince,
-      activeUntil,
-      activeUnit,
-      activeExecutable,
-      activeText,
-      details,
-    ]
-  )
-  const exportParams = React.useMemo(
-    () => makeParams({ ...filterValues, limit: 500 }).toString(),
-    [
-      priority,
-      activeBoot,
-      activeSince,
-      activeUntil,
-      activeUnit,
-      activeExecutable,
-      activeText,
-      details,
-    ]
-  )
-
+  const streamParams = makeParams(filterValues).toString()
+  const exportParams = makeParams({ ...filterValues, limit: 500 }).toString()
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
-      setActiveUnit(unit)
-      setActiveBoot(boot)
-      setActiveSince(since)
-      setActiveUntil(until)
-      setActiveExecutable(executable)
-      setActiveText(text)
+      if (
+        boot === (search.boot ?? "") &&
+        since === (search.since ?? "") &&
+        until === (search.until ?? "") &&
+        unit === (search.unit ?? "") &&
+        executable === (search.executable ?? "") &&
+        text === (search.text ?? "")
+      ) {
+        return
+      }
+      void navigate({
+        search: (previous) => ({
+          ...previous,
+          boot: boot || undefined,
+          since: since || undefined,
+          until: until || undefined,
+          unit: unit || undefined,
+          executable: executable || undefined,
+          text: text || undefined,
+        }),
+        replace: true,
+      })
       setCursor("")
       setLive([])
       setPendingLive(0)
       setLatest(true)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [boot, since, until, unit, executable, text])
+  }, [
+    boot,
+    since,
+    until,
+    unit,
+    executable,
+    text,
+    search.boot,
+    search.since,
+    search.until,
+    search.unit,
+    search.executable,
+    search.text,
+    navigate,
+  ])
 
   React.useEffect(() => {
     if (!following || typeof EventSource === "undefined") return
@@ -212,7 +258,6 @@ export function JournalBrowser() {
     text?: string
     details?: boolean
   }) => {
-    setPriority(saved.priority ?? "")
     setBoot(saved.boot ?? "")
     setSince(saved.since ?? "")
     setUntil(saved.until ?? "")
@@ -220,6 +265,15 @@ export function JournalBrowser() {
     setExecutable(saved.executable ?? "")
     setText(saved.text ?? "")
     setDetails(Boolean(saved.details))
+    patch({
+      boot: saved.boot || undefined,
+      since: saved.since || undefined,
+      until: saved.until || undefined,
+      unit: saved.unit || undefined,
+      executable: saved.executable || undefined,
+      text: saved.text || undefined,
+      priority: saved.priority || undefined,
+    })
     setCursor("")
     setLive([])
     setPendingLive(0)
@@ -293,9 +347,12 @@ export function JournalBrowser() {
           <Field>
             <FieldLabel htmlFor="journal-priority">Priority</FieldLabel>
             <Select
-              value={priority || "all"}
+              items={journalPriorityItems}
+              value={search.priority || "all"}
               onValueChange={(value) => {
-                setPriority(value === "all" ? "" : (value ?? ""))
+                patch({
+                  priority: value === "all" || !value ? undefined : String(value),
+                })
                 setCursor("")
                 setLive([])
                 setPendingLive(0)
@@ -309,10 +366,13 @@ export function JournalBrowser() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All priorities</SelectItem>
-                <SelectItem value="0..3">Emergency–Error</SelectItem>
-                <SelectItem value="4">Warning</SelectItem>
-                <SelectItem value="5..7">Notice–Debug</SelectItem>
+                <SelectGroup>
+                  {journalPriorityItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Field>
@@ -349,6 +409,8 @@ export function JournalBrowser() {
             data={items}
             columns={columns}
             searchPlaceholder="Search loaded entries"
+            search={search.q}
+            onSearchChange={(q) => patch({ q: q || undefined })}
             onRowClick={setSelected}
             toolbar={
               <div className="flex flex-wrap gap-2">

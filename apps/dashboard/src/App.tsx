@@ -23,6 +23,12 @@ import { ServiceDetailPage } from "@/routes/service-detail"
 import { TimersPage } from "@/routes/timers"
 import { IncidentsPage } from "@/routes/incidents"
 import { api, type SessionResponse } from "@/lib/api"
+import {
+  logsSearch,
+  metricsSearch,
+  qSearch,
+  servicesSearch,
+} from "@/lib/search"
 
 type RouterContext = {
   session: SessionResponse
@@ -55,38 +61,67 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  validateSearch: qSearch,
   component: DashboardPage,
 })
 
-const moduleNames = [
-  "logs",
+const qModules = [
+  "processes",
+  "storage",
+  "network",
   "users",
-  "updates",
   "operations",
+] as const
+const plainModules = [
+  "updates",
   "jobs",
   "host",
   "terminal",
-  "metrics",
-  "services",
-  "storage",
-  "network",
   "files",
   "security",
-  "processes",
   "settings",
 ] as const
 
-const moduleRoutes = moduleNames.map((module) =>
+const moduleRoutes = [
   createRoute({
     getParentRoute: () => rootRoute,
-    path: module,
-    component: () => <ModulePage module={module} />,
-  })
-)
+    path: "metrics",
+    validateSearch: metricsSearch,
+    component: () => <ModulePage module="metrics" />,
+  }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "services",
+    validateSearch: servicesSearch,
+    component: () => <ModulePage module="services" />,
+  }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "logs",
+    validateSearch: logsSearch,
+    component: () => <ModulePage module="logs" />,
+  }),
+  ...qModules.map((module) =>
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: module,
+      validateSearch: qSearch,
+      component: () => <ModulePage module={module} />,
+    })
+  ),
+  ...plainModules.map((module) =>
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: module,
+      component: () => <ModulePage module={module} />,
+    })
+  ),
+]
 
 const serviceDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/services/$scope/$unit",
+  validateSearch: qSearch,
   component: ServiceDetailPage,
 })
 

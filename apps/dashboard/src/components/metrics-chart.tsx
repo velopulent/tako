@@ -85,16 +85,38 @@ function transform(samples: MetricSample[]): ChartSample[] {
   })
 }
 
+function mergeSamples(
+  history: MetricSample[],
+  live: MetricSample[]
+): MetricSample[] {
+  const byTime = new Map<string, MetricSample>()
+  for (const sample of history) {
+    byTime.set(sample.timestamp, sample)
+  }
+  for (const sample of live) {
+    byTime.set(sample.timestamp, sample)
+  }
+  return [...byTime.values()].sort((left, right) =>
+    left.timestamp < right.timestamp
+      ? -1
+      : left.timestamp > right.timestamp
+        ? 1
+        : 0
+  )
+}
+
 export function MetricsCharts({
   initialSamples,
   interval = "1m",
   compact = false,
   scope = "all",
+  range,
 }: {
   initialSamples: MetricSample[]
   interval?: RefreshInterval
   compact?: boolean
   scope?: "all" | "storage" | "network"
+  range?: string
 }) {
   const [live, setLive] = React.useState<MetricSample[]>([])
   React.useEffect(() => {
@@ -104,14 +126,14 @@ export function MetricsCharts({
     )
     source.addEventListener("metric", (event) =>
       setLive((current) => [
-        ...current.slice(-999),
+        ...current.slice(-199),
         JSON.parse((event as MessageEvent<string>).data) as MetricSample,
       ])
     )
     return () => source.close()
-  }, [interval])
+  }, [interval, range])
   const samples = React.useMemo(
-    () => transform([...initialSamples, ...live].slice(-1000)),
+    () => transform(mergeSamples(initialSamples, live)),
     [initialSamples, live]
   )
   if (scope === "storage") {

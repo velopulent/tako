@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Link, useParams } from "@tanstack/react-router"
+import { Link, getRouteApi, useNavigate, useParams } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import {
@@ -40,6 +40,8 @@ export function ServiceDetailPage() {
     scope: string
     unit: string
   }
+  const search = getRouteApi("/services/$scope/$unit").useSearch()
+  const navigate = useNavigate({ from: "/services/$scope/$unit" })
   const client = useQueryClient()
   const session = useQuery({
     queryKey: ["session"],
@@ -104,6 +106,8 @@ export function ServiceDetailPage() {
     {
       accessorKey: "message",
       header: "Message",
+      size: 360,
+      meta: { wrap: true },
       cell: ({ row }) => (
         <span className="font-mono text-xs whitespace-normal">
           {row.original.message}
@@ -194,6 +198,13 @@ export function ServiceDetailPage() {
             data={logs.data?.items ?? []}
             columns={logColumns}
             height="45vh"
+            search={search.q}
+            onSearchChange={(q) =>
+              navigate({
+                search: (previous) => ({ ...previous, q: q || undefined }),
+                replace: true,
+              })
+            }
           />
         </CardContent>
       </Card>

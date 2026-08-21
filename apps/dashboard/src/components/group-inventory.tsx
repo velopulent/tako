@@ -23,7 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 
 const columns: ColumnDef<GroupInfo>[] = [
   { accessorKey: "name", header: "Group" },
-  { accessorKey: "gid", header: "GID" },
+  { accessorKey: "gid", header: "GID", meta: { align: "end" }, size: 88 },
   {
     accessorKey: "members",
     header: "Members",
@@ -40,7 +40,13 @@ const columns: ColumnDef<GroupInfo>[] = [
   },
 ]
 
-export function GroupInventory() {
+export function GroupInventory({
+  search,
+  onSearchChange,
+}: {
+  search?: string
+  onSearchChange?: (value: string) => void
+}) {
   const [selected, setSelected] = React.useState<GroupInfo>()
   const query = useQuery({
     queryKey: ["groups"],
@@ -108,6 +114,8 @@ export function GroupInventory() {
         data={items}
         columns={columns}
         searchPlaceholder="Search groups, members, or identity source"
+        search={search}
+        onSearchChange={onSearchChange}
         onRowClick={setSelected}
       />
     </div>
