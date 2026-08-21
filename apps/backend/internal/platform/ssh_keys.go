@@ -80,6 +80,27 @@ type SSHKeyState struct {
 	rawLines    []string
 }
 
+func (state SSHKeyState) MarshalJSON() ([]byte, error) {
+	if state.Keys == nil {
+		state.Keys = []SSHKey{}
+	}
+	type plain SSHKeyState
+	return json.Marshal((plain)(state))
+}
+
+func (state *SSHKeyState) UnmarshalJSON(payload []byte) error {
+	type plain SSHKeyState
+	var raw plain
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return err
+	}
+	*state = SSHKeyState(raw)
+	if state.Keys == nil {
+		state.Keys = []SSHKey{}
+	}
+	return nil
+}
+
 type SSHKeyPreview struct {
 	Action               string      `json:"action"`
 	Username             string      `json:"username"`
@@ -338,13 +359,16 @@ func readSSHKeyStateWithDependencies(ctx context.Context, operation SSHKeyOperat
 	if err != nil {
 		return SSHKeyState{}, err
 	}
-	state := SSHKeyState{Username: operation.Username, Path: path, Authority: "user", Writable: true}
+	state := SSHKeyState{Username: operation.Username, Path: path, Authority: "user", Writable: true, Keys: []SSHKey{}}
 	if administrative {
 		state.Authority = "administrative"
 	}
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		state.Fingerprint = fingerprintSSHKeyFile(nil)
+		if state.Keys == nil {
+			state.Keys = []SSHKey{}
+		}
 		return state, nil
 	}
 	if err != nil {
@@ -373,6 +397,9 @@ func readSSHKeyStateWithDependencies(ctx context.Context, operation SSHKeyOperat
 			return SSHKeyState{}, fmt.Errorf("%w: invalid authorized_keys entry", ErrSSHKeyUnavailable)
 		}
 		state.Keys = append(state.Keys, key)
+	}
+	if state.Keys == nil {
+		state.Keys = []SSHKey{}
 	}
 	return state, nil
 }
