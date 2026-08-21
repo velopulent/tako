@@ -42,6 +42,33 @@ need_root() {
   fi
 }
 
+user_home() {
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    getent passwd "$SUDO_USER" | cut -d: -f6
+  else
+    printf '%s\n' "${HOME:-}"
+  fi
+}
+
+user_path() {
+  local home="$1" path=""
+  [[ -n "$home" && -d "$home/.bun/bin" ]] && path="$home/.bun/bin"
+  [[ -n "${BUN_INSTALL:-}" && -d "$BUN_INSTALL/bin" ]] && path="${BUN_INSTALL}/bin${path:+:$path}"
+  [[ -d "$home/.local/share/fnm/aliases/default/bin" ]] && path="$home/.local/share/fnm/aliases/default/bin${path:+:$path}"
+  printf '%s:%s' "$path" "${PATH:-/usr/bin:/bin}"
+}
+
+run_as_user() {
+  local home path
+  home="$(user_home)"
+  path="$(user_path "$home")"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root && "$(id -u)" -eq 0 ]]; then
+    sudo -u "$SUDO_USER" -H env "HOME=$home" "PATH=$path" bash -c "$1"
+  else
+    env "HOME=$home" "PATH=$path" bash -c "$1"
+  fi
+}
+
 detect_pam_source() {
   if [[ -f /etc/os-release ]]; then
     # shellcheck disable=SC1091
@@ -260,12 +287,7 @@ EOF
 
   if [[ ! -x "$BIN" ]]; then
     echo "Building $BIN…"
-    # setup runs as root; build as the invoking user when possible
-    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-      sudo -u "$SUDO_USER" -H bash -lc "cd '$ROOT' && bun nx build backend"
-    else
-      build_binary
-    fi
+    build_binary
   fi
   install_host_binary
   write_host_dropins
@@ -284,14 +306,7 @@ EOF
 }
 
 build_binary() {
-  if [[ ! -x "$(command -v bun)" ]]; then
-    echo "tools/tako-host: bun not found in PATH" >&2
-    exit 1
-  fi
-  (
-    cd "$ROOT"
-    bun nx build backend
-  )
+  run_as_user "cd '$ROOT' && command -v bun >/dev/null || { echo 'tools/tako-host: bun not found (install from https://bun.sh)' >&2; exit 1; }; bun nx build backend"
 }
 
 refresh_overlay() {
@@ -438,10 +453,7 @@ cmd_watch() {
   watch_overlay_loop &
   local watch_pid=$!
   trap 'kill "$watch_pid" 2>/dev/null || true' EXIT
-  (
-    cd "$ROOT/apps/dashboard"
-    bunx vite build --watch
-  )
+  run_as_user "cd '$ROOT/apps/dashboard' && bun x vite build --watch"
 }
 
 watch_overlay_loop() {
