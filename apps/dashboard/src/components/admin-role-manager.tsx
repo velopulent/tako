@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -117,6 +118,10 @@ export function AdminRoleManager({
           <Field>
             <FieldLabel htmlFor="admin-role-user">Local user</FieldLabel>
             <Select
+              items={localUsers.map((user) => ({
+                value: user.username,
+                label: user.username,
+              }))}
               value={username}
               onValueChange={(value) => {
                 setUsername(value ?? "")
@@ -130,11 +135,13 @@ export function AdminRoleManager({
                 <SelectValue placeholder="Choose a local user" />
               </SelectTrigger>
               <SelectContent>
-                {localUsers.map((user) => (
-                  <SelectItem key={user.username} value={user.username}>
-                    {user.username}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  {localUsers.map((user) => (
+                    <SelectItem key={user.username} value={user.username}>
+                      {user.username}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Field>

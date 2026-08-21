@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -164,6 +165,10 @@ export function SSHKeyManager() {
                   <FieldLabel htmlFor="ssh-key-user">Account</FieldLabel>
                   {administrative ? (
                     <Select
+                      items={localUsers.map((user) => ({
+                        value: user.username,
+                        label: user.username,
+                      }))}
                       value={selectedTarget}
                       onValueChange={(value) => {
                         setTarget(value ?? "")
@@ -176,11 +181,16 @@ export function SSHKeyManager() {
                         <SelectValue placeholder="Choose a local account" />
                       </SelectTrigger>
                       <SelectContent>
-                        {localUsers.map((user) => (
-                          <SelectItem key={user.username} value={user.username}>
-                            {user.username}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          {localUsers.map((user) => (
+                            <SelectItem
+                              key={user.username}
+                              value={user.username}
+                            >
+                              {user.username}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   ) : (

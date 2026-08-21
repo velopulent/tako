@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -31,6 +32,7 @@ const signalOptions = [
   "USR1",
   "USR2",
 ]
+const signalItems = signalOptions.map((value) => ({ value, label: value }))
 
 export function ProcessSignal({ process }: { process: ProcessInfo }) {
   const client = useQueryClient()
@@ -86,6 +88,7 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
         <Field>
           <FieldLabel htmlFor="process-signal">Signal</FieldLabel>
           <Select
+            items={signalItems}
             value={signal}
             onValueChange={(value) => {
               setSignal(value ?? "TERM")
@@ -97,11 +100,13 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {signalOptions.map((value) => (
-                <SelectItem key={value} value={value}>
-                  {value}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {signalItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </Field>

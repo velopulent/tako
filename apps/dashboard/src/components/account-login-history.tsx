@@ -22,12 +22,19 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
+
+const outcomeItems = [
+  { value: "all", label: "All events" },
+  { value: "success", label: "Successful events" },
+  { value: "failure", label: "Failed logins" },
+]
 
 function identityLabel(source: LoginHistoryPage["identity"]["source"]) {
   switch (source) {
@@ -108,6 +115,7 @@ export function AccountLoginHistory({ username }: { username?: string }) {
           <Field>
             <FieldLabel htmlFor="login-history-outcome">Outcome</FieldLabel>
             <Select
+              items={outcomeItems}
               value={outcome}
               onValueChange={(value) => {
                 setOutcome((value as "all" | "success" | "failure") || "all")
@@ -119,9 +127,13 @@ export function AccountLoginHistory({ username }: { username?: string }) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All events</SelectItem>
-                <SelectItem value="success">Successful events</SelectItem>
-                <SelectItem value="failure">Failed logins</SelectItem>
+                <SelectGroup>
+                  {outcomeItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Field>

@@ -21,11 +21,17 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+
+const ntpItems = [
+  { value: "enabled", label: "Enabled" },
+  { value: "disabled", label: "Disabled" },
+]
 import { PowerControls } from "@/components/power-controls"
 import {
   api,
@@ -200,6 +206,7 @@ export function HostPage() {
                 Network time synchronization
               </FieldLabel>
               <Select
+                items={ntpItems}
                 value={form.ntpEnabled ? "enabled" : "disabled"}
                 onValueChange={(value) =>
                   setDraft((current) => ({
@@ -215,8 +222,13 @@ export function HostPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="enabled">Enabled</SelectItem>
-                  <SelectItem value="disabled">Disabled</SelectItem>
+                  <SelectGroup>
+                    {ntpItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <FieldDescription>

@@ -17,6 +17,10 @@ export function RefreshSelect({
 }) {
   return (
     <Select
+      items={refreshIntervals.map((item) => ({
+        value: item.value,
+        label: item.label,
+      }))}
       value={value}
       onValueChange={(next) => onChange(next as RefreshInterval)}
     >

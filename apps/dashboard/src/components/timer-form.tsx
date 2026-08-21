@@ -11,13 +11,31 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 
-type ScheduleKind = "calendar" | "boot" | "active"
+const scopeItems = [
+  { value: "user", label: "User session" },
+  { value: "system", label: "System" },
+]
+const actionItems = [
+  { value: "create", label: "Create" },
+  { value: "update", label: "Update" },
+  { value: "enable", label: "Enable" },
+  { value: "disable", label: "Disable" },
+  { value: "delete", label: "Delete" },
+]
+const scheduleItems = [
+  { value: "calendar", label: "OnCalendar" },
+  { value: "boot", label: "OnBootSec" },
+  { value: "active", label: "OnUnitActiveSec" },
+] as const
+
+type ScheduleKind = (typeof scheduleItems)[number]["value"]
 
 function scheduleKind(value: TimerOperation): ScheduleKind {
   if (value.onBootSec) return "boot"
@@ -79,6 +97,7 @@ export function TimerForm({
           <Field>
             <FieldLabel htmlFor="timer-scope">Scope</FieldLabel>
             <Select
+              items={scopeItems}
               value={value.scope}
               onValueChange={(scope) =>
                 set("scope", scope as TimerOperation["scope"])
@@ -89,8 +108,13 @@ export function TimerForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="user">User session</SelectItem>
-                <SelectItem value="system">System</SelectItem>
+                <SelectGroup>
+                  {scopeItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
             <FieldDescription>
@@ -101,6 +125,7 @@ export function TimerForm({
           <Field>
             <FieldLabel htmlFor="timer-action">Operation</FieldLabel>
             <Select
+              items={actionItems}
               value={value.action}
               onValueChange={(action) => set("action", action as TimerAction)}
               disabled={disabled}
@@ -109,11 +134,13 @@ export function TimerForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="create">Create</SelectItem>
-                <SelectItem value="update">Update</SelectItem>
-                <SelectItem value="enable">Enable</SelectItem>
-                <SelectItem value="disable">Disable</SelectItem>
-                <SelectItem value="delete">Delete</SelectItem>
+                <SelectGroup>
+                  {actionItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Field>
@@ -147,6 +174,7 @@ export function TimerForm({
         <Field>
           <FieldLabel htmlFor="timer-schedule-type">Schedule</FieldLabel>
           <Select
+            items={scheduleItems}
             value={kind}
             onValueChange={(next) =>
               onChange(updateSchedule(value, next as ScheduleKind, schedule))
@@ -157,9 +185,13 @@ export function TimerForm({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="calendar">OnCalendar</SelectItem>
-              <SelectItem value="boot">OnBootSec</SelectItem>
-              <SelectItem value="active">OnUnitActiveSec</SelectItem>
+              <SelectGroup>
+                {scheduleItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
           <Input

@@ -28,6 +28,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -212,6 +213,10 @@ export function PasswordManager() {
                     </Empty>
                   ) : (
                     <Select
+                      items={localUsers.map((user) => ({
+                        value: user.username,
+                        label: user.username,
+                      }))}
                       value={selectedTarget}
                       onValueChange={(value) => setTarget(value ?? "")}
                       disabled={pending || !administrative}
@@ -223,11 +228,16 @@ export function PasswordManager() {
                         <SelectValue placeholder="Choose a local user" />
                       </SelectTrigger>
                       <SelectContent>
-                        {localUsers.map((user) => (
-                          <SelectItem key={user.username} value={user.username}>
-                            {user.username}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          {localUsers.map((user) => (
+                            <SelectItem
+                              key={user.username}
+                              value={user.username}
+                            >
+                              {user.username}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   )}

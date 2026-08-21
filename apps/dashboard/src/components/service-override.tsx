@@ -26,11 +26,19 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+
+const restartItems = [
+  { value: "no", label: "No automatic restart" },
+  { value: "on-failure", label: "On failure" },
+  { value: "always", label: "Always" },
+  { value: "on-abnormal", label: "On abnormal exit" },
+]
 
 type OverrideForm = {
   environmentKey: string
@@ -182,6 +190,7 @@ export function ServiceOverride({
           <Field>
             <FieldLabel htmlFor="override-restart">Restart policy</FieldLabel>
             <Select
+              items={restartItems}
               value={form.restart}
               onValueChange={(restart) =>
                 setForm({ ...form, restart: restart ?? "" })
@@ -192,10 +201,13 @@ export function ServiceOverride({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="no">No automatic restart</SelectItem>
-                <SelectItem value="on-failure">On failure</SelectItem>
-                <SelectItem value="always">Always</SelectItem>
-                <SelectItem value="on-abnormal">On abnormal exit</SelectItem>
+                <SelectGroup>
+                  {restartItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Field>
