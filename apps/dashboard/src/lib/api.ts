@@ -676,6 +676,7 @@ export type UpdateStatus = {
   message: string
   reason?: string
   recovery?: UpdateRecovery
+  lastChecked?: string
 }
 export type UpdateRecovery = {
   authoritative: boolean
@@ -723,6 +724,13 @@ export type UpdatePackage = {
   size?: number
   summary?: string
   details?: string
+  advisoryId?: string
+  cveUrls?: string[]
+  bugUrls?: string[]
+  vendorUrls?: string[]
+  description?: string
+  groupKey?: string
+  dependencies?: string[]
 }
 export type TerminalStatus = { available: boolean; message: string }
 export type MonitoringPreference = {

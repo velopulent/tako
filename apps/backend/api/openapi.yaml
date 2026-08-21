@@ -1371,6 +1371,7 @@ components:
         message: { type: string, maxLength: 512 }
         reason: { type: string, maxLength: 512 }
         recovery: { $ref: '#/components/schemas/UpdateRecovery' }
+        lastChecked: { type: string, format: date-time }
     UpdateRecovery:
       type: object
       required: [authoritative, rebootRequired, restartServices, hints, source]
@@ -1593,6 +1594,13 @@ components:
         size: { type: integer, minimum: 0 }
         summary: { type: string, maxLength: 1024 }
         details: { type: string, maxLength: 4096 }
+        advisoryId: { type: string, maxLength: 128 }
+        cveUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        bugUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        vendorUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        description: { type: string, maxLength: 4096 }
+        groupKey: { type: string, maxLength: 256 }
+        dependencies: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
     UpdateOperation:
       type: object
       additionalProperties: false

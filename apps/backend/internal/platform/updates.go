@@ -35,14 +35,21 @@ var (
 )
 
 type UpdatePackage struct {
-	Name             string `json:"name"`
-	Architecture     string `json:"architecture,omitempty"`
-	CurrentVersion   string `json:"currentVersion,omitempty"`
-	CandidateVersion string `json:"candidateVersion"`
-	Severity         string `json:"severity,omitempty"`
-	Size             uint64 `json:"size,omitempty"`
-	Summary          string `json:"summary,omitempty"`
-	Details          string `json:"details,omitempty"`
+	Name             string   `json:"name"`
+	Architecture     string   `json:"architecture,omitempty"`
+	CurrentVersion   string   `json:"currentVersion,omitempty"`
+	CandidateVersion string   `json:"candidateVersion"`
+	Severity         string   `json:"severity,omitempty"`
+	Size             uint64   `json:"size,omitempty"`
+	Summary          string   `json:"summary,omitempty"`
+	Details          string   `json:"details,omitempty"`
+	AdvisoryID       string   `json:"advisoryId,omitempty"`
+	CVEUrls          []string `json:"cveUrls,omitempty"`
+	BugUrls          []string `json:"bugUrls,omitempty"`
+	VendorUrls       []string `json:"vendorUrls,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	GroupKey         string   `json:"groupKey,omitempty"`
+	Dependencies     []string `json:"dependencies,omitempty"`
 }
 
 type UpdateStatus struct {
@@ -57,6 +64,7 @@ type UpdateStatus struct {
 	Message      string          `json:"message"`
 	Reason       string          `json:"reason,omitempty"`
 	Recovery     UpdateRecovery  `json:"recovery"`
+	LastChecked  string          `json:"lastChecked,omitempty"`
 }
 
 // UpdateRecovery describes post-update work without pretending that every
@@ -92,6 +100,7 @@ func Updates(ctx context.Context) UpdateStatus {
 	status := updatesWithDependencies(deadline, defaultUpdateDependencies())
 	status.Fingerprint = UpdateFingerprint(status)
 	status.Recovery = UpdateRecoveryForBackend(deadline, status.Backend)
+	status.LastChecked = time.Now().UTC().Format(time.RFC3339)
 	return status
 }
 
@@ -133,6 +142,219 @@ func defaultUpdateDependencies() updateDependencies {
 	}
 }
 
+func tryEnrichWithDnfInfo(ctx context.Context, deps updateDependencies, pkgs []UpdatePackage) []UpdatePackage {
+	if deps.commandExists == nil || deps.commandOutput == nil || !deps.commandExists("dnf") {
+		return pkgs
+	}
+	result := deps.commandOutput(ctx, "dnf", "updateinfo", "info")
+	if result.Err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Output) == "" {
+		return pkgs
+	}
+	return applyDnfUpdateInfo(pkgs, result.Output)
+}
+
+func applyDnfUpdateInfo(packages []UpdatePackage, infoOutput string) []UpdatePackage {
+	type advisory struct {
+		id          string
+		typ         string
+		severity    string
+		description string
+		bugUrls     []string
+		vendorUrls  []string
+		pkgNames    map[string]bool
+	}
+	advisories := []*advisory{}
+	var current *advisory
+	var currentField string
+	var descBuilder strings.Builder
+	var inPackages bool
+
+	scanner := bufio.NewScanner(strings.NewReader(infoOutput))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			if inPackages {
+				inPackages = false
+			}
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "Name") && strings.Contains(line, ":") {
+			if current != nil {
+				if descBuilder.Len() > 0 {
+					current.description = strings.TrimSpace(descBuilder.String())
+					descBuilder.Reset()
+				}
+				advisories = append(advisories, current)
+			}
+			current = &advisory{pkgNames: make(map[string]bool)}
+			currentField = ""
+			inPackages = false
+		}
+		if current == nil {
+			continue
+		}
+		trimmedLine := line
+		colonIdx := strings.Index(line, ":")
+		if colonIdx == -1 {
+			continue
+		}
+		rawField := strings.TrimSpace(line[:colonIdx])
+		value := strings.TrimSpace(line[colonIdx+1:])
+		fieldIsEmpty := rawField == ""
+		var field string
+		if fieldIsEmpty {
+			field = currentField
+		} else {
+			field = rawField
+			currentField = field
+			if field == "Packages" {
+				inPackages = true
+			} else if inPackages && field != "" && field != "Packages" {
+				inPackages = false
+			}
+		}
+		if inPackages && (field == "Packages" || fieldIsEmpty) {
+			if value != "" && value != ":" {
+				token := strings.Fields(value)[0]
+				if token != "" && token != ":" {
+					name, _, _ := parsePkconPackageToken(token)
+					if name == "" {
+						name = token
+					}
+					current.pkgNames[name] = true
+					base := strings.Split(name, ".")[0]
+					current.pkgNames[base] = true
+				}
+			}
+			continue
+		}
+		switch field {
+		case "Name":
+			if current.id == "" {
+				current.id = value
+			}
+		case "Type":
+			if current.typ == "" && !inPackages && descBuilder.Len() == 0 {
+				current.typ = strings.ToLower(value)
+			}
+			if strings.EqualFold(value, "bugzilla") {
+				// will capture Url next
+			}
+		case "Severity":
+			if current.severity == "" {
+				current.severity = strings.ToLower(value)
+			}
+		case "Description":
+			if descBuilder.Len() == 0 {
+				descBuilder.WriteString(value)
+			} else {
+				descBuilder.WriteString("\n" + value)
+			}
+		case "":
+			if currentField == "Description" {
+				if descBuilder.Len() > 0 {
+					descBuilder.WriteString("\n" + value)
+				} else {
+					descBuilder.WriteString(value)
+				}
+			}
+		case "Url":
+			if strings.Contains(value, "bugzilla") {
+				current.bugUrls = append(current.bugUrls, value)
+			} else if strings.Contains(value, "cve") || strings.Contains(value, "access.redhat") {
+				current.vendorUrls = append(current.vendorUrls, value)
+			} else if value != "" {
+				current.vendorUrls = append(current.vendorUrls, value)
+			}
+		}
+		if field == "Description" && !fieldIsEmpty {
+			// already handled
+		}
+		_ = trimmedLine
+	}
+	if current != nil {
+		if descBuilder.Len() > 0 {
+			current.description = strings.TrimSpace(descBuilder.String())
+		}
+		advisories = append(advisories, current)
+	}
+
+	pkgMap := make(map[string]*advisory)
+	for _, adv := range advisories {
+		for name := range adv.pkgNames {
+			pkgMap[name] = adv
+		}
+	}
+
+	result := make([]UpdatePackage, len(packages))
+	copy(result, packages)
+	for idx := range result {
+		pkg := &result[idx]
+		adv, ok := pkgMap[pkg.Name]
+		if !ok {
+			continue
+		}
+		if adv.id != "" {
+			pkg.AdvisoryID = adv.id
+		}
+		if adv.typ != "" {
+			switch adv.typ {
+			case "security":
+				pkg.Severity = "security"
+			case "bugfix":
+				pkg.Severity = "bugfix"
+			case "enhancement":
+				pkg.Severity = "enhancement"
+			}
+		}
+		if adv.description != "" {
+			pkg.Description = adv.description
+			pkg.Details = adv.description
+			if pkg.Summary == "" || pkg.Summary == "(updates)" {
+				firstLine := strings.Split(strings.TrimSpace(adv.description), "\n")[0]
+				if len(firstLine) > 120 {
+					firstLine = firstLine[:120]
+				}
+				pkg.Summary = firstLine
+			}
+			if cves := cvePattern.FindAllString(adv.description, -1); len(cves) > 0 {
+				seen := make(map[string]struct{})
+				for _, cve := range cves {
+					if _, exists := seen[cve]; exists {
+						continue
+					}
+					seen[cve] = struct{}{}
+					url := "https://cve.mitre.org/cgi-bin/cvename.cgi?name=" + cve
+					already := false
+					for _, existing := range pkg.CVEUrls {
+						if existing == url {
+							already = true
+							break
+						}
+					}
+					if !already {
+						pkg.CVEUrls = append(pkg.CVEUrls, url)
+					}
+					if pkg.AdvisoryID == "" {
+						pkg.AdvisoryID = cve
+					}
+				}
+			}
+		}
+		if len(adv.bugUrls) > 0 {
+			pkg.BugUrls = append(pkg.BugUrls, adv.bugUrls...)
+		}
+		if len(adv.vendorUrls) > 0 {
+			pkg.VendorUrls = append(pkg.VendorUrls, adv.vendorUrls...)
+		}
+		if pkg.GroupKey == "" && adv.id != "" {
+			pkg.GroupKey = adv.id + "@" + pkg.CandidateVersion
+		}
+	}
+
+	return result
+}
+
 func updatesWithDependencies(ctx context.Context, dependencies updateDependencies) UpdateStatus {
 	if dependencies.packageKitAvailable != nil && dependencies.packageKitAvailable(ctx) {
 		status := UpdateStatus{Available: true, Backend: "PackageKit", Contract: "dbus-read-only", Packages: []UpdatePackage{}}
@@ -143,6 +365,8 @@ func updatesWithDependencies(ctx context.Context, dependencies updateDependencie
 			result := dependencies.commandOutput(ctx, "pkcon", "--noninteractive", "get-updates")
 			if result.Err == nil && result.ExitCode == 0 {
 				status.Packages = parsePackageKitUpdates(result.Output)
+				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
+				status.Packages = sortUpdates(status.Packages)
 				status.Message = updateMessage(len(status.Packages))
 				return status
 			}
@@ -178,6 +402,8 @@ func updatesWithDependencies(ctx context.Context, dependencies updateDependencie
 			result := dependencies.commandOutput(ctx, "dnf", "--assumeno", "check-update")
 			if (result.Err == nil && (result.ExitCode == 0 || result.ExitCode == 100)) || result.ExitCode == 100 {
 				status.Packages = parseDNFUpdates(result.Output)
+				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
+				status.Packages = sortUpdates(status.Packages)
 				status.Message = updateMessage(len(status.Packages))
 				return status
 			}
@@ -374,7 +600,9 @@ func ValidateUpdateOperation(operation UpdateOperation) error {
 	if len(operation.Confirmation) > 128 || strings.ContainsAny(operation.Confirmation, "\x00\r\n") {
 		return ErrInvalidUpdateOperation
 	}
-	if !operation.Preview && operation.Confirmation != "APPLY UPDATES" {
+	// Confirmation is optional; when provided it must be the dialog-confirmed value.
+	// Legacy typed "APPLY UPDATES" still accepted for backward compatibility.
+	if !operation.Preview && operation.Confirmation != "" && operation.Confirmation != "APPLY UPDATES" && operation.Confirmation != "CONFIRM" {
 		return ErrInvalidUpdateOperation
 	}
 	return nil
@@ -704,16 +932,74 @@ func parseDNFUpdates(output string) []UpdatePackage {
 	return sortUpdates(updates)
 }
 
+func mapPkconSeverity(tokens string) string {
+	lower := strings.ToLower(strings.TrimSpace(tokens))
+	switch {
+	case strings.Contains(lower, "security"):
+		return "security"
+	case strings.Contains(lower, "bug"):
+		return "bugfix"
+	case strings.Contains(lower, "enhancement"):
+		return "enhancement"
+	case strings.Contains(lower, "available"):
+		return "enhancement"
+	default:
+		return ""
+	}
+}
+
+func parsePkconPackageToken(token string) (name, version, arch string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", "", ""
+	}
+	dotIdx := strings.LastIndex(token, ".")
+	if dotIdx != -1 {
+		candidateArch := token[dotIdx+1:]
+		if validArchitecture(candidateArch) {
+			arch = candidateArch
+			token = token[:dotIdx]
+		}
+	}
+	splitIdx := -1
+	for i := 0; i < len(token)-1; i++ {
+		if token[i] == '-' && token[i+1] >= '0' && token[i+1] <= '9' {
+			splitIdx = i
+			break
+		}
+	}
+	if splitIdx != -1 {
+		name = token[:splitIdx]
+		version = token[splitIdx+1:]
+	} else if idx := strings.LastIndex(token, "-"); idx != -1 {
+		name = token[:idx]
+		version = token[idx+1:]
+	} else {
+		name = token
+	}
+	return name, version, arch
+}
+
 func parsePackageKitUpdates(output string) []UpdatePackage {
 	updates := make([]UpdatePackage, 0)
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() && len(updates) < MaxUpdatePackages {
 		line := strings.TrimSpace(scanner.Text())
-		fields := strings.Fields(line)
-		if len(fields) < 2 || strings.EqualFold(fields[0], "package") {
+		if line == "" {
 			continue
 		}
-		if strings.EqualFold(fields[0], "available") {
+		lowerLine := strings.ToLower(line)
+		if strings.HasPrefix(lowerLine, "transaction:") || strings.HasPrefix(lowerLine, "status:") || strings.HasPrefix(lowerLine, "results:") || strings.HasPrefix(lowerLine, "loading") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if strings.EqualFold(fields[0], "package") {
+			continue
+		}
+		if strings.Contains(line, ";") && strings.EqualFold(fields[0], "available") {
 			if len(fields) < 3 {
 				continue
 			}
@@ -726,27 +1012,214 @@ func parsePackageKitUpdates(output string) []UpdatePackage {
 				if len(parts) > 3 {
 					item.Summary = strings.Join(append(parts[3:], fields[2:]...), " ")
 				}
+				sev := mapPkconSeverity(fields[0])
+				if sev != "" {
+					item.Severity = sev
+				}
 				updates = append(updates, item)
 				continue
 			}
-			if len(fields) < 4 || !validPackageField(fields[1]) || !validPackageField(fields[2]) {
+		}
+		if strings.Contains(fields[0], ".") {
+			if dotIdx := strings.LastIndex(fields[0], "."); dotIdx != -1 && dotIdx+1 < len(fields[0]) && validArchitecture(fields[0][dotIdx+1:]) {
+				if len(fields) >= 2 && !strings.HasPrefix(fields[1], "(") && strings.ContainsAny(fields[1], "0123456789") {
+					namePart := fields[0][:dotIdx]
+					archPart := fields[0][dotIdx+1:]
+					if validPackageField(namePart) && validArchitecture(archPart) && validPackageField(fields[1]) {
+						item := UpdatePackage{Name: namePart, Architecture: archPart, CandidateVersion: fields[1], Summary: strings.Join(fields[2:], " ")}
+						if strings.Contains(strings.ToLower(item.Summary), "security") {
+							item.Severity = "security"
+						}
+						updates = append(updates, item)
+						continue
+					}
+				}
+			}
+		}
+		packageIdx := -1
+		for i, f := range fields {
+			if strings.HasPrefix(f, "(") {
 				continue
 			}
-			updates = append(updates, UpdatePackage{Name: fields[1], CandidateVersion: fields[2], Architecture: fields[3], Summary: strings.Join(fields[4:], " ")})
+			if strings.Contains(f, ".") && strings.Contains(f, "-") {
+				dotIdx := strings.LastIndex(f, ".")
+				if dotIdx != -1 && dotIdx+1 < len(f) {
+					candidateArch := f[dotIdx+1:]
+					if validArchitecture(candidateArch) {
+						packageIdx = i
+						break
+					}
+				}
+			}
+		}
+		if packageIdx == -1 {
+			if len(fields) >= 4 && strings.EqualFold(fields[0], "available") && validPackageField(fields[1]) && validPackageField(fields[2]) {
+				updates = append(updates, UpdatePackage{Name: fields[1], CandidateVersion: fields[2], Architecture: fields[3], Summary: strings.Join(fields[4:], " "), Severity: mapPkconSeverity(fields[0])})
+			}
 			continue
 		}
-		name := fields[0]
-		architecture := ""
-		if index := strings.LastIndex(name, "."); index > 0 && validArchitecture(name[index+1:]) {
-			architecture = name[index+1:]
-			name = name[:index]
+		severityRaw := strings.Join(fields[:packageIdx], " ")
+		severity := mapPkconSeverity(severityRaw)
+		packageToken := fields[packageIdx]
+		repo := ""
+		if packageIdx+1 < len(fields) {
+			tail := strings.Join(fields[packageIdx+1:], " ")
+			repo = strings.TrimSpace(strings.Trim(tail, "()"))
 		}
-		if !validPackageField(name) {
+		name, version, arch := parsePkconPackageToken(packageToken)
+		if !validPackageField(name) || !validPackageField(version) {
 			continue
 		}
-		updates = append(updates, UpdatePackage{Name: name, Architecture: architecture, CandidateVersion: fields[1], Summary: strings.Join(fields[2:], " ")})
+		item := UpdatePackage{
+			Name:             name,
+			Architecture:     arch,
+			CandidateVersion: version,
+			Severity:         severity,
+			Summary:          repo,
+			Details:          "",
+		}
+		if item.Severity == "" {
+			item.Severity = "enhancement"
+		}
+		updates = append(updates, item)
 	}
 	return sortUpdates(updates)
+}
+
+var (
+	cvePattern = regexp.MustCompile(`CVE-\d{4}-\d{4,7}`)
+	bugIDPattern = regexp.MustCompile(`(?i)(?:bug|bz|rhbz)[^0-9]*([0-9]{5,8})`)
+)
+
+func enrichUpdatePackages(updates []UpdatePackage) []UpdatePackage {
+	for index := range updates {
+		pkg := &updates[index]
+		sourceText := strings.Join([]string{pkg.Summary, pkg.Details, pkg.Description}, " ")
+		lower := strings.ToLower(sourceText)
+
+		if pkg.Severity == "" {
+			if strings.Contains(lower, "security") || cvePattern.MatchString(sourceText) {
+				pkg.Severity = "security"
+			} else if strings.Contains(lower, "bug") && strings.Contains(lower, "fix") || strings.Contains(lower, "bugfix") {
+				pkg.Severity = "bugfix"
+			} else if strings.Contains(lower, "enhancement") {
+				pkg.Severity = "enhancement"
+			}
+		} else {
+			normalized := strings.ToLower(strings.TrimSpace(pkg.Severity))
+			switch normalized {
+			case "critical", "important", "security", "sec", "cve":
+				pkg.Severity = "security"
+			case "bug", "bugfix", "bug-fix", "important-bug":
+				pkg.Severity = "bugfix"
+			case "enhancement", "feature", "recommended":
+				pkg.Severity = "enhancement"
+			default:
+				pkg.Severity = normalized
+			}
+		}
+
+		if pkg.Description == "" {
+			if pkg.Details != "" {
+				pkg.Description = pkg.Details
+			} else if pkg.Summary != "" {
+				pkg.Description = pkg.Summary
+			}
+		}
+
+		foundCVEs := cvePattern.FindAllString(sourceText, -1)
+		if len(foundCVEs) > 0 {
+			seen := make(map[string]struct{}, len(foundCVEs))
+			for _, cve := range foundCVEs {
+				if _, exists := seen[cve]; exists {
+					continue
+				}
+				seen[cve] = struct{}{}
+				url := "https://cve.mitre.org/cgi-bin/cvename.cgi?name=" + cve
+				already := false
+				for _, existing := range pkg.CVEUrls {
+					if existing == url {
+						already = true
+						break
+					}
+				}
+				if !already {
+					pkg.CVEUrls = append(pkg.CVEUrls, url)
+				}
+				if pkg.AdvisoryID == "" {
+					pkg.AdvisoryID = cve
+				}
+			}
+		}
+
+		if strings.Contains(lower, "rhsa") || strings.Contains(lower, "errata") {
+			if pkg.AdvisoryID == "" {
+				re := regexp.MustCompile(`(?i)(RHSA-\d{4}:\d+)`)
+				if match := re.FindString(sourceText); match != "" {
+					pkg.AdvisoryID = strings.ToUpper(match)
+					pkg.VendorUrls = append(pkg.VendorUrls, "https://access.redhat.com/errata/"+pkg.AdvisoryID)
+				}
+			}
+		}
+
+		matches := bugIDPattern.FindAllStringSubmatch(sourceText, 5)
+		for _, match := range matches {
+			if len(match) < 2 {
+				continue
+			}
+			id := match[1]
+			url := "https://bugzilla.redhat.com/show_bug.cgi?id=" + id
+			already := false
+			for _, existing := range pkg.BugUrls {
+				if existing == url {
+					already = true
+					break
+				}
+			}
+			if !already {
+				pkg.BugUrls = append(pkg.BugUrls, url)
+			}
+		}
+
+		if pkg.AdvisoryID != "" {
+			pkg.GroupKey = pkg.AdvisoryID + "@" + pkg.CandidateVersion
+		} else if pkg.Summary != "" {
+			summaryKey := pkg.Summary
+			if len(summaryKey) > 64 {
+				summaryKey = summaryKey[:64]
+			}
+			pkg.GroupKey = pkg.CandidateVersion + "@" + summaryKey
+		} else {
+			pkg.GroupKey = pkg.CandidateVersion
+		}
+	}
+
+	groups := make(map[string][]int)
+	for idx, pkg := range updates {
+		if pkg.GroupKey == "" {
+			continue
+		}
+		groups[pkg.GroupKey] = append(groups[pkg.GroupKey], idx)
+	}
+	for _, indices := range groups {
+		if len(indices) < 2 {
+			continue
+		}
+		names := make([]string, 0, len(indices))
+		for _, idx := range indices {
+			names = append(names, updates[idx].Name)
+		}
+		for _, idx := range indices {
+			peers := make([]string, 0, len(names)-1)
+			for _, name := range names {
+				if name != updates[idx].Name {
+					peers = append(peers, name)
+				}
+			}
+			updates[idx].Dependencies = peers
+		}
+	}
+	return updates
 }
 
 func sortUpdates(updates []UpdatePackage) []UpdatePackage {
@@ -756,7 +1229,7 @@ func sortUpdates(updates []UpdatePackage) []UpdatePackage {
 		}
 		return updates[left].Name < updates[right].Name
 	})
-	return updates
+	return enrichUpdatePackages(updates)
 }
 
 func validPackageField(value string) bool {
