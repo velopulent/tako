@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,45 @@ type ProcessDetails struct {
 	Sockets      []ProcessSocket         `json:"sockets"`
 	History      []ProcessResourceSample `json:"history"`
 	AccessIssues []string                `json:"accessIssues,omitempty"`
+}
+
+func (details ProcessDetails) MarshalJSON() ([]byte, error) {
+	if details.Children == nil {
+		details.Children = []Process{}
+	}
+	if details.OpenFiles == nil {
+		details.OpenFiles = []string{}
+	}
+	if details.Sockets == nil {
+		details.Sockets = []ProcessSocket{}
+	}
+	if details.History == nil {
+		details.History = []ProcessResourceSample{}
+	}
+	type plain ProcessDetails
+	return json.Marshal((plain)(details))
+}
+
+func (details *ProcessDetails) UnmarshalJSON(payload []byte) error {
+	type plain ProcessDetails
+	var raw plain
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return err
+	}
+	*details = ProcessDetails(raw)
+	if details.Children == nil {
+		details.Children = []Process{}
+	}
+	if details.OpenFiles == nil {
+		details.OpenFiles = []string{}
+	}
+	if details.Sockets == nil {
+		details.Sockets = []ProcessSocket{}
+	}
+	if details.History == nil {
+		details.History = []ProcessResourceSample{}
+	}
+	return nil
 }
 
 type ProcessTracker struct {
@@ -118,7 +158,14 @@ func (tracker *ProcessTracker) Inspect(ctx context.Context, pid int, started uin
 	}
 	key := processIdentity(pid, details.Process.Started)
 	tracker.mu.Lock()
-	details.History = append([]ProcessResourceSample(nil), tracker.history[key]...)
+	history := tracker.history[key]
+	if history == nil {
+		history = []ProcessResourceSample{}
+	}
+	details.History = append([]ProcessResourceSample(nil), history...)
+	if details.History == nil {
+		details.History = []ProcessResourceSample{}
+	}
 	tracker.mu.Unlock()
 	return details, nil
 }
@@ -168,12 +215,34 @@ func InspectProcess(ctx context.Context, pid int, started uint64) (ProcessDetail
 		details.AccessIssues = append(details.AccessIssues, "cgroup is not readable")
 	}
 	details.OpenFiles, err = readProcessOpenFiles(pid)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		details.AccessIssues = append(details.AccessIssues, "open files are not readable")
+	if err != nil {
+		if details.OpenFiles == nil {
+			details.OpenFiles = []string{}
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			details.AccessIssues = append(details.AccessIssues, "open files are not readable")
+		}
+	}
+	if details.OpenFiles == nil {
+		details.OpenFiles = []string{}
 	}
 	details.Sockets, err = readProcessSockets(pid)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		details.AccessIssues = append(details.AccessIssues, "sockets are not readable")
+	if err != nil {
+		if details.Sockets == nil {
+			details.Sockets = []ProcessSocket{}
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			details.AccessIssues = append(details.AccessIssues, "sockets are not readable")
+		}
+	}
+	if details.Sockets == nil {
+		details.Sockets = []ProcessSocket{}
+	}
+	if details.Children == nil {
+		details.Children = []Process{}
+	}
+	if details.History == nil {
+		details.History = []ProcessResourceSample{}
 	}
 	return details, nil
 }
@@ -202,7 +271,7 @@ func readProcessFile(path string) ([]byte, error) {
 func readProcessOpenFiles(pid int) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "fd"))
 	if err != nil {
-		return nil, err
+		return []string{}, err
 	}
 	files := make([]string, 0, minInt(len(entries), maxProcessOpenFiles))
 	for index, entry := range entries {
