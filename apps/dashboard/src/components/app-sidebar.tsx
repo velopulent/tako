@@ -24,6 +24,7 @@ import {
 } from "lucide-react"
 
 import type { User } from "@/lib/api"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Sidebar,
   SidebarContent,
@@ -117,31 +118,33 @@ export function AppSidebar({
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        {groups.map((group) => (
-          <SidebarGroup key={group.label}>
-            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {group.items.map((item) => (
-                  <SidebarMenuItem key={item.to}>
-                    <SidebarMenuButton
-                      render={<Link to={item.to} />}
-                      tooltip={item.title}
-                      isActive={
-                        location.pathname === item.to ||
-                        (item.to !== "/" &&
-                          location.pathname.startsWith(`${item.to}/`))
-                      }
-                    >
-                      <item.icon aria-hidden="true" />
-                      <span>{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        ))}
+        <ScrollArea className="min-h-0 flex-1">
+          {groups.map((group) => (
+            <SidebarGroup key={group.label}>
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {group.items.map((item) => (
+                    <SidebarMenuItem key={item.to}>
+                      <SidebarMenuButton
+                        render={<Link to={item.to} />}
+                        tooltip={item.title}
+                        isActive={
+                          location.pathname === item.to ||
+                          (item.to !== "/" &&
+                            location.pathname.startsWith(`${item.to}/`))
+                        }
+                      >
+                        <item.icon aria-hidden="true" />
+                        <span>{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </ScrollArea>
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
