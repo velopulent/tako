@@ -279,6 +279,10 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
+	if request.Operation != "journal-query" && request.Operation != "journal-follow" && request.Journal != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
 	if request.Operation != "network" && request.Network != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
@@ -927,6 +931,10 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 			return
 		}
 		_ = encoder.Encode(auth.Response{FileResult: &result})
+		return
+	}
+	if request.Operation == "journal-query" || request.Operation == "journal-follow" {
+		handleJournal(conn, encoder, request, grants, request.Operation == "journal-follow")
 		return
 	}
 	if request.Operation == "network" {

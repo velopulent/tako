@@ -26,6 +26,10 @@ type IncidentTimeline struct {
 }
 
 func CorrelateIncidents(ctx context.Context, since, until time.Time) (IncidentTimeline, error) {
+	return CorrelateIncidentsWithLogs(ctx, since, until, QueryLogs)
+}
+
+func CorrelateIncidentsWithLogs(ctx context.Context, since, until time.Time, queryLogs func(context.Context, JournalQuery) (JournalPage, error)) (IncidentTimeline, error) {
 	if since.IsZero() {
 		since = time.Now().Add(-24 * time.Hour)
 	}
@@ -35,7 +39,10 @@ func CorrelateIncidents(ctx context.Context, since, until time.Time) (IncidentTi
 	if since.After(until) || until.Sub(since) > 7*24*time.Hour {
 		return IncidentTimeline{}, errors.New("incident window is invalid")
 	}
-	page, err := QueryLogs(ctx, JournalQuery{Limit: 500, Since: since, Until: until, Details: false})
+	if queryLogs == nil {
+		queryLogs = QueryLogs
+	}
+	page, err := queryLogs(ctx, JournalQuery{Limit: 500, Since: since, Until: until, Details: false})
 	if err != nil {
 		return IncidentTimeline{}, err
 	}

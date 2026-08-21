@@ -97,7 +97,7 @@ func (server *Server) incidents(writer http.ResponseWriter, request *http.Reques
 		problem(writer, http.StatusBadRequest, "invalid-incident-window", "Incident window must be RFC3339")
 		return
 	}
-	timeline, err := platform.CorrelateIncidents(request.Context(), since, until)
+	timeline, err := platform.CorrelateIncidentsWithLogs(request.Context(), since, until, server.queryLogs)
 	if err != nil {
 		problem(writer, http.StatusServiceUnavailable, "incidents-unavailable", "The bounded journal correlation could not be completed")
 		return

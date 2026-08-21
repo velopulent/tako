@@ -183,17 +183,20 @@ func New(cfg config.Config) (*Server, error) {
 		applySSHKeysFn: func(ctx context.Context, request auth.SSHKeyRequest) (platform.SSHKeyState, error) {
 			return auth.ApplySSHKeys(ctx, cfg.SessionSocket, request)
 		},
-		queryLogs:          platform.QueryLogs,
-		queryLoginHistory:  platform.QueryLoginHistory,
 		processTracker:     processTracker,
 		readProcessDetails: processTracker.Inspect,
 		signalProcesses: func(ctx context.Context, request auth.SignalRequest) (platform.SignalResult, error) {
 			return auth.SignalProcesses(ctx, cfg.SessionSocket, request)
 		},
-		followLogs: func(ctx context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
-			return platform.FollowJournal(ctx, query, emit)
-		},
 	}
+	queryLogs := func(ctx context.Context, query platform.JournalQuery) (platform.JournalPage, error) {
+		return server.queryJournal(ctx, query)
+	}
+	server.queryLogs = queryLogs
+	server.queryLoginHistory = func(ctx context.Context, query platform.LoginHistoryQuery) (platform.LoginHistoryPage, error) {
+		return platform.QueryLoginHistoryUsing(ctx, query, queryLogs)
+	}
+	server.followLogs = server.followJournal
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
 	_, sessionController := authenticator.(auth.SessionController)
@@ -1960,6 +1963,41 @@ func (server *Server) recordOperation(ctx context.Context, actor, target string,
 	if err != nil {
 		server.logger.Warn("operation receipt failed", zap.String("target", target), zap.Error(err))
 	}
+}
+
+func (server *Server) journalRequest(current session.Session, query platform.JournalQuery) auth.JournalRequest {
+	if hasAdministrativeAccess(current) {
+		return auth.JournalRequest{AdminToken: current.Identity.AdminToken, Query: query}
+	}
+	return auth.JournalRequest{Token: current.Identity.BridgeToken, Query: query}
+}
+
+func (server *Server) queryJournal(ctx context.Context, query platform.JournalQuery) (platform.JournalPage, error) {
+	current, ok := ctx.Value(sessionKey{}).(session.Session)
+	if !ok {
+		return platform.JournalPage{}, errors.New("session required")
+	}
+	if current.Identity.BridgeToken == "" && !hasAdministrativeAccess(current) {
+		if server.config.Development {
+			return platform.QueryLogs(ctx, query)
+		}
+		return platform.JournalPage{}, auth.ErrServiceUnavailable
+	}
+	return auth.QueryJournal(ctx, server.config.SessionSocket, server.journalRequest(current, query))
+}
+
+func (server *Server) followJournal(ctx context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
+	current, ok := ctx.Value(sessionKey{}).(session.Session)
+	if !ok {
+		return errors.New("session required")
+	}
+	if current.Identity.BridgeToken == "" && !hasAdministrativeAccess(current) {
+		if server.config.Development {
+			return platform.FollowJournal(ctx, query, emit)
+		}
+		return auth.ErrServiceUnavailable
+	}
+	return auth.FollowJournal(ctx, server.config.SessionSocket, server.journalRequest(current, query), emit)
 }
 
 func (server *Server) logs(writer http.ResponseWriter, request *http.Request) {

@@ -6,10 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -142,6 +144,13 @@ func DecodeJournalCursor(value string) (string, error) {
 }
 
 func QueryLogs(ctx context.Context, query JournalQuery) (JournalPage, error) {
+	return QueryLogsAs(ctx, query, nil)
+}
+
+// QueryLogsAs runs journalctl with optional UNIX credentials. A nil credential
+// keeps the caller identity. sessiond passes the authenticated operator, or
+// nil when an administrative grant is active (root journal, Cockpit-style).
+func QueryLogsAs(ctx context.Context, query JournalQuery, cred *syscall.Credential) (JournalPage, error) {
 	if query.Limit == 0 {
 		query.Limit = 200
 	}
@@ -152,8 +161,59 @@ func QueryLogs(ctx context.Context, query JournalQuery) (JournalPage, error) {
 	if query.Cursor != "" {
 		fetchLimit++
 	}
-	arguments := []string{"--no-pager", "--output=json", "--output-fields=" + strings.Join(journalFields(query.Details), ","), "--reverse", "-n", strconv.Itoa(fetchLimit)}
-	if query.Cursor != "" {
+	command := journalctlCommand(ctx, journalctlArgs(query, false, fetchLimit), cred)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return JournalPage{}, err
+	}
+	if err := command.Start(); err != nil {
+		return JournalPage{}, err
+	}
+	output, readErr := readBounded(stdout, maxJournalOutput)
+	waitErr := command.Wait()
+	if readErr != nil {
+		return JournalPage{}, readErr
+	}
+	if waitErr != nil && ctx.Err() != nil {
+		return JournalPage{}, ctx.Err()
+	}
+	entries := make([]LogEntry, 0, query.Limit)
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	for scanner.Scan() {
+		entry, ok := parseLogEntryWithDetails(scanner.Bytes(), query.Details)
+		if ok {
+			if query.Cursor != "" && entry.Cursor == query.Cursor {
+				continue
+			}
+			entries = append(entries, entry)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return JournalPage{}, err
+	}
+	if waitErr != nil && len(entries) == 0 {
+		return JournalPage{Items: []LogEntry{}}, nil
+	}
+	page := JournalPage{Items: entries}
+	if len(entries) > query.Limit {
+		page.NextCursor = EncodeJournalCursor(entries[query.Limit-1].Cursor)
+		page.Items = entries[:query.Limit]
+	}
+	for index := range page.Items {
+		page.Items[index].Cursor = ""
+	}
+	return page, nil
+}
+
+func journalctlArgs(query JournalQuery, follow bool, fetchLimit int) []string {
+	arguments := []string{"--no-pager", "--output=json", "--output-fields=" + strings.Join(journalFields(query.Details), ",")}
+	if follow {
+		arguments = append(arguments, "--follow", "--lines=0")
+	} else {
+		arguments = append(arguments, "--reverse", "-n", strconv.Itoa(fetchLimit))
+	}
+	if query.Cursor != "" && !follow {
 		arguments = append(arguments, "--cursor="+query.Cursor)
 	}
 	if query.Boot != "" {
@@ -177,47 +237,53 @@ func QueryLogs(ctx context.Context, query JournalQuery) (JournalPage, error) {
 	if query.Text != "" {
 		arguments = append(arguments, "--grep="+regexp.QuoteMeta(query.Text))
 	}
+	return arguments
+}
+
+func journalctlCommand(ctx context.Context, arguments []string, cred *syscall.Credential) *exec.Cmd {
 	command := exec.CommandContext(ctx, "journalctl", arguments...)
-	stdout, err := command.StdoutPipe()
+	applyJournalCredential(command, cred)
+	return command
+}
+
+func applyJournalCredential(command *exec.Cmd, cred *syscall.Credential) {
+	if cred == nil || uint32(os.Geteuid()) == cred.Uid {
+		return
+	}
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+}
+
+func FollowJournalAs(ctx context.Context, query JournalQuery, cred *syscall.Credential, emit func(LogEntry) error) error {
+	if query.Limit == 0 {
+		query.Limit = 200
+	}
+	if err := query.Validate(); err != nil {
+		return err
+	}
+	command := journalctlCommand(ctx, journalctlArgs(query, true, 0), cred)
+	pipe, err := command.StdoutPipe()
 	if err != nil {
-		return JournalPage{}, err
+		return err
 	}
 	if err := command.Start(); err != nil {
-		return JournalPage{}, err
+		return err
 	}
-	output, readErr := readBounded(stdout, maxJournalOutput)
-	waitErr := command.Wait()
-	if readErr != nil {
-		return JournalPage{}, readErr
-	}
-	if waitErr != nil {
-		if ctx.Err() != nil {
-			return JournalPage{}, ctx.Err()
-		}
-		return JournalPage{}, waitErr
-	}
-	entries := make([]LogEntry, 0, query.Limit)
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := bufio.NewScanner(pipe)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
-		entry, ok := parseLogEntry(scanner.Bytes())
-		if ok {
-			if query.Cursor != "" && entry.Cursor == query.Cursor {
-				continue
-			}
-			entries = append(entries, entry)
+		entry, ok := parseLogEntryWithDetails(scanner.Bytes(), query.Details)
+		if ok && emit(entry) != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return nil
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return JournalPage{}, err
+		return err
 	}
-	page := JournalPage{Items: entries}
-	if len(entries) > query.Limit {
-		page.NextCursor = EncodeJournalCursor(entries[query.Limit-1].Cursor)
-		page.Items = entries[:query.Limit]
+	err = command.Wait()
+	if ctx.Err() != nil {
+		return nil
 	}
-	for index := range page.Items {
-		page.Items[index].Cursor = ""
-	}
-	return page, nil
+	return err
 }

@@ -134,6 +134,7 @@ type Request struct {
 	SSHKeys             *platform.SSHKeyOperation             `json:"sshKeys,omitempty"`
 	Updates             *platform.UpdateOperation             `json:"updates,omitempty"`
 	File                *platform.FileOperation               `json:"file,omitempty"`
+	Journal             *platform.JournalQuery                `json:"journal,omitempty"`
 	Network             *platform.NetworkOperation            `json:"network,omitempty"`
 	Firewall            *platform.FirewallOperation           `json:"firewall,omitempty"`
 	Security            *platform.SecurityOperation           `json:"security,omitempty"`
@@ -256,6 +257,12 @@ type FileRequest struct {
 	AdminToken     string
 	Administrative bool
 	Operation      platform.FileOperation
+}
+
+type JournalRequest struct {
+	Token      string
+	AdminToken string
+	Query      platform.JournalQuery
 }
 
 type NetworkRequest struct {
@@ -566,6 +573,89 @@ func ApplyUpdates(ctx context.Context, path string, request UpdateRequest) (plat
 		return platform.UpdateResult{}, ErrServiceUnavailable
 	}
 	return *response.UpdateResult, nil
+}
+
+func QueryJournal(ctx context.Context, path string, request JournalRequest) (platform.JournalPage, error) {
+	query := request.Query
+	response, err := socketRequestWithLimit(ctx, path, Request{
+		Operation:  "journal-query",
+		Token:      request.Token,
+		AdminToken: request.AdminToken,
+		Journal:    &query,
+	}, 30*time.Second, 8<<20)
+	if err != nil {
+		return platform.JournalPage{}, err
+	}
+	if response.Error != "" {
+		return platform.JournalPage{}, journalResponseError(response.Error)
+	}
+	if response.JournalPage == nil {
+		return platform.JournalPage{}, ErrServiceUnavailable
+	}
+	if response.JournalPage.Items == nil {
+		response.JournalPage.Items = []platform.LogEntry{}
+	}
+	return *response.JournalPage, nil
+}
+
+func FollowJournal(ctx context.Context, path string, request JournalRequest, emit func(platform.LogEntry) error) error {
+	query := request.Query
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return fmt.Errorf("%w: connect to %s: %v", ErrServiceUnavailable, path, err)
+	}
+	defer conn.Close()
+	stopCancelWatch := make(chan struct{})
+	defer close(stopCancelWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopCancelWatch:
+		}
+	}()
+	_ = conn.SetDeadline(time.Time{})
+	if err := json.NewEncoder(conn).Encode(Request{
+		Operation:  "journal-follow",
+		Token:      request.Token,
+		AdminToken: request.AdminToken,
+		Journal:    &query,
+	}); err != nil {
+		return fmt.Errorf("%w: send request: %v", ErrServiceUnavailable, err)
+	}
+	decoder := json.NewDecoder(conn)
+	for {
+		var response Response
+		if err := decoder.Decode(&response); err != nil {
+			if ctx.Err() != nil || err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("%w: read response: %v", ErrServiceUnavailable, err)
+		}
+		if response.Error != "" {
+			return journalResponseError(response.Error)
+		}
+		if response.LogEntry == nil {
+			continue
+		}
+		if err := emit(*response.LogEntry); err != nil {
+			return nil
+		}
+	}
+}
+
+func journalResponseError(code string) error {
+	switch code {
+	case "invalid-journal-query":
+		return platform.ErrInvalidJournalQuery
+	case "invalid-bridge-token":
+		return errors.New("invalid-bridge-token")
+	case "invalid-admin-token":
+		return errors.New("invalid-admin-token")
+	default:
+		return errors.New(code)
+	}
 }
 
 func ApplyFileOperation(ctx context.Context, path string, request FileRequest) (platform.FileResult, error) {
@@ -931,6 +1021,8 @@ type Response struct {
 	SSHKeyPreview          *platform.SSHKeyPreview             `json:"sshKeyPreview,omitempty"`
 	UpdateResult           *platform.UpdateResult              `json:"updateResult,omitempty"`
 	FileResult             *platform.FileResult                `json:"fileResult,omitempty"`
+	JournalPage            *platform.JournalPage               `json:"journalPage,omitempty"`
+	LogEntry               *platform.LogEntry                  `json:"logEntry,omitempty"`
 	NetworkState           *platform.NetworkState              `json:"networkState,omitempty"`
 	FirewallState          *platform.FirewallState             `json:"firewallState,omitempty"`
 	SecurityStatus         *platform.SecurityStatus            `json:"securityStatus,omitempty"`

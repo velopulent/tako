@@ -82,6 +82,10 @@ func QueryLoginHistory(ctx context.Context, query LoginHistoryQuery) (LoginHisto
 	return QueryLoginHistoryWithDependencies(ctx, query, QueryLogs, resolveLoginHistoryIdentity)
 }
 
+func QueryLoginHistoryUsing(ctx context.Context, query LoginHistoryQuery, queryLogs loginHistoryQueryLogs) (LoginHistoryPage, error) {
+	return QueryLoginHistoryWithDependencies(ctx, query, queryLogs, resolveLoginHistoryIdentity)
+}
+
 func QueryLoginHistoryWithDependencies(ctx context.Context, query LoginHistoryQuery, queryLogs loginHistoryQueryLogs, resolve loginHistoryIdentityResolver) (LoginHistoryPage, error) {
 	if query.Limit == 0 {
 		query.Limit = 50
