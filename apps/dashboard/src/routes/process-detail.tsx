@@ -1,22 +1,29 @@
 import * as React from "react"
 import { Link, getRouteApi } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
+import type { ColumnDef } from "@tanstack/react-table"
 import {
   ActivityIcon,
   ArrowLeftIcon,
   BracesIcon,
   Clock3Icon,
   CpuIcon,
-  FileTextIcon,
   HardDriveIcon,
   LayersIcon,
+  MemoryStickIcon,
   NetworkIcon,
   ShieldAlertIcon,
   TerminalIcon,
   UserIcon,
 } from "lucide-react"
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
 
-import { api, type ProcessDetails as ProcessDetailsData } from "@/lib/api"
+import {
+  api,
+  type ProcessDetails as ProcessDetailsData,
+  type ProcessResourceSample,
+  type ProcessSocket,
+} from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -35,6 +42,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart"
+import { DataTable } from "@/components/data-table"
 import {
   Empty,
   EmptyDescription,
@@ -55,6 +69,8 @@ const bytes = (value: number) => {
   }
   return `${amount.toFixed(index ? 1 : 0)} ${units[index]}`
 }
+
+const bytesPerSecond = (value: number) => `${bytes(value)}/s`
 
 function StatCard({
   icon: Icon,
@@ -89,19 +105,328 @@ function StatCard({
 
 function DetailSkeleton() {
   return (
-    <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
+    <main className="@container/main flex flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6">
       <Skeleton className="h-5 w-48" />
       <Skeleton className="h-32" />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Skeleton className="h-24" />
-        <Skeleton className="h-24" />
-        <Skeleton className="h-24" />
-        <Skeleton className="h-24" />
+      <div className="grid gap-3 sm:grid-cols-2 @3xl/main:grid-cols-4">
+        <Skeleton className="h-20" />
+        <Skeleton className="h-20" />
+        <Skeleton className="h-20" />
+        <Skeleton className="h-20" />
       </div>
       <Skeleton className="h-64" />
     </main>
   )
 }
+
+type ChartPoint = {
+  timestamp: string
+  memory: number
+  cpuRate: number
+  diskReadRate: number
+  diskWriteRate: number
+}
+
+function toChartPoints(history: ProcessResourceSample[]): ChartPoint[] {
+  return history.map((sample, index) => {
+    const previous = history[index - 1]
+    if (!previous) {
+      return {
+        timestamp: sample.timestamp,
+        memory: sample.memory,
+        cpuRate: 0,
+        diskReadRate: 0,
+        diskWriteRate: 0,
+      }
+    }
+    const deltaSeconds = Math.max(
+      1,
+      (new Date(sample.timestamp).getTime() -
+        new Date(previous.timestamp).getTime()) /
+        1000
+    )
+    return {
+      timestamp: sample.timestamp,
+      memory: sample.memory,
+      cpuRate: Math.max(0, sample.cpuTime - previous.cpuTime) / deltaSeconds,
+      diskReadRate:
+        Math.max(0, sample.diskRead - previous.diskRead) / deltaSeconds,
+      diskWriteRate:
+        Math.max(0, sample.diskWrite - previous.diskWrite) / deltaSeconds,
+    }
+  })
+}
+
+const cpuMemoryConfig = {
+  memory: { label: "Memory", color: "var(--chart-memory)" },
+  cpuRate: { label: "CPU", color: "var(--chart-cpu)" },
+} satisfies ChartConfig
+
+const diskConfig = {
+  diskReadRate: { label: "Read", color: "var(--chart-disk-read)" },
+  diskWriteRate: { label: "Write", color: "var(--chart-disk-write)" },
+} satisfies ChartConfig
+
+function ResourceHistoryCharts({
+  history,
+}: {
+  history: ProcessResourceSample[]
+}) {
+  const data = React.useMemo(() => toChartPoints(history), [history])
+
+  if (!history.length) {
+    return (
+      <Empty className="border border-dashed">
+        <EmptyHeader>
+          <EmptyTitle>No history yet</EmptyTitle>
+          <EmptyDescription>
+            History starts after the next inventory refresh.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
+  }
+
+  return (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">CPU &amp; Memory</CardTitle>
+          <CardDescription>
+            Memory resident + CPU time delta per interval
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ChartContainer config={cpuMemoryConfig} className="h-48 w-full sm:h-56">
+            <AreaChart data={data} accessibilityLayer margin={{ left: 8, right: 8 }}>
+              <defs>
+                <linearGradient id="fillMemory" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--color-memory)" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="var(--color-memory)" stopOpacity={0.08} />
+                </linearGradient>
+                <linearGradient id="fillCpu" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--color-cpuRate)" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="var(--color-cpuRate)" stopOpacity={0.08} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="timestamp"
+                tickLine={false}
+                axisLine={false}
+                minTickGap={32}
+                tickMargin={8}
+                tickFormatter={(value) =>
+                  new Date(value).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                }
+              />
+              <YAxis
+                yAxisId="memory"
+                tickLine={false}
+                axisLine={false}
+                width={56}
+                tickFormatter={(value) => bytes(value as number)}
+              />
+              <YAxis
+                yAxisId="cpu"
+                orientation="right"
+                tickLine={false}
+                axisLine={false}
+                width={48}
+                tickFormatter={(value) => `${Number(value).toFixed(1)}s`}
+              />
+              <ChartTooltip
+                cursor={false}
+                content={
+                  <ChartTooltipContent
+                    labelFormatter={(_, payload) =>
+                      payload?.[0]
+                        ? new Date(payload[0].payload.timestamp).toLocaleString()
+                        : ""
+                    }
+                    formatter={(value, name) => (
+                      <>
+                        <span className="text-muted-foreground">
+                          {(cpuMemoryConfig as Record<string, { label?: string }>)[String(name)]?.label ?? String(name)}
+                        </span>
+                        <span className="ml-auto font-mono">
+                          {String(name) === "memory"
+                            ? bytes(Number(value))
+                            : `${Number(value).toFixed(2)}s/s`}
+                        </span>
+                      </>
+                    )}
+                  />
+                }
+              />
+              <Area
+                yAxisId="memory"
+                dataKey="memory"
+                type="monotone"
+                stroke="var(--color-memory)"
+                fill="url(#fillMemory)"
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+              <Area
+                yAxisId="cpu"
+                dataKey="cpuRate"
+                type="monotone"
+                stroke="var(--color-cpuRate)"
+                fill="url(#fillCpu)"
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </AreaChart>
+          </ChartContainer>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Disk I/O throughput</CardTitle>
+          <CardDescription>Stacked read vs write per interval</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ChartContainer config={diskConfig} className="h-48 w-full sm:h-56">
+            <AreaChart data={data} accessibilityLayer margin={{ left: 8, right: 8 }}>
+              <defs>
+                <linearGradient id="fillDiskRead" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--color-diskReadRate)" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="var(--color-diskReadRate)" stopOpacity={0.08} />
+                </linearGradient>
+                <linearGradient id="fillDiskWrite" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--color-diskWriteRate)" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="var(--color-diskWriteRate)" stopOpacity={0.08} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="timestamp"
+                tickLine={false}
+                axisLine={false}
+                minTickGap={32}
+                tickMargin={8}
+                tickFormatter={(value) =>
+                  new Date(value).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                }
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={64}
+                tickFormatter={(value) => bytesPerSecond(value as number)}
+              />
+              <ChartTooltip
+                cursor={false}
+                content={
+                  <ChartTooltipContent
+                    labelFormatter={(_, payload) =>
+                      payload?.[0]
+                        ? new Date(payload[0].payload.timestamp).toLocaleString()
+                        : ""
+                    }
+                    formatter={(value, name) => (
+                      <>
+                        <span className="text-muted-foreground">
+                          {(diskConfig as Record<string, { label?: string }>)[String(name)]?.label ?? String(name)}
+                        </span>
+                        <span className="ml-auto font-mono">
+                          {bytesPerSecond(Number(value))}
+                        </span>
+                      </>
+                    )}
+                  />
+                }
+              />
+              <Area
+                dataKey="diskReadRate"
+                type="monotone"
+                stackId="disk"
+                stroke="var(--color-diskReadRate)"
+                fill="url(#fillDiskRead)"
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+              <Area
+                dataKey="diskWriteRate"
+                type="monotone"
+                stackId="disk"
+                stroke="var(--color-diskWriteRate)"
+                fill="url(#fillDiskWrite)"
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </AreaChart>
+          </ChartContainer>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+const socketColumns: ColumnDef<ProcessSocket>[] = [
+  {
+    accessorKey: "protocol",
+    header: "Protocol",
+    size: 88,
+    cell: ({ row }) => (
+      <Badge variant="outline" className="font-mono text-xs">
+        {row.original.protocol}
+      </Badge>
+    ),
+  },
+  {
+    accessorKey: "local",
+    header: "Local",
+    size: 200,
+    cell: ({ row }) => (
+      <span className="font-mono text-xs truncate" title={row.original.local}>
+        {row.original.local}
+      </span>
+    ),
+  },
+  {
+    accessorKey: "remote",
+    header: "Remote",
+    size: 200,
+    cell: ({ row }) =>
+      row.original.remote ? (
+        <span
+          className="font-mono text-xs truncate text-muted-foreground"
+          title={row.original.remote}
+        >
+          {row.original.remote}
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground">—</span>
+      ),
+  },
+  {
+    accessorKey: "state",
+    header: "State",
+    size: 110,
+    meta: { align: "end" },
+    cell: ({ row }) =>
+      row.original.state ? (
+        <Badge variant="secondary" className="text-[10px] leading-none">
+          {row.original.state}
+        </Badge>
+      ) : (
+        <span className="text-xs text-muted-foreground">—</span>
+      ),
+  },
+]
 
 export function ProcessDetailPage() {
   const search = getRouteApi("/processes/$pid").useSearch()
@@ -127,7 +452,7 @@ export function ProcessDetailPage() {
 
   if (Number.isNaN(pid) || pid < 1) {
     return (
-      <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
+      <main className="@container/main flex flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6">
         <Alert variant="destructive">
           <AlertTitle>Invalid process</AlertTitle>
           <AlertDescription>Process ID in URL is invalid.</AlertDescription>
@@ -147,7 +472,7 @@ export function ProcessDetailPage() {
     const isNotFound = message.toLowerCase().includes("no longer exists")
     const isReused = message.toLowerCase().includes("different process")
     return (
-      <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
+      <main className="@container/main flex flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6">
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
@@ -192,7 +517,7 @@ export function ProcessDetailPage() {
 
   if (!details || !proc) {
     return (
-      <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
+      <main className="@container/main flex flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6">
         <Alert variant="destructive">
           <AlertTitle>Process unavailable</AlertTitle>
           <AlertDescription>Could not load process details.</AlertDescription>
@@ -202,7 +527,7 @@ export function ProcessDetailPage() {
   }
 
   return (
-    <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
+    <main className="@container/main flex flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6">
       <Breadcrumb>
         <BreadcrumbList>
           <BreadcrumbItem>
@@ -222,10 +547,10 @@ export function ProcessDetailPage() {
       {/* Header */}
       <Card>
         <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <CardTitle className="truncate text-xl">
+                <CardTitle className="truncate text-lg sm:text-xl">
                   {proc.program}
                 </CardTitle>
                 <Badge variant="outline" className="font-mono">
@@ -245,11 +570,9 @@ export function ProcessDetailPage() {
                   </Badge>
                 ) : null}
               </div>
-              <CardDescription className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs">
-                <span className="inline-flex items-center gap-1">
-                  <TerminalIcon className="size-3" aria-hidden="true" />
-                  <span className="truncate">{proc.command}</span>
-                </span>
+              <CardDescription className="mt-1.5 flex items-center gap-1.5 font-mono text-xs">
+                <TerminalIcon className="size-3 shrink-0" aria-hidden="true" />
+                <span className="min-w-0 truncate">{proc.command}</span>
               </CardDescription>
               <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
@@ -289,7 +612,7 @@ export function ProcessDetailPage() {
       </Card>
 
       {/* Stat grid */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 grid-cols-2 @3xl/main:grid-cols-4">
         <StatCard
           icon={CpuIcon}
           label="CPU time"
@@ -297,13 +620,12 @@ export function ProcessDetailPage() {
           hint={`${proc.threads} thread${proc.threads === 1 ? "" : "s"} · ${proc.state}`}
         />
         <StatCard
-          icon={HardDriveIcon}
+          icon={MemoryStickIcon}
           label="Memory"
           value={bytes(proc.memory)}
-          hint={`Virtual ${bytes(proc.virtualMemory)}`}
         />
         <StatCard
-          icon={FileTextIcon}
+          icon={HardDriveIcon}
           label="Disk I/O"
           value={`R ${bytes(proc.diskRead)} · W ${bytes(proc.diskWrite)}`}
           hint="Cumulative read/write"
@@ -325,34 +647,34 @@ export function ProcessDetailPage() {
       </div>
 
       {/* Main two-column layout */}
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 sm:gap-6 @5xl/main:grid-cols-3">
         {/* Left: primary details span 2 */}
-        <div className="flex flex-col gap-6 lg:col-span-2">
+        <div className="flex flex-col gap-4 sm:gap-6 @5xl/main:col-span-2">
           {/* Identity + command */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <BracesIcon className="size-4 text-muted-foreground" aria-hidden="true" />
-                Identity & command
+                Identity &amp; command
               </CardTitle>
               <CardDescription>
                 PID start identity guards against PID reuse.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
-              <dl className="grid gap-x-4 gap-y-3 text-sm sm:grid-cols-[9rem_1fr]">
+              <dl className="grid gap-x-4 gap-y-3 text-sm grid-cols-1 sm:grid-cols-[9rem_1fr]">
                 <dt className="font-medium text-muted-foreground">Program</dt>
-                <dd className="font-mono text-sm">{proc.program}</dd>
+                <dd className="font-mono text-sm break-all">{proc.program}</dd>
                 <dt className="font-medium text-muted-foreground">Command</dt>
                 <dd className="break-all font-mono text-xs">{proc.command}</dd>
                 <dt className="font-medium text-muted-foreground">User</dt>
-                <dd>{proc.user}</dd>
+                <dd className="truncate">{proc.user}</dd>
                 <dt className="font-medium text-muted-foreground">PID / PPID</dt>
                 <dd className="font-mono">
                   {proc.pid} / {proc.ppid}
                 </dd>
                 <dt className="font-medium text-muted-foreground">Started</dt>
-                <dd className="font-mono">{proc.started}</dd>
+                <dd className="font-mono text-xs sm:text-sm break-all">{proc.started}</dd>
                 <dt className="font-medium text-muted-foreground">State</dt>
                 <dd>
                   <Badge variant="outline">{proc.state || "—"}</Badge>
@@ -360,7 +682,7 @@ export function ProcessDetailPage() {
                 {proc.reason ? (
                   <>
                     <dt className="font-medium text-muted-foreground">Note</dt>
-                    <dd className="text-muted-foreground">{proc.reason}</dd>
+                    <dd className="text-muted-foreground break-words">{proc.reason}</dd>
                   </>
                 ) : null}
               </dl>
@@ -398,13 +720,13 @@ export function ProcessDetailPage() {
                     to="/processes/$pid"
                     params={{ pid: String(details.parent.pid) }}
                     search={{ started: String(details.parent.started) }}
-                    className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
+                    className="inline-flex max-w-full flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
                   >
-                    <span className="font-medium">{details.parent.program}</span>
-                    <Badge variant="outline" className="font-mono text-xs">
+                    <span className="font-medium truncate">{details.parent.program}</span>
+                    <Badge variant="outline" className="font-mono text-xs shrink-0">
                       PID {details.parent.pid}
                     </Badge>
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-xs text-muted-foreground truncate">
                       {details.parent.user} · {details.parent.state}
                     </span>
                   </Link>
@@ -425,16 +747,16 @@ export function ProcessDetailPage() {
                           to="/processes/$pid"
                           params={{ pid: String(child.pid) }}
                           search={{ started: String(child.started) }}
-                          className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
+                          className="flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm hover:bg-muted sm:flex-row sm:flex-wrap sm:items-center sm:gap-2"
                         >
-                          <span className="font-medium">{child.program}</span>
-                          <Badge variant="outline" className="font-mono text-xs">
+                          <span className="font-medium truncate">{child.program}</span>
+                          <Badge variant="outline" className="font-mono text-xs w-fit">
                             PID {child.pid}
                           </Badge>
                           <span className="text-xs text-muted-foreground">
                             {child.user} · {child.state} · {child.threads} thr
                           </span>
-                          <span className="ml-auto hidden truncate font-mono text-xs text-muted-foreground sm:block">
+                          <span className="hidden truncate font-mono text-xs text-muted-foreground @2xl/main:block ml-auto">
                             {child.command}
                           </span>
                         </Link>
@@ -457,58 +779,13 @@ export function ProcessDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {(details.history ?? []).length ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b text-left text-muted-foreground">
-                        <th className="px-2 py-1.5 font-medium">Time</th>
-                        <th className="px-2 py-1.5 font-medium">CPU</th>
-                        <th className="px-2 py-1.5 font-medium">Memory</th>
-                        <th className="px-2 py-1.5 font-medium">Virtual</th>
-                        <th className="px-2 py-1.5 font-medium">Read</th>
-                        <th className="px-2 py-1.5 font-medium">Write</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(details.history ?? []).map((sample) => (
-                        <tr
-                          key={sample.timestamp}
-                          className="border-b last:border-0 hover:bg-muted/50"
-                        >
-                          <td className="px-2 py-1.5 whitespace-nowrap">
-                            {new Date(sample.timestamp).toLocaleString()}
-                          </td>
-                          <td className="px-2 py-1.5 tabular-nums">
-                            {sample.cpuTime.toFixed(1)}s
-                          </td>
-                          <td className="px-2 py-1.5 tabular-nums">{bytes(sample.memory)}</td>
-                          <td className="px-2 py-1.5 tabular-nums">
-                            {bytes(sample.virtualMemory)}
-                          </td>
-                          <td className="px-2 py-1.5 tabular-nums">{bytes(sample.diskRead)}</td>
-                          <td className="px-2 py-1.5 tabular-nums">{bytes(sample.diskWrite)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <Empty className="border border-dashed">
-                  <EmptyHeader>
-                    <EmptyTitle>No history yet</EmptyTitle>
-                    <EmptyDescription>
-                      History starts after the next inventory refresh.
-                    </EmptyDescription>
-                  </EmptyHeader>
-                </Empty>
-              )}
+              <ResourceHistoryCharts history={details.history ?? []} />
             </CardContent>
           </Card>
         </div>
 
         {/* Right rail */}
-        <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-4 sm:gap-6">
           <ProcessSignal process={proc} />
 
           <Card>
@@ -561,29 +838,12 @@ export function ProcessDetailPage() {
             </CardHeader>
             <CardContent>
               {(details.sockets ?? []).length ? (
-                <div className="flex flex-col gap-2">
-                  {(details.sockets ?? []).map((socket, index) => (
-                    <div
-                      key={`${socket.protocol}:${socket.local}:${index}`}
-                      className="flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 text-xs"
-                    >
-                      <Badge variant="outline" className="shrink-0">
-                        {socket.protocol}
-                      </Badge>
-                      <span className="min-w-0 flex-1 truncate font-mono">{socket.local}</span>
-                      {socket.remote ? (
-                        <span className="font-mono text-muted-foreground">
-                          → {socket.remote}
-                        </span>
-                      ) : null}
-                      {socket.state ? (
-                        <Badge variant="secondary" className="ml-auto shrink-0 text-[10px]">
-                          {socket.state}
-                        </Badge>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
+                <DataTable
+                  data={(details.sockets ?? []) as ProcessSocket[]}
+                  columns={socketColumns}
+                  height="18rem"
+                  searchPlaceholder="Search sockets"
+                />
               ) : (
                 <p className="text-sm text-muted-foreground">No readable sockets.</p>
               )}
