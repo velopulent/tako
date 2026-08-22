@@ -112,6 +112,7 @@ export function DataTable<T>({
     getScrollElement: () => viewport.current,
     estimateSize: () => 42,
     overscan: 12,
+    measureElement: (element) => element.getBoundingClientRect().height,
   })
   const virtualRows = virtualizer.getVirtualItems()
   const totalSize = table.getTotalSize()
@@ -231,6 +232,10 @@ export function DataTable<T>({
               return (
                 <TableRow
                   key={row.id}
+                  data-index={virtualRow.index}
+                  ref={(node) => {
+                    virtualizer.measureElement(node)
+                  }}
                   tabIndex={onRowClick ? 0 : undefined}
                   className={cn("flex", onRowClick && "cursor-pointer")}
                   onClick={() => onRowClick?.(row.original)}
