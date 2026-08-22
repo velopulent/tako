@@ -224,6 +224,7 @@ export type ProcessInfo = {
   virtualMemory: number
   diskRead: number
   diskWrite: number
+  ioDenied?: boolean
   cpuPercent?: number
   diskReadRate?: number
   diskWriteRate?: number
@@ -245,6 +246,7 @@ export type ProcessResourceSample = {
   virtualMemory: number
   diskRead: number
   diskWrite: number
+  ioDenied?: boolean
 }
 export type ProcessDetails = {
   process: ProcessInfo

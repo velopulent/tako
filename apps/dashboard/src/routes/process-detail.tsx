@@ -627,8 +627,18 @@ export function ProcessDetailPage() {
         <StatCard
           icon={HardDriveIcon}
           label="Disk I/O"
-          value={`R ${bytes(proc.diskRead)} · W ${bytes(proc.diskWrite)}`}
-          hint="Cumulative read/write"
+          value={
+            proc.ioDenied ? (
+              "—"
+            ) : (
+              `R ${bytes(proc.diskRead)} · W ${bytes(proc.diskWrite)}`
+            )
+          }
+          hint={
+            proc.ioDenied
+              ? "I/O counters require elevated read access"
+              : "Cumulative read/write"
+          }
         />
         <StatCard
           icon={NetworkIcon}

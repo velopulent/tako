@@ -76,3 +76,41 @@ func TestProcessTrackerKeepsBoundedHistory(t *testing.T) {
 		t.Fatalf("history len=%d err=%v", len(details.History), err)
 	}
 }
+
+func TestProcessTrackerInspectSeedsAndThrottlesSamples(t *testing.T) {
+	tracker := NewProcessTracker()
+	current, err := findSelf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := tracker.Inspect(context.Background(), current.PID, current.Started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.History) != 1 {
+		t.Fatalf("first inspect should seed one sample, got %d", len(first.History))
+	}
+	if first.History[0].IODenied != current.IODenied || first.History[0].CPUTime < current.CPUTime-1 {
+		t.Fatalf("sample drifted from live process: sample=%+v process=%+v", first.History[0], current)
+	}
+	second, err := tracker.Inspect(context.Background(), current.PID, current.Started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.History) != 1 {
+		t.Fatalf("rapid inspect must be throttled, got %d samples", len(second.History))
+	}
+}
+
+func findSelf() (Process, error) {
+	items, err := Processes()
+	if err != nil {
+		return Process{}, err
+	}
+	for _, item := range items {
+		if item.PID == os.Getpid() {
+			return item, nil
+		}
+	}
+	return Process{}, ErrProcessNotFound
+}

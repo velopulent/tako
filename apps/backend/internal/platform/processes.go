@@ -16,11 +16,12 @@ import (
 )
 
 const (
-	maxProcessOpenFiles = 256
-	maxProcessSockets   = 256
-	maxProcessFileBytes = 64 << 10
-	maxProcessHistory   = 120
-	maxTrackedProcesses = 2048
+	maxProcessOpenFiles   = 256
+	maxProcessSockets     = 256
+	maxProcessFileBytes   = 64 << 10
+	maxProcessHistory     = 120
+	maxTrackedProcesses   = 2048
+	processSampleInterval = 2 * time.Second
 )
 
 var (
@@ -42,6 +43,7 @@ type ProcessResourceSample struct {
 	VirtualMemory uint64    `json:"virtualMemory"`
 	DiskRead      uint64    `json:"diskRead"`
 	DiskWrite     uint64    `json:"diskWrite"`
+	IODenied      bool      `json:"ioDenied,omitempty"`
 }
 
 type ProcessDetails struct {
@@ -122,11 +124,7 @@ func (tracker *ProcessTracker) Snapshot() ([]Process, error) {
 		key := processIdentity(item.PID, item.Started)
 		seen[key] = struct{}{}
 		tracker.lastSeen[key] = now
-		samples := append(tracker.history[key], ProcessResourceSample{Timestamp: now, CPUTime: item.CPUTime, Memory: item.Memory, VirtualMemory: item.VirtualMemory, DiskRead: item.DiskRead, DiskWrite: item.DiskWrite})
-		if len(samples) > tracker.maxSample {
-			samples = samples[len(samples)-tracker.maxSample:]
-		}
-		tracker.history[key] = samples
+		tracker.record(key, resourceSample(item, now))
 	}
 	for key, last := range tracker.lastSeen {
 		if _, ok := seen[key]; !ok && now.Sub(last) > 10*time.Minute {
@@ -151,16 +149,35 @@ func (tracker *ProcessTracker) Snapshot() ([]Process, error) {
 	return items, nil
 }
 
+// record appends a sample under the tracker lock, trimming to the bounded
+// history window.
+func (tracker *ProcessTracker) record(key string, sample ProcessResourceSample) {
+	samples := append(tracker.history[key], sample)
+	if len(samples) > tracker.maxSample {
+		samples = samples[len(samples)-tracker.maxSample:]
+	}
+	tracker.history[key] = samples
+}
+
+func resourceSample(item Process, now time.Time) ProcessResourceSample {
+	return ProcessResourceSample{Timestamp: now, CPUTime: item.CPUTime, Memory: item.Memory, VirtualMemory: item.VirtualMemory, DiskRead: item.DiskRead, DiskWrite: item.DiskWrite, IODenied: item.IODenied}
+}
+
 func (tracker *ProcessTracker) Inspect(ctx context.Context, pid int, started uint64) (ProcessDetails, error) {
 	details, err := InspectProcess(ctx, pid, started)
 	if err != nil {
 		return ProcessDetails{}, err
 	}
 	key := processIdentity(pid, details.Process.Started)
+	now := time.Now().UTC()
 	tracker.mu.Lock()
 	history := tracker.history[key]
-	if history == nil {
-		history = []ProcessResourceSample{}
+	// The detail page is the only poller for a directly visited process, so it
+	// feeds its own throttled sample; otherwise history only accrues while
+	// some other view happens to refresh the inventory.
+	if len(history) == 0 || now.Sub(history[len(history)-1].Timestamp) >= processSampleInterval {
+		tracker.record(key, resourceSample(details.Process, now))
+		history = tracker.history[key]
 	}
 	details.History = append([]ProcessResourceSample(nil), history...)
 	if details.History == nil {

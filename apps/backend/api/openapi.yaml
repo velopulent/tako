@@ -2026,8 +2026,17 @@ components:
         cpuTime: { type: number, minimum: 0 }
         memory: { type: integer, minimum: 0 }
         virtualMemory: { type: integer, minimum: 0 }
-        diskRead: { type: integer, minimum: 0 }
-        diskWrite: { type: integer, minimum: 0 }
+        diskRead:
+          type: integer
+          minimum: 0
+          description: Cumulative bytes read; meaningless zeros when ioDenied is true
+        diskWrite:
+          type: integer
+          minimum: 0
+          description: Cumulative bytes written; meaningless zeros when ioDenied is true
+        ioDenied:
+          type: boolean
+          description: True when the server lacks read access to the process's I/O counters
         permissionDenied: { type: boolean }
         reason: { type: string, maxLength: 256 }
     NSSUser:
@@ -2272,6 +2281,9 @@ components:
         virtualMemory: { type: integer, minimum: 0 }
         diskRead: { type: integer, minimum: 0 }
         diskWrite: { type: integer, minimum: 0 }
+        ioDenied:
+          type: boolean
+          description: True when the server could not read this process's I/O counters; diskRead and diskWrite are then meaningless zeros
     ProcessDetails:
       type: object
       required: [process, children, openFiles, sockets, history]
