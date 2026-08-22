@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -162,58 +161,6 @@ type User struct {
 	Local    bool     `json:"local"`
 	Mutable  bool     `json:"mutable"`
 	Reason   string   `json:"reason,omitempty"`
-}
-
-type Mount struct {
-	Source     string  `json:"source"`
-	Target     string  `json:"target"`
-	Filesystem string  `json:"filesystem"`
-	Total      uint64  `json:"total"`
-	Used       uint64  `json:"used"`
-	Available  uint64  `json:"available"`
-	Percent    float64 `json:"percent"`
-}
-
-func Mounts() ([]Mount, error) {
-	file, err := os.Open("/proc/self/mounts")
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	seen := map[string]bool{}
-	result := []Mount{}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 3 || seen[fields[1]] || pseudoFilesystem(fields[2]) {
-			continue
-		}
-		target := strings.ReplaceAll(fields[1], `\040`, " ")
-		var stat syscall.Statfs_t
-		if syscall.Statfs(target, &stat) != nil {
-			continue
-		}
-		seen[target] = true
-		total := stat.Blocks * uint64(stat.Bsize)
-		available := stat.Bavail * uint64(stat.Bsize)
-		used := total - stat.Bfree*uint64(stat.Bsize)
-		percent := float64(0)
-		if total > 0 {
-			percent = 100 * float64(used) / float64(total)
-		}
-		result = append(result, Mount{Source: fields[0], Target: target, Filesystem: fields[2], Total: total, Used: used, Available: available, Percent: percent})
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Target < result[j].Target })
-	return result, scanner.Err()
-}
-
-func pseudoFilesystem(name string) bool {
-	switch name {
-	case "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2", "securityfs", "pstore", "debugfs", "tracefs", "configfs", "fusectl", "mqueue", "hugetlbfs", "autofs":
-		return true
-	default:
-		return false
-	}
 }
 
 type Interface struct {

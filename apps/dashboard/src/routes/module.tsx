@@ -6,10 +6,10 @@ import { TerminalIcon } from "lucide-react"
 
 import {
   api,
+  type FileSystemInfo,
   type InterfaceInfo,
   type LogEntry,
   type MetricSample,
-  type MountInfo,
   type OperationReceipt,
   type ProcessInfo,
   type ServiceInfo,
@@ -49,6 +49,11 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import { usePreference } from "@/hooks/use-preference"
 import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
@@ -605,24 +610,51 @@ function FilterSelect({
   )
 }
 
+const storageScopes = ["all", "local", "network"] as const
+type StorageScope = (typeof storageScopes)[number]
+
 function StoragePage() {
   const interval = usePageInterval("storage")
   const search = getRouteApi("/storage").useSearch()
   const navigate = useNavigate({ from: "/storage" })
+  const [scope, setScope] = React.useState<StorageScope>("all")
   const metrics = useQuery({
     queryKey: ["storage-metrics"],
     queryFn: () => api<{ samples: MetricSample[] }>("/metrics?range=1h"),
   })
   const query = useQuery({
     queryKey: ["storage"],
-    queryFn: () => api<{ items: MountInfo[] }>("/storage"),
+    queryFn: () => api<{ items: FileSystemInfo[] }>("/storage"),
     refetchInterval: interval.milliseconds,
   })
-  const items = query.data?.items ?? []
-  const columns: ColumnDef<MountInfo>[] = [
-    { accessorKey: "target", header: "Mount" },
-    { accessorKey: "source", header: "Device" },
-    { accessorKey: "filesystem", header: "Filesystem" },
+  const filesystems = query.data?.items ?? []
+  const items =
+    scope === "all"
+      ? filesystems
+      : filesystems.filter(
+          (item) => item.network === (scope === "network")
+        )
+  const columns: ColumnDef<FileSystemInfo>[] = [
+    {
+      id: "mount",
+      header: "Mount",
+      accessorFn: (row) =>
+        row.targets.map((target) => target.target).join(" "),
+      cell: ({ row }) => <MountTargets filesystem={row.original} />,
+    },
+    { accessorKey: "device", header: "Device" },
+    {
+      accessorKey: "type",
+      header: "Type",
+      cell: ({ row }) => (
+        <div className="flex flex-wrap gap-1">
+          <Badge variant={row.original.network ? "outline" : "secondary"}>
+            {row.original.type}
+          </Badge>
+          {row.original.readOnly && <Badge variant="outline">Read-only</Badge>}
+        </div>
+      ),
+    },
     {
       accessorKey: "used",
       header: "Used",
@@ -640,19 +672,22 @@ function StoragePage() {
       header: "Usage",
       meta: { wrap: true },
       size: 220,
-      cell: ({ row }) => (
-        <div className="min-w-32">
-          <Progress value={row.original.percent} />
-          <span className="text-xs text-muted-foreground">
-            {row.original.percent.toFixed(1)}%
-          </span>
-        </div>
-      ),
+      cell: ({ row }) =>
+        row.original.total > 0 ? (
+          <div className="min-w-32">
+            <Progress value={row.original.percent} />
+            <span className="text-xs text-muted-foreground">
+              {row.original.percent.toFixed(1)}%
+            </span>
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground">Unavailable</span>
+        ),
     },
   ]
   return (
     <Page
-      description="Filesystem capacity and block-device activity."
+      description="Filesystem capacity grouped by device, and block-device activity."
       interval={interval}
     >
       <StorageMetrics
@@ -661,6 +696,15 @@ function StoragePage() {
         pending={metrics.isPending}
         error={metrics.isError}
       />
+      <Tabs value={scope} onValueChange={(next) => setScope(next as StorageScope)}>
+        <TabsList>
+          {storageScopes.map((value) => (
+            <TabsTrigger key={value} value={value}>
+              {value[0].toUpperCase() + value.slice(1)}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
       <State query={query} empty={!items.length}>
         <DataTable
           data={items}
@@ -677,6 +721,34 @@ function StoragePage() {
         />
       </State>
     </Page>
+  )
+}
+
+function MountTargets({ filesystem }: { filesystem: FileSystemInfo }) {
+  const primary = filesystem.targets[0]
+  const rest = filesystem.targets.slice(1)
+  if (!primary) return null
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="truncate font-medium">{primary.target}</span>
+      {rest.length > 0 && (
+        <Tooltip>
+          <TooltipTrigger>
+            <Badge variant="outline" className="shrink-0">
+              +{rest.length}
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent className="flex-col items-start gap-0.5">
+            {filesystem.targets.map((target) => (
+              <span key={target.target} className="font-mono">
+                {target.target}
+                {target.root && target.root !== "/" ? ` · ${target.root}` : ""}
+              </span>
+            ))}
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </div>
   )
 }
 

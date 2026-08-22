@@ -16,7 +16,6 @@ import {
   type DashboardResponse,
   type LogEntry,
   type MetricSample,
-  type MountInfo,
   type ProcessInfo,
   type ServiceInfo,
 } from "@/lib/api"
@@ -92,11 +91,6 @@ export function DashboardPage() {
     queryKey: ["logs", "critical"],
     queryFn: () => api<{ items: LogEntry[] }>("/logs?limit=100"),
   })
-  const storage = useQuery({
-    queryKey: ["storage", "dashboard"],
-    queryFn: () => api<{ items: MountInfo[] }>("/storage"),
-    refetchInterval: milliseconds,
-  })
   if (dashboard.isPending)
     return (
       <main className="p-6">
@@ -118,10 +112,7 @@ export function DashboardPage() {
   const memory = metrics.memoryTotal
     ? (metrics.memoryUsed / metrics.memoryTotal) * 100
     : 0
-  const storageUsed =
-      storage.data?.items.reduce((sum, item) => sum + item.used, 0) ?? 0,
-    storageTotal =
-      storage.data?.items.reduce((sum, item) => sum + item.total, 0) ?? 0
+  const storage = dashboard.data.storage
   const failed =
     services.data?.items.filter((item) => item.activeState === "failed") ?? []
   const critical =
@@ -191,12 +182,12 @@ export function DashboardPage() {
         />
         <Summary
           title="Storage"
-          value={
-            storageTotal
-              ? `${((storageUsed / storageTotal) * 100).toFixed(1)}%`
-              : "—"
+          value={storage ? `${storage.percent.toFixed(1)}%` : "—"}
+          detail={
+            storage
+              ? `${bytes(storage.used)} of ${bytes(storage.total)} · ${storage.filesystems} filesystem${storage.filesystems === 1 ? "" : "s"}`
+              : "Capacity summary unavailable"
           }
-          detail={`${bytes(storageUsed)} used`}
           icon={HardDriveIcon}
         />
         <Summary

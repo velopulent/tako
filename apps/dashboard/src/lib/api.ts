@@ -119,6 +119,7 @@ export type MetricSample = {
 export type DashboardResponse = {
   host: HostInfo
   metrics: MetricSample
+  storage?: StorageSummary
 }
 
 export type Capability = {
@@ -422,13 +423,26 @@ export type AdministrativeRolePreview = {
   reason?: string
   requiresConfirmation: boolean
 }
-export type MountInfo = {
-  source: string
+export type MountPoint = {
   target: string
-  filesystem: string
+  root?: string
+}
+export type FileSystemInfo = {
+  device: string
+  type: string
+  majorMinor: string
+  network: boolean
+  readOnly: boolean
   total: number
   used: number
   available: number
+  percent: number
+  targets: MountPoint[]
+}
+export type StorageSummary = {
+  filesystems: number
+  total: number
+  used: number
   percent: number
 }
 export type InterfaceInfo = {

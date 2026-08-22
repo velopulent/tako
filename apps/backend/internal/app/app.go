@@ -702,7 +702,11 @@ func (server *Server) capabilities(writer http.ResponseWriter, request *http.Req
 
 func (server *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 	current, _ := server.metrics.Current()
-	writeJSON(writer, http.StatusOK, map[string]any{"host": server.hostInfo(request.Context()), "metrics": current})
+	payload := map[string]any{"host": server.hostInfo(request.Context()), "metrics": current}
+	if filesystems, err := platform.Filesystems(); err == nil {
+		payload["storage"] = platform.SummarizeStorage(filesystems)
+	}
+	writeJSON(writer, http.StatusOK, payload)
 }
 
 func (server *Server) hostInfo(ctx context.Context) host.Info {
@@ -998,7 +1002,7 @@ func (server *Server) groups(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (server *Server) storage(writer http.ResponseWriter, _ *http.Request) {
-	items, err := platform.Mounts()
+	items, err := platform.Filesystems()
 	server.writeModule(writer, "storage", items, err)
 }
 

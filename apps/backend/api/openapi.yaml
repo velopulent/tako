@@ -61,7 +61,15 @@ paths:
       operationId: getDashboard
       responses:
         '200':
-          description: Host and current metric snapshot
+          description: Host, current metric snapshot, and storage summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  host: { type: object }
+                  metrics: { $ref: '#/components/schemas/MetricSample' }
+                  storage: { $ref: '#/components/schemas/StorageSummary' }
   /metrics:
     get:
       operationId: getMetricHistory
@@ -960,7 +968,18 @@ paths:
     get:
       operationId: listStorage
       responses:
-        '200': { description: Mounted filesystem inventory }
+        '200':
+          description: One entry per distinct mounted filesystem, deduplicated by superblock device number
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 4096
+                    items: { $ref: '#/components/schemas/StorageFilesystem' }
   /network:
     get:
       operationId: listNetworkInterfaces
@@ -2367,6 +2386,45 @@ components:
         networkTx: { type: integer }
         diskRead: { type: integer }
         diskWrite: { type: integer }
+    StorageFilesystem:
+      type: object
+      required: [device, type, majorMinor, network, readOnly, total, used, available, percent, targets]
+      description: |
+        A distinct mounted filesystem. Bind mounts and btrfs subvolume mounts share one
+        superblock device number, so they appear once with multiple targets instead of
+        duplicating capacity. Network filesystems carry network=true.
+      properties:
+        device: { type: string, maxLength: 256 }
+        type: { type: string, maxLength: 64 }
+        majorMinor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+          description: Kernel superblock device number in major:minor form
+        network: { type: boolean }
+        readOnly: { type: boolean }
+        total: { type: integer, minimum: 0 }
+        used: { type: integer, minimum: 0 }
+        available: { type: integer, minimum: 0 }
+        percent: { type: number }
+        targets:
+          type: array
+          maxItems: 4096
+          items: { $ref: '#/components/schemas/MountPoint' }
+    MountPoint:
+      type: object
+      required: [target]
+      properties:
+        target: { type: string, maxLength: 4096 }
+        root: { type: string, maxLength: 4096, description: Path of the mount inside its filesystem (bind or btrfs subvolume source) }
+    StorageSummary:
+      type: object
+      required: [filesystems, total, used, percent]
+      description: Aggregate capacity over unique filesystems only; overlapping mounts never double count
+      properties:
+        filesystems: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+        used: { type: integer, minimum: 0 }
+        percent: { type: number }
   responses:
     Problem:
       description: Structured API error
