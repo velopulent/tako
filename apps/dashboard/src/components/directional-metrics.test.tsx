@@ -22,6 +22,7 @@ const samples = [
     networkTx: 200,
     diskRead: 300,
     diskWrite: 400,
+    disks: { nvme0n1: { read: 300, write: 400 } },
     interfaces: {},
   },
 ]
@@ -31,6 +32,7 @@ describe("directional page metrics", () => {
     render(<StorageMetrics samples={samples} interval="off" />)
     expect(screen.getByText("Storage reads")).toBeTruthy()
     expect(screen.getByText("Storage writes")).toBeTruthy()
+    expect(screen.getByText("All devices")).toBeTruthy()
     expect(screen.queryByText("CPU utilization")).toBeNull()
     expect(screen.queryByText("Network traffic")).toBeNull()
   })
@@ -48,7 +50,7 @@ describe("directional page metrics", () => {
     const { container } = render(
       <StorageMetrics samples={samples} interval="off" />
     )
-    const grid = container.querySelector("section")
+    const grid = container.querySelector("section.grid")
     expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(grid?.classList.contains("grid")).toBe(true)
     expect(grid?.classList.contains("@4xl/main:grid-cols-2")).toBe(true)

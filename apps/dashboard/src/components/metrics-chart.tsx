@@ -23,6 +23,14 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type { RefreshInterval } from "@/lib/monitoring"
 
 const configs = {
@@ -50,17 +58,58 @@ type ChartSample = MetricSample & {
   networkTxRate: number
 }
 
+function elapsedSeconds(
+  samples: MetricSample[],
+  index: number
+): number {
+  const previous = samples[index - 1]
+  return previous
+    ? Math.max(
+        1,
+        (new Date(samples[index].timestamp).getTime() -
+          new Date(previous.timestamp).getTime()) /
+          1000
+      )
+    : 1
+}
+
+// All byte counters in MetricSample are cumulative. Rates come from
+// consecutive deltas. Disk rates prefer the per-device map when present: a
+// disk's first sighting contributes nothing, so hot-plugging a drive never
+// fabricates a spike from its lifetime counter.
+function diskRates(samples: MetricSample[], index: number): {
+  read: number
+  write: number
+} {
+  const sample = samples[index]
+  const previous = samples[index - 1]
+  const seconds = elapsedSeconds(samples, index)
+  if (!previous || !sample.disks || !previous.disks) {
+    return {
+      read: previous
+        ? Math.max(0, sample.diskRead - previous.diskRead) / seconds
+        : 0,
+      write: previous
+        ? Math.max(0, sample.diskWrite - previous.diskWrite) / seconds
+        : 0,
+    }
+  }
+  let read = 0
+  let write = 0
+  for (const [device, current] of Object.entries(sample.disks)) {
+    const before = previous.disks[device]
+    if (!before) continue
+    read += Math.max(0, current.read - before.read)
+    write += Math.max(0, current.write - before.write)
+  }
+  return { read: read / seconds, write: write / seconds }
+}
+
 function transform(samples: MetricSample[]): ChartSample[] {
   return samples.map((sample, index) => {
     const previous = samples[index - 1]
-    const seconds = previous
-      ? Math.max(
-          1,
-          (new Date(sample.timestamp).getTime() -
-            new Date(previous.timestamp).getTime()) /
-            1000
-        )
-      : 1
+    const seconds = elapsedSeconds(samples, index)
+    const rates = diskRates(samples, index)
     return {
       ...sample,
       memoryPercent: sample.memoryTotal
@@ -69,18 +118,46 @@ function transform(samples: MetricSample[]): ChartSample[] {
       swapPercent: sample.swapTotal
         ? (sample.swapUsed / sample.swapTotal) * 100
         : 0,
-      diskReadRate: previous
-        ? Math.max(0, sample.diskRead - previous.diskRead) / seconds
-        : 0,
-      diskWriteRate: previous
-        ? Math.max(0, sample.diskWrite - previous.diskWrite) / seconds
-        : 0,
+      diskReadRate: rates.read,
+      diskWriteRate: rates.write,
       networkRxRate: previous
         ? Math.max(0, sample.networkRx - previous.networkRx) / seconds
         : 0,
       networkTxRate: previous
         ? Math.max(0, sample.networkTx - previous.networkTx) / seconds
         : 0,
+    }
+  })
+}
+
+// Per-disk rates from consecutive deltas of one device. First sighting of the
+// device contributes zero for the same hot-plug reason as above.
+function transformDevice(
+  samples: MetricSample[],
+  device: string
+): ChartSample[] {
+  return samples.map((sample, index) => {
+    const previous = samples[index - 1]?.disks?.[device]
+    const current = sample.disks?.[device]
+    const seconds = elapsedSeconds(samples, index)
+    return {
+      ...sample,
+      memoryPercent: sample.memoryTotal
+        ? (sample.memoryUsed / sample.memoryTotal) * 100
+        : 0,
+      swapPercent: sample.swapTotal
+        ? (sample.swapUsed / sample.swapTotal) * 100
+        : 0,
+      diskReadRate:
+        current && previous
+          ? Math.max(0, current.read - previous.read) / seconds
+          : 0,
+      diskWriteRate:
+        current && previous
+          ? Math.max(0, current.write - previous.write) / seconds
+          : 0,
+      networkRxRate: 0,
+      networkTxRate: 0,
     }
   })
 }
@@ -119,6 +196,7 @@ export function MetricsCharts({
   range?: string
 }) {
   const [live, setLive] = React.useState<MetricSample[]>([])
+  const [diskDevice, setDiskDevice] = React.useState("all")
   React.useEffect(() => {
     if (interval === "off") return
     const source = new EventSource(
@@ -137,22 +215,56 @@ export function MetricsCharts({
     [initialSamples, live]
   )
   if (scope === "storage") {
+    const devices = Object.keys(samples.at(-1)?.disks ?? {}).sort()
+    const data =
+      diskDevice !== "all" ? transformDevice(samples, diskDevice) : samples
     return (
-      <section className="grid gap-4 @4xl/main:grid-cols-2">
-        <ResourceChart
-          title="Storage reads"
-          description="Aggregate block-device read throughput"
-          data={samples}
-          config={configs.disk}
-          keys={["diskReadRate"]}
-        />
-        <ResourceChart
-          title="Storage writes"
-          description="Aggregate block-device write throughput"
-          data={samples}
-          config={configs.disk}
-          keys={["diskWriteRate"]}
-        />
+      <section className="flex flex-col gap-4">
+        <Select
+          items={[
+            { value: "all", label: "All devices" },
+            ...devices.map((device) => ({ value: device, label: device })),
+          ]}
+          value={diskDevice}
+          onValueChange={(next) => setDiskDevice(String(next))}
+        >
+          <SelectTrigger size="sm" className="w-44" aria-label="Disk device">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              {["all", ...devices].map((device) => (
+                <SelectItem key={device} value={device}>
+                  {device === "all" ? "All devices" : device}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+        <section className="grid gap-4 @4xl/main:grid-cols-2">
+          <ResourceChart
+            title="Storage reads"
+            description={
+              diskDevice === "all"
+                ? "Read throughput across whole physical disks"
+                : `Read throughput for ${diskDevice}`
+            }
+            data={data}
+            config={configs.disk}
+            keys={["diskReadRate"]}
+          />
+          <ResourceChart
+            title="Storage writes"
+            description={
+              diskDevice === "all"
+                ? "Write throughput across whole physical disks"
+                : `Write throughput for ${diskDevice}`
+            }
+            data={data}
+            config={configs.disk}
+            keys={["diskWriteRate"]}
+          />
+        </section>
       </section>
     )
   }
@@ -198,7 +310,7 @@ export function MetricsCharts({
       />
       <ResourceChart
         title="Storage I/O"
-        description="Aggregate block-device throughput"
+        description="Whole-disk throughput"
         data={samples}
         config={configs.disk}
         keys={["diskReadRate", "diskWriteRate"]}

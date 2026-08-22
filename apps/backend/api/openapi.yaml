@@ -2384,8 +2384,19 @@ components:
         load15: { type: number }
         networkRx: { type: integer }
         networkTx: { type: integer }
-        diskRead: { type: integer }
-        diskWrite: { type: integer }
+        diskRead:
+          type: integer
+          minimum: 0
+          description: Cumulative bytes read across whole physical disks; partitions and virtual devices are excluded
+        diskWrite:
+          type: integer
+          minimum: 0
+          description: Cumulative bytes written across whole physical disks; partitions and virtual devices are excluded
+        disks:
+          type: object
+          description: Per-disk cumulative byte counters keyed by kernel device name (for example nvme0n1)
+          additionalProperties:
+            $ref: '#/components/schemas/DiskSample'
     StorageFilesystem:
       type: object
       required: [device, type, majorMinor, network, readOnly, total, used, available, percent, targets]
@@ -2425,6 +2436,12 @@ components:
         total: { type: integer, minimum: 0 }
         used: { type: integer, minimum: 0 }
         percent: { type: number }
+    DiskSample:
+      type: object
+      required: [read, write]
+      properties:
+        read: { type: integer, minimum: 0 }
+        write: { type: integer, minimum: 0 }
   responses:
     Problem:
       description: Structured API error

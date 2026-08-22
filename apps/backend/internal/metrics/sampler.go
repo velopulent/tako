@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,12 +27,18 @@ type Sample struct {
 	NetworkTX      uint64                     `json:"networkTx"`
 	DiskRead       uint64                     `json:"diskRead"`
 	DiskWrite      uint64                     `json:"diskWrite"`
+	Disks          map[string]DiskSample      `json:"disks"`
 	Interfaces     map[string]InterfaceSample `json:"interfaces"`
 }
 
 type InterfaceSample struct {
 	RX uint64 `json:"rx"`
 	TX uint64 `json:"tx"`
+}
+
+type DiskSample struct {
+	Read  uint64 `json:"read"`
+	Write uint64 `json:"write"`
 }
 
 type cpuCounters struct{ total, idle uint64 }
@@ -167,7 +174,7 @@ func (sampler *Sampler) collect() {
 	memoryUsed, memoryTotal, swapUsed, swapTotal, _ := readMemory("/proc/meminfo")
 	load1, load5, load15, _ := readLoad("/proc/loadavg")
 	rx, tx, interfaces, _ := readNetwork("/proc/net/dev")
-	diskRead, diskWrite, _ := readDisk("/proc/diskstats")
+	cumulativeDisks, _ := readDisks("/proc/diskstats", "/sys/block")
 	cores, _ := readCPUCores("/proc/stat")
 
 	sampler.mu.Lock()
@@ -187,8 +194,9 @@ func (sampler *Sampler) collect() {
 		}
 	}
 	sampler.previousCores = cores
+	diskRead, diskWrite := aggregateDisks(cumulativeDisks)
 	now := time.Now().UTC()
-	sample := Sample{Timestamp: now, CPUPercent: cpuPercent, CPUCorePercent: corePercents, MemoryUsed: memoryUsed, MemoryTotal: memoryTotal, SwapUsed: swapUsed, SwapTotal: swapTotal, Load1: load1, Load5: load5, Load15: load15, NetworkRX: rx, NetworkTX: tx, DiskRead: diskRead, DiskWrite: diskWrite, Interfaces: interfaces}
+	sample := Sample{Timestamp: now, CPUPercent: cpuPercent, CPUCorePercent: corePercents, MemoryUsed: memoryUsed, MemoryTotal: memoryTotal, SwapUsed: swapUsed, SwapTotal: swapTotal, Load1: load1, Load5: load5, Load15: load15, NetworkRX: rx, NetworkTX: tx, DiskRead: diskRead, DiskWrite: diskWrite, Disks: cumulativeDisks, Interfaces: interfaces}
 	cutoff := now.Add(-sampler.retention)
 	for len(sampler.samples) > 0 && sampler.samples[0].Timestamp.Before(cutoff) {
 		sampler.samples = sampler.samples[1:]
@@ -328,23 +336,93 @@ func readCPUCores(path string) ([]cpuCounters, error) {
 	return result, scanner.Err()
 }
 
-func readDisk(path string) (uint64, uint64, error) {
+// readDisks reports cumulative byte counters per whole physical disk, mirroring
+// the network interface counters. Only devices enumerated under /sys/block are
+// counted, so partition rows in /proc/diskstats never double count against
+// their parent disk; loop, ram, zram, cdrom, floppy, network-block,
+// device-mapper, and RAID layers are excluded (RAID member disks too) so each
+// sector is attributed once.
+func readDisks(statsPath, blockDir string) (map[string]DiskSample, error) {
+	disks, err := wholeDisks(blockDir)
+	if err != nil {
+		return nil, err
+	}
+	counters, err := parseDiskStats(statsPath)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]DiskSample, len(disks))
+	for name := range disks {
+		counter, ok := counters[name]
+		if !ok {
+			continue
+		}
+		result[name] = DiskSample{Read: counter.read * 512, Write: counter.write * 512}
+	}
+	return result, nil
+}
+
+func aggregateDisks(disks map[string]DiskSample) (uint64, uint64) {
+	var read, written uint64
+	for _, disk := range disks {
+		read += disk.Read
+		written += disk.Write
+	}
+	return read, written
+}
+
+func wholeDisks(blockDir string) (map[string]bool, error) {
+	entries, err := os.ReadDir(blockDir)
+	if err != nil {
+		return nil, err
+	}
+	excluded := map[string]bool{}
+	disks := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if isExcludedDevice(name) {
+			if members, err := os.ReadDir(filepath.Join(blockDir, name, "slaves")); err == nil {
+				for _, member := range members {
+					excluded[member.Name()] = true
+				}
+			}
+			continue
+		}
+		disks[name] = true
+	}
+	for name := range excluded {
+		delete(disks, name)
+	}
+	return disks, nil
+}
+
+func isExcludedDevice(name string) bool {
+	for _, prefix := range []string{"loop", "ram", "zram", "dm-", "md", "sr", "fd", "nbd"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseDiskStats(path string) (map[string]diskCounters, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 	defer file.Close()
-	var read, written uint64
+	result := map[string]diskCounters{}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 14 || strings.HasPrefix(fields[2], "loop") || strings.HasPrefix(fields[2], "ram") {
+		if len(fields) < 14 {
 			continue
 		}
 		sectorsRead, _ := strconv.ParseUint(fields[5], 10, 64)
 		sectorsWritten, _ := strconv.ParseUint(fields[9], 10, 64)
-		read += sectorsRead * 512
-		written += sectorsWritten * 512
+		result[fields[2]] = diskCounters{read: sectorsRead, write: sectorsWritten}
 	}
-	return read, written, scanner.Err()
+	return result, scanner.Err()
 }
+
+type diskCounters struct{ read, write uint64 }

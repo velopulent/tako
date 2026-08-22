@@ -113,6 +113,7 @@ export type MetricSample = {
   networkTx: number
   diskRead: number
   diskWrite: number
+  disks: Record<string, DiskSample>
   interfaces: Record<string, { rx: number; tx: number }>
 }
 
@@ -444,6 +445,10 @@ export type StorageSummary = {
   total: number
   used: number
   percent: number
+}
+export type DiskSample = {
+  read: number
+  write: number
 }
 export type InterfaceInfo = {
   name: string
