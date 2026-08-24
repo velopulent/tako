@@ -68,7 +68,7 @@ export function AdminRoleManager({
   }
   const preview = useMutation({
     mutationFn: (value: AdministrativeRoleOperation) =>
-      api<AdministrativeRolePreview>("/groups/admin-role/preview", {
+      api<AdministrativeRolePreview>("/accounts/groups/admin-role/preview", {
         method: "POST",
         body: JSON.stringify(value),
       }),
@@ -79,7 +79,7 @@ export function AdminRoleManager({
   })
   const apply = useMutation({
     mutationFn: (value: AdministrativeRoleOperation) =>
-      api<AdministrativeRoleState>("/groups/admin-role", {
+      api<AdministrativeRoleState>("/accounts/groups/admin-role", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
         body: JSON.stringify(value),

@@ -87,7 +87,7 @@ describe("GroupMembershipManager", () => {
     await user.click(screen.getByRole("button", { name: "Preview" }))
     expect(await screen.findByText("Membership preview")).toBeTruthy()
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
-      "/groups/membership/preview"
+      "/accounts/groups/membership/preview"
     )
   })
 })

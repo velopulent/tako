@@ -71,7 +71,7 @@ const groups = [
   {
     label: "Administration",
     items: [
-      { title: "Users", to: "/users", icon: UsersIcon },
+      { title: "Accounts", to: "/accounts", icon: UsersIcon },
       { title: "Updates", to: "/updates", icon: PackageCheckIcon },
       { title: "Operations", to: "/operations", icon: ListChecksIcon },
       { title: "Jobs", to: "/jobs", icon: ClipboardListIcon },

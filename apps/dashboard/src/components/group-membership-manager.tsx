@@ -62,7 +62,7 @@ export function GroupMembershipManager({
   }
   const preview = useMutation({
     mutationFn: (value: GroupMembershipOperation) =>
-      api<GroupMembershipPreview>("/groups/membership/preview", {
+      api<GroupMembershipPreview>("/accounts/groups/membership/preview", {
         method: "POST",
         body: JSON.stringify(value),
       }),
@@ -70,7 +70,7 @@ export function GroupMembershipManager({
   })
   const apply = useMutation({
     mutationFn: (value: GroupMembershipOperation) =>
-      api<GroupMembershipState>("/groups/membership", {
+      api<GroupMembershipState>("/accounts/groups/membership", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
         body: JSON.stringify(value),

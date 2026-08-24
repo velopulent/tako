@@ -1,7 +1,8 @@
 const titles: Record<string, string> = {
   dashboard: "Dashboard",
   logs: "System logs",
-  users: "Users",
+  accounts: "Accounts",
+  users: "Accounts",
   updates: "Updates",
   operations: "Operations",
   jobs: "Jobs",

@@ -38,14 +38,14 @@ func TestLocalAccountRoutesPreviewApplyAndRequireAdmin(t *testing.T) {
 		t.Fatal("failed to grant administrative test session")
 	}
 	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
-	preview := httptest.NewRequest(http.MethodPost, "/api/v1/users/account/preview", bytes.NewBufferString(`{"action":"update","username":"target","name":"Target"}`))
+	preview := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/account/preview", bytes.NewBufferString(`{"action":"update","username":"target","name":"Target"}`))
 	preview.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, preview)
 	if recorder.Code != http.StatusOK || !previewed.Preview {
 		t.Fatalf("preview status=%d body=%s operation=%#v", recorder.Code, recorder.Body.String(), previewed)
 	}
-	apply := httptest.NewRequest(http.MethodPost, "/api/v1/users/account", bytes.NewBufferString(`{"action":"delete","username":"target","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","confirmation":"DELETE target"}`))
+	apply := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/account", bytes.NewBufferString(`{"action":"delete","username":"target","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","confirmation":"DELETE target"}`))
 	apply.AddCookie(cookie)
 	apply.Header.Set("X-CSRF-Token", created.CSRF)
 	recorder = httptest.NewRecorder()
@@ -53,7 +53,7 @@ func TestLocalAccountRoutesPreviewApplyAndRequireAdmin(t *testing.T) {
 	if recorder.Code != http.StatusOK || applied.Preview || applied.Confirmation != "DELETE target" {
 		t.Fatalf("apply status=%d body=%s operation=%#v", recorder.Code, recorder.Body.String(), applied)
 	}
-	trailing := httptest.NewRequest(http.MethodPost, "/api/v1/users/account/preview", bytes.NewBufferString(`{"action":"update","username":"target","name":"Target"}{}`))
+	trailing := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/account/preview", bytes.NewBufferString(`{"action":"update","username":"target","name":"Target"}{}`))
 	trailing.AddCookie(cookie)
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, trailing)
@@ -64,7 +64,7 @@ func TestLocalAccountRoutesPreviewApplyAndRequireAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	denied := httptest.NewRequest(http.MethodPost, "/api/v1/users/account/preview", bytes.NewBufferString(`{"action":"create","username":"newuser"}`))
+	denied := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/account/preview", bytes.NewBufferString(`{"action":"create","username":"newuser"}`))
 	denied.AddCookie(&http.Cookie{Name: session.CookieName, Value: readonly.ID})
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, denied)

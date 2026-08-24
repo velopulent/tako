@@ -42,7 +42,7 @@ describe("PasswordManager", () => {
             })
           )
         }
-        if (path.endsWith("/users")) {
+        if (path.endsWith("/accounts/users")) {
           return Promise.resolve(jsonResponse({ items: [] }))
         }
         return Promise.resolve(new Response(null, { status: 204 }))
@@ -59,7 +59,7 @@ describe("PasswordManager", () => {
     await user.click(screen.getByRole("button", { name: "Change password" }))
     await screen.findByText("Password updated")
     const request = calls.find(([input]) =>
-      String(input).endsWith("/users/password")
+      String(input).endsWith("/accounts/users/password")
     )
     expect(request).toBeTruthy()
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({
@@ -85,7 +85,7 @@ describe("PasswordManager", () => {
             })
           )
         }
-        if (path.endsWith("/users"))
+        if (path.endsWith("/accounts/users"))
           return Promise.resolve(jsonResponse({ items: [] }))
         return Promise.resolve(
           jsonResponse(
@@ -128,7 +128,7 @@ describe("PasswordManager", () => {
             })
           )
         }
-        if (path.endsWith("/users")) {
+        if (path.endsWith("/accounts/users")) {
           return Promise.resolve(
             jsonResponse({
               items: [
@@ -165,11 +165,11 @@ describe("PasswordManager", () => {
     await user.click(screen.getByRole("button", { name: "Reset password" }))
     await vi.waitFor(() => {
       expect(
-        requests.some(([input]) => String(input).endsWith("/users/password"))
+        requests.some(([input]) => String(input).endsWith("/accounts/users/password"))
       ).toBe(true)
     })
     const request = requests.find(([input]) =>
-      String(input).endsWith("/users/password")
+      String(input).endsWith("/accounts/users/password")
     )
     expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
       action: "reset",

@@ -31,7 +31,7 @@ func TestPasswordRouteKeepsSecretsOutOfResponsesAndReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/users/password", bytes.NewBufferString(`{"action":"change","currentPassword":"old-secret","newPassword":"new-secret","confirmation":"new-secret"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/password", bytes.NewBufferString(`{"action":"change","currentPassword":"old-secret","newPassword":"new-secret","confirmation":"new-secret"}`))
 	request.AddCookie(cookie)
 	request.Header.Set("X-CSRF-Token", created.CSRF)
 	recorder := httptest.NewRecorder()
@@ -67,7 +67,7 @@ func TestPasswordRouteRequiresAdministrativeResetAndMapsPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
-	reset := httptest.NewRequest(http.MethodPost, "/api/v1/users/password", bytes.NewBufferString(`{"action":"reset","username":"target","newPassword":"new-secret","confirmation":"new-secret"}`))
+	reset := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/password", bytes.NewBufferString(`{"action":"reset","username":"target","newPassword":"new-secret","confirmation":"new-secret"}`))
 	reset.AddCookie(cookie)
 	reset.Header.Set("X-CSRF-Token", created.CSRF)
 	recorder := httptest.NewRecorder()
@@ -78,7 +78,7 @@ func TestPasswordRouteRequiresAdministrativeResetAndMapsPolicy(t *testing.T) {
 	if !server.sessions.SetAdministrative(created.ID, "admin-token", time.Now().Add(time.Hour)) {
 		t.Fatal("failed to grant test administrative access")
 	}
-	reset = httptest.NewRequest(http.MethodPost, "/api/v1/users/password", bytes.NewBufferString(`{"action":"reset","username":"target","newPassword":"new-secret","confirmation":"new-secret"}`))
+	reset = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/password", bytes.NewBufferString(`{"action":"reset","username":"target","newPassword":"new-secret","confirmation":"new-secret"}`))
 	reset.AddCookie(cookie)
 	reset.Header.Set("X-CSRF-Token", created.CSRF)
 	recorder = httptest.NewRecorder()
@@ -90,7 +90,7 @@ func TestPasswordRouteRequiresAdministrativeResetAndMapsPolicy(t *testing.T) {
 	server.changePasswordFn = func(context.Context, auth.PasswordChangeRequest) error {
 		return errors.New("password-authentication-failed")
 	}
-	change := httptest.NewRequest(http.MethodPost, "/api/v1/users/password", bytes.NewBufferString(`{"action":"change","currentPassword":"old-secret","newPassword":"new-secret","confirmation":"new-secret"}`))
+	change := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/password", bytes.NewBufferString(`{"action":"change","currentPassword":"old-secret","newPassword":"new-secret","confirmation":"new-secret"}`))
 	change.AddCookie(cookie)
 	change.Header.Set("X-CSRF-Token", created.CSRF)
 	recorder = httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestPasswordRouteRejectsTrailingAndMismatchedPayload(t *testing.T) {
 		`{"action":"change","currentPassword":"old","newPassword":"new","confirmation":"different"}`,
 		`{"action":"change","currentPassword":"old","newPassword":"new","confirmation":"new"}{}`,
 	} {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/users/password", bytes.NewBufferString(payload))
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/password", bytes.NewBufferString(payload))
 		request.AddCookie(cookie)
 		request.Header.Set("X-CSRF-Token", created.CSRF)
 		recorder := httptest.NewRecorder()

@@ -87,7 +87,7 @@ export function UserAccountManager({
   )
   const preview = useMutation({
     mutationFn: (value: LocalAccountOperation) =>
-      api<LocalAccountPreview>("/users/account/preview", {
+      api<LocalAccountPreview>("/accounts/users/account/preview", {
         method: "POST",
         body: JSON.stringify(value),
       }),
@@ -97,7 +97,7 @@ export function UserAccountManager({
   })
   const apply = useMutation({
     mutationFn: (value: LocalAccountOperation) =>
-      api<LocalAccountState>("/users/account", {
+      api<LocalAccountState>("/accounts/users/account", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
         body: JSON.stringify(value),

@@ -71,7 +71,7 @@ export function SSHKeyManager() {
   })
   const users = useQuery({
     queryKey: ["users"],
-    queryFn: () => api<{ items: UserInfo[] }>("/users"),
+    queryFn: () => api<{ items: UserInfo[] }>("/accounts/users"),
   })
   const localUsers = (users.data?.items ?? []).filter((user) => user.local)
   const administrative = session.data?.administrative === true
@@ -81,7 +81,7 @@ export function SSHKeyManager() {
     enabled: selectedTarget !== "",
     queryFn: () =>
       api<SSHKeyState>(
-        `/users/ssh-keys?username=${encodeURIComponent(selectedTarget)}`
+        `/accounts/users/ssh-keys?username=${encodeURIComponent(selectedTarget)}`
       ),
   })
   const canManage =
@@ -103,7 +103,7 @@ export function SSHKeyManager() {
         }
   const preview = useMutation({
     mutationFn: (value: SSHKeyOperation) =>
-      api<SSHKeyPreview>("/users/ssh-keys/preview", {
+      api<SSHKeyPreview>("/accounts/users/ssh-keys/preview", {
         method: "POST",
         body: JSON.stringify(value),
       }),
@@ -114,7 +114,7 @@ export function SSHKeyManager() {
   })
   const apply = useMutation({
     mutationFn: (value: SSHKeyOperation) =>
-      api<SSHKeyState>("/users/ssh-keys", {
+      api<SSHKeyState>("/accounts/users/ssh-keys", {
         method: "POST",
         headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
         body: JSON.stringify(value),

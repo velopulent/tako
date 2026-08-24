@@ -51,7 +51,7 @@ describe("UserAccountManager", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         calls.push(init ?? {})
-        if (String(input).endsWith("/users/account/preview")) {
+        if (String(input).endsWith("/accounts/users/account/preview")) {
           return Promise.resolve(
             jsonResponse({
               action: "update",

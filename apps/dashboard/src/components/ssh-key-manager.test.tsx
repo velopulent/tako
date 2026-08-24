@@ -54,9 +54,9 @@ describe("SSHKeyManager", () => {
         const path = String(input)
         if (path.endsWith("/auth/session"))
           return Promise.resolve(jsonResponse(session))
-        if (path.endsWith("/users"))
+        if (path.endsWith("/accounts/users"))
           return Promise.resolve(jsonResponse({ items: [user] }))
-        if (path.includes("/users/ssh-keys") && !path.endsWith("/preview")) {
+        if (path.includes("/accounts/users/ssh-keys") && !path.endsWith("/preview")) {
           return Promise.resolve(
             jsonResponse({
               username: "operator",
@@ -114,11 +114,11 @@ describe("SSHKeyManager", () => {
     )
     await vi.waitFor(() =>
       expect(
-        calls.some(([input]) => String(input).endsWith("/users/ssh-keys"))
+        calls.some(([input]) => String(input).endsWith("/accounts/users/ssh-keys"))
       ).toBe(true)
     )
     const apply = calls.find(([input]) =>
-      String(input).endsWith("/users/ssh-keys")
+      String(input).endsWith("/accounts/users/ssh-keys")
     )
     expect(JSON.parse(String(apply?.[1]?.body))).toMatchObject({
       action: "add",
@@ -135,7 +135,7 @@ describe("SSHKeyManager", () => {
         const path = String(input)
         if (path.endsWith("/auth/session"))
           return Promise.resolve(jsonResponse(session))
-        if (path.endsWith("/users"))
+        if (path.endsWith("/accounts/users"))
           return Promise.resolve(jsonResponse({ items: [user] }))
         return Promise.resolve(
           jsonResponse({

@@ -81,7 +81,7 @@ export function AccountLoginHistory({ username }: { username?: string }) {
       if (outcome !== "all") params.set("outcome", outcome)
       if (activeCursor) params.set("cursor", activeCursor)
       return api<LoginHistoryPage>(
-        `/users/${encodeURIComponent(selectedTarget)}/login-history?${params}`
+        `/accounts/users/${encodeURIComponent(selectedTarget)}/login-history?${params}`
       )
     },
   })

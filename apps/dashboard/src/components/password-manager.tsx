@@ -67,7 +67,7 @@ export function PasswordManager() {
   })
   const users = useQuery({
     queryKey: ["users"],
-    queryFn: () => api<{ items: UserInfo[] }>("/users"),
+    queryFn: () => api<{ items: UserInfo[] }>("/accounts/users"),
   })
   const localUsers = (users.data?.items ?? []).filter((user) => user.local)
   const administrative = session.data?.administrative === true
@@ -80,7 +80,7 @@ export function PasswordManager() {
 
   const mutation = useMutation({
     mutationFn: (operation: PasswordChangeOperation) =>
-      api<void>("/users/password", {
+      api<void>("/accounts/users/password", {
         method: "POST",
         headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
         body: JSON.stringify(operation),

@@ -54,7 +54,7 @@ export function GroupInventory({
   })
   const users = useQuery({
     queryKey: ["users"],
-    queryFn: () => api<{ items: UserInfo[] }>("/users"),
+    queryFn: () => api<{ items: UserInfo[] }>("/accounts/users"),
   })
   const session = useQuery({
     queryKey: ["session"],

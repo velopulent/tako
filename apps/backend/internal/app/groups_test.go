@@ -39,14 +39,14 @@ func TestGroupRoutesPreviewApplyAndRejectUnknownFields(t *testing.T) {
 		t.Fatal("failed to grant administrative test session")
 	}
 	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
-	preview := httptest.NewRequest(http.MethodPost, "/api/v1/groups/membership/preview", bytes.NewBufferString(`{"action":"add","username":"target","group":"developers"}`))
+	preview := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/groups/membership/preview", bytes.NewBufferString(`{"action":"add","username":"target","group":"developers"}`))
 	preview.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, preview)
 	if recorder.Code != http.StatusOK || !groupPreviewed.Preview {
 		t.Fatalf("group preview status=%d body=%s operation=%#v", recorder.Code, recorder.Body.String(), groupPreviewed)
 	}
-	apply := httptest.NewRequest(http.MethodPost, "/api/v1/groups/admin-role", bytes.NewBufferString(`{"action":"grant","username":"target","role":"administrator","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","confirmation":"GRANT ADMIN target"}`))
+	apply := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/groups/admin-role", bytes.NewBufferString(`{"action":"grant","username":"target","role":"administrator","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","confirmation":"GRANT ADMIN target"}`))
 	apply.AddCookie(cookie)
 	apply.Header.Set("X-CSRF-Token", created.CSRF)
 	recorder = httptest.NewRecorder()
@@ -54,7 +54,7 @@ func TestGroupRoutesPreviewApplyAndRejectUnknownFields(t *testing.T) {
 	if recorder.Code != http.StatusOK || roleApplied.Preview || roleApplied.Confirmation != "GRANT ADMIN target" {
 		t.Fatalf("role apply status=%d body=%s operation=%#v", recorder.Code, recorder.Body.String(), roleApplied)
 	}
-	unsafe := httptest.NewRequest(http.MethodPost, "/api/v1/groups/membership/preview", bytes.NewBufferString(`{"action":"add","username":"target","group":"developers","command":"id"}`))
+	unsafe := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/groups/membership/preview", bytes.NewBufferString(`{"action":"add","username":"target","group":"developers","command":"id"}`))
 	unsafe.AddCookie(cookie)
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, unsafe)

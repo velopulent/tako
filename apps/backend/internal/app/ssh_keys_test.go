@@ -35,21 +35,21 @@ func TestSSHKeyRoutesUseAuthorityStalePreviewAndSafeReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
-	get := httptest.NewRequest(http.MethodGet, "/api/v1/users/ssh-keys", nil)
+	get := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/users/ssh-keys", nil)
 	get.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, get)
 	if recorder.Code != http.StatusOK || previewed.Action != "list" || previewed.Username != "operator" {
 		t.Fatalf("self key list returned %d body=%s operation=%#v", recorder.Code, recorder.Body.String(), previewed)
 	}
-	preview := httptest.NewRequest(http.MethodPost, "/api/v1/users/ssh-keys/preview", bytes.NewBufferString(`{"action":"add","username":"operator","key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB public-comment"}`))
+	preview := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/ssh-keys/preview", bytes.NewBufferString(`{"action":"add","username":"operator","key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB public-comment"}`))
 	preview.AddCookie(cookie)
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, preview)
 	if recorder.Code != http.StatusOK || !previewed.Preview {
 		t.Fatalf("key preview returned %d body=%s operation=%#v", recorder.Code, recorder.Body.String(), previewed)
 	}
-	apply := httptest.NewRequest(http.MethodPost, "/api/v1/users/ssh-keys", bytes.NewBufferString(`{"action":"add","username":"operator","key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB public-comment","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	apply := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/ssh-keys", bytes.NewBufferString(`{"action":"add","username":"operator","key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB public-comment","expectedFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
 	apply.AddCookie(cookie)
 	apply.Header.Set("X-CSRF-Token", created.CSRF)
 	recorder = httptest.NewRecorder()
@@ -65,7 +65,7 @@ func TestSSHKeyRoutesUseAuthorityStalePreviewAndSafeReceipts(t *testing.T) {
 		t.Fatalf("unsafe SSH key receipt: %#v", receipts)
 	}
 
-	other := httptest.NewRequest(http.MethodGet, "/api/v1/users/ssh-keys?username=target", nil)
+	other := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/users/ssh-keys?username=target", nil)
 	other.AddCookie(cookie)
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, other)
@@ -76,7 +76,7 @@ func TestSSHKeyRoutesUseAuthorityStalePreviewAndSafeReceipts(t *testing.T) {
 	if !server.sessions.SetAdministrative(created.ID, "admin-token", time.Now().Add(time.Hour)) {
 		t.Fatal("failed to grant administrative test session")
 	}
-	trailing := httptest.NewRequest(http.MethodPost, "/api/v1/users/ssh-keys/preview", bytes.NewBufferString(`{"action":"add","username":"target","key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB key"}{}`))
+	trailing := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/users/ssh-keys/preview", bytes.NewBufferString(`{"action":"add","username":"target","key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB key"}{}`))
 	trailing.AddCookie(cookie)
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, trailing)

@@ -291,7 +291,7 @@ paths:
         '204': { description: Saved journal view deleted }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
-  /users:
+  /accounts/users:
     get:
       operationId: listUsers
       responses:
@@ -308,7 +308,7 @@ paths:
                     maxItems: 100000
                     items: { $ref: '#/components/schemas/NSSUser' }
         '503': { $ref: '#/components/responses/Problem' }
-  /users/{username}/login-history:
+  /accounts/users/{username}/login-history:
     parameters:
       - in: path
         name: username
@@ -342,7 +342,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /users/account/preview:
+  /accounts/users/account/preview:
     post:
       operationId: previewLocalAccount
       requestBody:
@@ -359,7 +359,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /users/account:
+  /accounts/users/account:
     post:
       operationId: applyLocalAccount
       requestBody:
@@ -377,7 +377,7 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /users/password:
+  /accounts/users/password:
     post:
       operationId: changeOrResetPassword
       description: Change the signed-in user's password or, with Administrative access, reset a local user's password. Secret fields are processed only in memory and are never returned or recorded.
@@ -394,7 +394,7 @@ paths:
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /users/ssh-keys:
+  /accounts/users/ssh-keys:
     get:
       operationId: listAuthorizedSSHKeys
       parameters:
@@ -426,7 +426,7 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /users/ssh-keys/preview:
+  /accounts/users/ssh-keys/preview:
     post:
       operationId: previewAuthorizedSSHKeyOperation
       requestBody:
@@ -443,7 +443,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /groups:
+  /accounts/groups:
     get:
       operationId: listGroups
       responses:
@@ -460,7 +460,7 @@ paths:
                     maxItems: 100000
                     items: { $ref: '#/components/schemas/NSSGroup' }
         '503': { $ref: '#/components/responses/Problem' }
-  /groups/membership/preview:
+  /accounts/groups/membership/preview:
     post:
       operationId: previewGroupMembership
       requestBody:
@@ -477,7 +477,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /groups/membership:
+  /accounts/groups/membership:
     post:
       operationId: applyGroupMembership
       requestBody:
@@ -495,7 +495,7 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /groups/admin-role/preview:
+  /accounts/groups/admin-role/preview:
     post:
       operationId: previewAdministrativeRole
       requestBody:
@@ -512,7 +512,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /groups/admin-role:
+  /accounts/groups/admin-role:
     post:
       operationId: applyAdministrativeRole
       requestBody:

@@ -33,7 +33,7 @@ func TestLoginHistoryRouteUsesBoundedJournalQueryAndIdentityMetadata(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/users/operator/login-history?limit=10&outcome=success&since=2024-01-01T00:00:00Z&until=2024-01-02T00:00:00Z&cursor="+platform.EncodeJournalCursor("start"), nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/users/operator/login-history?limit=10&outcome=success&since=2024-01-01T00:00:00Z&until=2024-01-02T00:00:00Z&cursor="+platform.EncodeJournalCursor("start"), nil)
 	request.AddCookie(&http.Cookie{Name: session.CookieName, Value: created.ID})
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, request)
@@ -63,7 +63,7 @@ func TestLoginHistoryRouteProtectsOtherIdentitiesAndAllowsDeletedAdminTarget(t *
 		t.Fatal(err)
 	}
 	cookie := &http.Cookie{Name: session.CookieName, Value: created.ID}
-	denied := httptest.NewRequest(http.MethodGet, "/api/v1/users/deleted-user/login-history", nil)
+	denied := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/users/deleted-user/login-history", nil)
 	denied.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, denied)
@@ -73,14 +73,14 @@ func TestLoginHistoryRouteProtectsOtherIdentitiesAndAllowsDeletedAdminTarget(t *
 	if !server.sessions.SetAdministrative(created.ID, "admin-token", time.Now().Add(time.Hour)) {
 		t.Fatal("failed to grant administrative test session")
 	}
-	allowed := httptest.NewRequest(http.MethodGet, "/api/v1/users/deleted-user/login-history", nil)
+	allowed := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/users/deleted-user/login-history", nil)
 	allowed.AddCookie(cookie)
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, allowed)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "deleted-unknown") {
 		t.Fatalf("deleted identity with admin returned %d: %s", recorder.Code, recorder.Body.String())
 	}
-	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/users/operator/login-history?limit=101", nil)
+	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/users/operator/login-history?limit=101", nil)
 	invalid.AddCookie(cookie)
 	recorder = httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, invalid)

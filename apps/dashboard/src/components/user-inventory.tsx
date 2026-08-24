@@ -50,7 +50,7 @@ export function UserInventory({
   const [creating, setCreating] = React.useState(false)
   const query = useQuery({
     queryKey: ["users"],
-    queryFn: () => api<{ items: UserInfo[] }>("/users"),
+    queryFn: () => api<{ items: UserInfo[] }>("/accounts/users"),
   })
   const session = useQuery({
     queryKey: ["session"],
