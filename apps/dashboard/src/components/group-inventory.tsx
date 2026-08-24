@@ -10,8 +10,10 @@ import {
 } from "@/lib/api"
 import { AdminRoleManager } from "@/components/admin-role-manager"
 import { GroupMembershipManager } from "@/components/group-membership-manager"
+import { LocalGroupManager } from "@/components/local-group-manager"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { DataTable } from "@/components/data-table"
 import {
   Empty,
@@ -55,6 +57,7 @@ export function GroupInventory({
   onSearchChange?: (value: string) => void
 }) {
   const [selected, setSelected] = React.useState<GroupInfo>()
+  const [creating, setCreating] = React.useState(false)
   const query = useQuery({
     queryKey: ["groups"],
     queryFn: () => api<{ items: GroupInfo[] }>("/accounts/groups"),
@@ -73,6 +76,14 @@ export function GroupInventory({
     refetchInterval: 10_000,
   })
 
+  React.useEffect(() => {
+    const handler = () => {
+      setSelected(undefined)
+      setCreating(true)
+    }
+    window.addEventListener("accounts:create-group", handler)
+    return () => window.removeEventListener("accounts:create-group", handler)
+  }, [])
 
   const items = query.data?.items ?? []
   if (query.isPending) return <Skeleton className="h-72" />
@@ -95,7 +106,8 @@ export function GroupInventory({
     )
   }
   const localCount = items.filter((item) => item.local).length
-  const membershipOpen = Boolean(selected)
+  const membershipOpen = Boolean(selected && !creating)
+  const createOpen = creating
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3">
@@ -111,7 +123,22 @@ export function GroupInventory({
           searchPlaceholder="Search groups, members, or identity source"
           search={search}
           onSearchChange={onSearchChange}
-          onRowClick={setSelected}
+          onRowClick={(row) => {
+            setCreating(false)
+            setSelected(row)
+          }}
+          toolbar={
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setSelected(undefined)
+                setCreating(true)
+              }}
+            >
+              Create group
+            </Button>
+          }
         />
       </div>
       <AdminRoleManager
@@ -150,6 +177,29 @@ export function GroupInventory({
         </SheetContent>
       </Sheet>
 
+      <Sheet
+        open={createOpen}
+        onOpenChange={(open) => {
+          if (!open) setCreating(false)
+        }}
+      >
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>Create local group</SheetTitle>
+            <SheetDescription>
+              Local groups are managed via the system group database. Remote NSS
+              groups remain read-only.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            <LocalGroupManager
+              csrfToken={session.data?.csrfToken ?? ""}
+              administrative={admin.data?.administrative === true}
+              onApplied={() => setCreating(false)}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
