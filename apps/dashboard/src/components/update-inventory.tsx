@@ -11,6 +11,10 @@ import {
   TriangleAlert,
 } from "lucide-react"
 
+import { UpdateHistoryCard } from "@/components/update-history-card"
+import { AutoUpdatesCard } from "@/components/auto-updates-card"
+import { KpatchSettingsCard } from "@/components/kpatch-settings-card"
+import { ForeignUpdateAlert, UpdateLivePanel } from "@/components/update-live-panel"
 import { UpdateJobProgress } from "@/components/update-job-progress"
 import { activeUpdateJobStates } from "@/components/update-job-state"
 import { UpdatePackageTable } from "@/components/update-package-table"
@@ -42,8 +46,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   api,
+  type AutoUpdatesConfig,
   type DiagnosticJob,
   type SessionResponse,
+  type UpdateLive,
+  type UpdateObservation,
   type UpdateOperation,
   type UpdatePreview,
   type UpdateStatus,
@@ -103,13 +110,75 @@ export function UpdateInventory() {
   })
   const job = useQuery({
     queryKey: ["update-job", jobID],
-    queryFn: () => api<{ job: DiagnosticJob }>(`/jobs/${jobID}`),
+    queryFn: () => api<{ job: DiagnosticJob; update?: UpdateObservation }>(`/jobs/${jobID}`),
     enabled: jobID !== "",
     refetchInterval: (current) => {
       const state = current?.state?.data?.job?.state
       return state && activeUpdateJobStates.has(state) ? 2000 : false
     },
   })
+  const administrative = session.data?.administrative ?? false
+  const ownJobRunning = (() => {
+    const state = job.data?.job?.state
+    return state !== undefined && activeUpdateJobStates.has(state)
+  })()
+
+  const cancelForeignRequest = useMutation({
+    mutationFn: () =>
+      api<{ canceled: boolean }>("/updates/cancel", {
+        method: "POST",
+        headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
+      }),
+    onSuccess: () => foreignLive.refetch(),
+  })
+
+  const refreshRequest = useMutation({
+    mutationFn: () =>
+      api<UpdateStatus>("/updates/refresh", {
+        method: "POST",
+        body: JSON.stringify({ force: true }),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["updates"], data)
+      queryClient.invalidateQueries({ queryKey: ["updates"] })
+    },
+  })
+
+  // Watch package-manager transactions while they run: foreign updates when a
+  // lock is held, and our own metadata refresh for a progress bar.
+  const foreignLive = useQuery({
+    queryKey: ["updates-live"],
+    queryFn: () => api<{ live: UpdateLive; log: UpdateObservation["log"] }>("/updates/live"),
+    enabled:
+      ((query.data?.externalLock ?? false) && !ownJobRunning) ||
+      refreshRequest.isPending,
+    refetchInterval: 1500,
+  })
+  const automatic = useQuery({
+    queryKey: ["updates-automatic"],
+    queryFn: () => api<AutoUpdatesConfig>("/updates/automatic"),
+    staleTime: 30 * 1000,
+  })
+
+  // Auto-refresh: if cache never refreshed or >=1 day old, trigger refresh
+  React.useEffect(() => {
+    const secs = query.data?.timeSinceRefresh
+    if (secs !== undefined && (secs < 0 || secs >= 24 * 3600)) {
+      if (!refreshRequest.isPending) refreshRequest.mutate()
+    }
+  }, [query.data?.timeSinceRefresh]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Also refresh on visibility change
+  React.useEffect(() => {
+    const handler = () => {
+      if (!document.hidden) {
+        queryClient.invalidateQueries({ queryKey: ["updates"] })
+        query.refetch()
+      }
+    }
+    document.addEventListener("visibilitychange", handler)
+    return () => document.removeEventListener("visibilitychange", handler)
+  }, [queryClient, query])
 
   const previewRequest = useMutation({
     mutationFn: (operation: UpdateOperation) =>
@@ -159,8 +228,14 @@ export function UpdateInventory() {
   }, [currentJobState])
 
   const handleRefresh = () => {
-    queryClient.invalidateQueries({ queryKey: ["updates"] })
-    query.refetch()
+    // Prefer D-Bus RefreshCache, fallback to invalidate
+    if (refreshRequest.isPending) return
+    refreshRequest.mutate(undefined, {
+      onError: () => {
+        queryClient.invalidateQueries({ queryKey: ["updates"] })
+        query.refetch()
+      },
+    })
   }
 
   const handleToggle = React.useCallback(
@@ -270,7 +345,7 @@ export function UpdateInventory() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Status + Settings grid like Cockpit */}
+      {/* Status + Settings grid */}
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
@@ -279,8 +354,8 @@ export function UpdateInventory() {
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <Button variant="outline" size="icon-sm" aria-label="Check for updates" onClick={handleRefresh} disabled={query.isFetching}>
-                      <RefreshCw className={query.isFetching ? "animate-spin" : ""} />
+                    <Button variant="outline" size="icon-sm" aria-label="Check for updates" onClick={handleRefresh} disabled={query.isFetching || refreshRequest.isPending}>
+                      <RefreshCw className={query.isFetching || refreshRequest.isPending ? "animate-spin" : ""} />
                     </Button>
                   }
                 />
@@ -321,7 +396,8 @@ export function UpdateInventory() {
                 <RotateCcw className="size-4" />
                 <AlertTitle className="text-sm">Reboot required</AlertTitle>
                 <AlertDescription className="text-xs">
-                  {status.recovery.hints.join(" ") || status.recovery.reason || "Reboot the host after the update job completes."}
+                  {status.recovery?.hints?.join(" ") || status.recovery?.reason || "Reboot the host after the update job completes."}
+                  {status.recovery?.rebootPackages?.length ? ` Packages: ${status.recovery?.rebootPackages?.join(", ")}` : ""}
                 </AlertDescription>
               </Alert>
             )}
@@ -329,7 +405,26 @@ export function UpdateInventory() {
               <Alert className="py-2">
                 <Settings className="size-4" />
                 <AlertTitle className="text-sm">Restart services</AlertTitle>
-                <AlertDescription className="text-xs">{status.recovery?.restartServices.join(", ")}</AlertDescription>
+                <AlertDescription className="space-y-1.5 text-xs">
+                  <p>{status.recovery?.restartServices.join(", ")}</p>
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {status.recovery?.restartServices.slice(0, 6).map((unit) => (
+                      <RestartServiceButton
+                        key={unit}
+                        unit={unit}
+                        csrfToken={session.data?.csrfToken ?? ""}
+                        disabled={!administrative}
+                      />
+                    ))}
+                  </div>
+                </AlertDescription>
+              </Alert>
+            )}
+            {(status.recovery?.manualPackages?.length ?? 0) > 0 && (
+              <Alert className="py-2">
+                <Settings className="size-4" />
+                <AlertTitle className="text-sm">Manual restart required</AlertTitle>
+                <AlertDescription className="text-xs">{status.recovery?.manualPackages?.join(", ")}</AlertDescription>
               </Alert>
             )}
             {status.recovery && !status.recovery?.authoritative && (
@@ -361,16 +456,14 @@ export function UpdateInventory() {
             <CardTitle className="text-lg">Settings</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">Automatic updates</p>
-                <p className="text-xs text-muted-foreground">Disabled</p>
-              </div>
-              <Button variant="outline" size="sm" disabled>
-                Edit
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">Automatic update control will be available when the backend supports it.</p>
+            <AutoUpdatesCard
+              csrfToken={session.data?.csrfToken ?? ""}
+              administrative={administrative}
+            />
+            <KpatchSettingsCard
+              csrfToken={session.data?.csrfToken ?? ""}
+              administrative={administrative}
+            />
           </CardContent>
         </Card>
       </div>
@@ -382,8 +475,31 @@ export function UpdateInventory() {
         </Alert>
       )}
 
+      {refreshRequest.isPending && foreignLive.data?.live?.active && (
+        <UpdateLivePanel observation={{ live: foreignLive.data.live, log: foreignLive.data.log ?? [] }} />
+      )}
+
+      {isLocked &&
+        foreignLive.data?.live?.active && (
+          <ForeignUpdateAlert
+            observation={{
+              live: foreignLive.data.live,
+              log: foreignLive.data.log ?? [],
+            }}
+            canceling={cancelForeignRequest.isPending}
+            onCancel={() =>
+              administrative ? cancelForeignRequest.mutate() : undefined
+            }
+          />
+        )}
+
       {activeJob && (
-        <UpdateJobProgress job={activeJob} canceling={cancelRequest.isPending} onCancel={() => cancelRequest.mutate()} />
+        <UpdateJobProgress
+          job={activeJob}
+          observation={job.data?.update}
+          canceling={cancelRequest.isPending}
+          onCancel={() => cancelRequest.mutate()}
+        />
       )}
 
       <Card id="available-updates">
@@ -501,6 +617,64 @@ export function UpdateInventory() {
           {!session.data?.csrfToken && <p className="text-xs text-muted-foreground text-right">Sign-in required to apply updates.</p>}
         </DialogContent>
       </Dialog>
+
+      <UpdateHistoryCard enabled={!automatic.data?.enabled} />
     </div>
+  )
+}
+
+function RestartServiceButton({
+  unit,
+  csrfToken,
+  disabled,
+}: {
+  unit: string
+  csrfToken: string
+  disabled?: boolean
+}) {
+  const [confirmOpen, setConfirmOpen] = React.useState(false)
+  const restart = useMutation({
+    mutationFn: () =>
+      api(`/services/system/${encodeURIComponent(unit)}/actions`, {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ action: "restart" }),
+      }),
+    onSettled: () => setConfirmOpen(false),
+  })
+
+  return (
+    <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={disabled || restart.isPending}
+        onClick={() => setConfirmOpen(true)}
+      >
+        {restart.isPending ? "Restarting…" : `Restart ${unit.replace(/\.service$/, "")}`}
+      </Button>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Restart {unit}?</DialogTitle>
+          <DialogDescription>
+            The service will briefly stop accepting work while it loads the
+            updated libraries.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => setConfirmOpen(false)}>
+            Cancel
+          </Button>
+          <Button variant="destructive" size="sm" onClick={() => restart.mutate()}>
+            Restart service
+          </Button>
+        </DialogFooter>
+        {restart.error && (
+          <p className="text-destructive text-xs">
+            {restart.error.message || "The service action failed."}
+          </p>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }

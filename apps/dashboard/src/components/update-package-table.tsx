@@ -8,6 +8,7 @@ import {
 } from "lucide-react"
 
 import type { UpdatePackage } from "@/lib/api"
+import { AdvisoryMarkdown } from "@/components/advisory-markdown"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -237,7 +238,12 @@ export function UpdatePackageTable({
                             ) : null}
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>{getSeverityLabel(group.severity)}</TooltipContent>
+                        <TooltipContent>
+                          {getSeverityLabel(group.severity)}
+                          {group.packages.find((p) => p.secSeverity)?.secSeverity
+                            ? ` (${group.packages.find((p) => p.secSeverity)?.secSeverity})`
+                            : ""}
+                        </TooltipContent>
                       </Tooltip>
                     </td>
                     <td className="px-3 py-2 max-w-[24rem] truncate text-muted-foreground" title={firstLine(group.description)}>
@@ -330,7 +336,11 @@ export function UpdatePackageTable({
                             )}
                           </dl>
                           <div className="text-sm leading-relaxed">
-                            <p className="whitespace-pre-wrap break-words text-muted-foreground">{group.description || "No additional details."}</p>
+                            {group.packages.some((p) => p.markdown) && group.description ? (
+                              <AdvisoryMarkdown text={group.description} />
+                            ) : (
+                              <p className="whitespace-pre-wrap break-words text-muted-foreground">{group.description || "No additional details."}</p>
+                            )}
                             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                               {group.packages.map((p) => (
                                 <div key={p.name} className="rounded border bg-card p-2">

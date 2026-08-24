@@ -27,32 +27,65 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe("UpdateInventory", () => {
   it("shows bounded package versions and external lock state", async () => {
+    const updateStatus = {
+      available: true,
+      backend: "apt-get",
+      version: "apt 3.0",
+      contract: "bounded-command-read-only",
+      packages: [
+        {
+          name: "openssl",
+          architecture: "amd64",
+          currentVersion: "3.0.11",
+          candidateVersion: "3.0.14",
+          severity: "security",
+          size: 1024,
+          summary: "TLS update",
+        },
+      ],
+      fingerprint: "b".repeat(64),
+      externalLock: true,
+      lockReason: "A package-manager lock is held",
+      message: "1 installed-software update available.",
+    }
     vi.stubGlobal(
       "fetch",
-      vi.fn(() =>
-        Promise.resolve(
-          jsonResponse({
-            available: true,
-            backend: "apt-get",
-            version: "apt 3.0",
-            contract: "bounded-command-read-only",
-            packages: [
-              {
-                name: "openssl",
-                architecture: "amd64",
-                currentVersion: "3.0.11",
-                candidateVersion: "3.0.14",
-                severity: "security",
-                size: 1024,
-                summary: "TLS update",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith("/updates/live")) {
+          return Promise.resolve(
+            jsonResponse({
+              live: { active: false, percentage: -1, allowCancel: false },
+              log: [],
+            })
+          )
+        }
+        if (url.endsWith("/updates/history")) {
+          return Promise.resolve(jsonResponse({ items: [], available: false }))
+        }
+        if (url.endsWith("/updates/automatic")) {
+          return Promise.resolve(
+            jsonResponse({ available: false, supported: false, installed: false, enabled: false, type: "all", day: "", time: "" })
+          )
+        }
+        if (url.endsWith("/updates/kpatch")) {
+          return Promise.resolve(
+            jsonResponse({
+              status: { supported: false, loaded: [], installed: [] },
+              settings: {
+                supported: false,
+                missing: [],
+                unavailable: [],
+                auto: false,
+                serviceEnabled: false,
+                patchInstalled: false,
+                patchUnavailable: false,
               },
-            ],
-            externalLock: true,
-            lockReason: "A package-manager lock is held",
-            message: "1 installed-software update available.",
-          })
-        )
-      )
+            })
+          )
+        }
+        return Promise.resolve(jsonResponse(updateStatus))
+      })
     )
     renderInventory()
     expect(await screen.findByText("openssl (amd64)")).toBeTruthy()

@@ -722,11 +722,14 @@ export type UpdateStatus = {
   reason?: string
   recovery?: UpdateRecovery
   lastChecked?: string
+  timeSinceRefresh?: number
 }
 export type UpdateRecovery = {
   authoritative: boolean
   rebootRequired: boolean
   restartServices: string[]
+  rebootPackages?: string[]
+  manualPackages?: string[]
   hints: string[]
   source: string
   reason?: string
@@ -766,6 +769,7 @@ export type UpdatePackage = {
   currentVersion?: string
   candidateVersion: string
   severity?: string
+  secSeverity?: "critical" | "important" | "moderate" | "low"
   size?: number
   summary?: string
   details?: string
@@ -774,8 +778,72 @@ export type UpdatePackage = {
   bugUrls?: string[]
   vendorUrls?: string[]
   description?: string
+  markdown?: boolean
   groupKey?: string
   dependencies?: string[]
+  packageId?: string
+}
+export type UpdateHistoryEntry = {
+  time: number
+  packages: Record<string, string>
+}
+export type UpdateActionLogEntry = {
+  status: number
+  statusLabel: string
+  packageId: string
+  timestamp?: string
+}
+export type UpdateLive = {
+  active: boolean
+  source?: string
+  percentage: number
+  allowCancel: boolean
+  status?: string
+  currentPackage?: string
+  remainingSeconds?: number
+  transactionPath?: string
+}
+export type UpdateObservation = {
+  live: UpdateLive
+  log: UpdateActionLogEntry[]
+}
+export type AutoUpdatesConfig = {
+  available: boolean
+  supported: boolean
+  installed: boolean
+  enabled: boolean
+  type: "all" | "security"
+  day: "" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
+  time: string
+  provider?: string
+  packageName?: string
+  reason?: string
+}
+export type AutoUpdatesOperation = {
+  enabled?: boolean
+  type?: "all" | "security"
+  day?: "" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
+  time?: string
+}
+export type KpatchStatus = {
+  supported: boolean
+  loaded: string[]
+  installed: string[]
+}
+export type KpatchSettings = {
+  supported: boolean
+  missing: string[]
+  unavailable: string[]
+  auto: boolean
+  serviceEnabled: boolean
+  kernel?: string
+  patchName?: string
+  patchInstalled: boolean
+  patchUnavailable: boolean
+}
+export type KpatchOperation = {
+  apply: boolean
+  currentOnly?: boolean
 }
 export type TerminalStatus = { available: boolean; message: string }
 export type MonitoringPreference = {
