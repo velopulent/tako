@@ -133,6 +133,8 @@ type Request struct {
 	PasswordChange      *PasswordChangeOperation              `json:"passwordChange,omitempty"`
 	SSHKeys             *platform.SSHKeyOperation             `json:"sshKeys,omitempty"`
 	Updates             *platform.UpdateOperation             `json:"updates,omitempty"`
+	AutoUpdates         *platform.AutoUpdatesOperation        `json:"autoUpdates,omitempty"`
+	Kpatch              *platform.KpatchOperation             `json:"kpatch,omitempty"`
 	File                *platform.FileOperation               `json:"file,omitempty"`
 	Journal             *platform.JournalQuery                `json:"journal,omitempty"`
 	Network             *platform.NetworkOperation            `json:"network,omitempty"`
@@ -250,6 +252,16 @@ type SSHKeyRequest struct {
 type UpdateRequest struct {
 	AdminToken string
 	Operation  platform.UpdateOperation
+}
+
+type AutoUpdatesRequest struct {
+	AdminToken string
+	Operation  platform.AutoUpdatesOperation
+}
+
+type KpatchRequest struct {
+	AdminToken string
+	Operation  platform.KpatchOperation
 }
 
 type FileRequest struct {
@@ -573,6 +585,55 @@ func ApplyUpdates(ctx context.Context, path string, request UpdateRequest) (plat
 		return platform.UpdateResult{}, ErrServiceUnavailable
 	}
 	return *response.UpdateResult, nil
+}
+
+// ApplyAutoUpdatesConfig mutates automatic-update configuration through
+// sessiond; the gateway never edits package-manager configuration itself.
+func ApplyAutoUpdatesConfig(ctx context.Context, path string, request AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
+	operation := request.Operation
+	response, err := socketRequest(ctx, path, Request{Operation: "updates-auto", AdminToken: request.AdminToken, AutoUpdates: &operation})
+	if err != nil {
+		return platform.AutoUpdatesConfig{}, err
+	}
+	if response.Error != "" {
+		switch response.Error {
+		case "invalid-auto-updates-operation":
+			return platform.AutoUpdatesConfig{}, platform.ErrInvalidAutoUpdatesOperation
+		case "auto-updates-unavailable":
+			return platform.AutoUpdatesConfig{}, platform.ErrAutoUpdatesUnavailable
+		case "auto-updates-apply-failed":
+			return platform.AutoUpdatesConfig{}, platform.ErrAutoUpdatesApply
+		default:
+			return platform.AutoUpdatesConfig{}, errors.New(response.Error)
+		}
+	}
+	if response.AutoUpdatesConfig == nil {
+		return platform.AutoUpdatesConfig{}, ErrServiceUnavailable
+	}
+	return *response.AutoUpdatesConfig, nil
+}
+
+// ApplyKpatchSettings turns kernel live patching on or off through sessiond.
+func ApplyKpatchSettings(ctx context.Context, path string, request KpatchRequest) (platform.KpatchSettingsStatus, error) {
+	operation := request.Operation
+	response, err := socketRequest(ctx, path, Request{Operation: "kpatch", AdminToken: request.AdminToken, Kpatch: &operation})
+	if err != nil {
+		return platform.KpatchSettingsStatus{}, err
+	}
+	if response.Error != "" {
+		switch response.Error {
+		case "invalid-kpatch-operation":
+			return platform.KpatchSettingsStatus{}, platform.ErrInvalidKpatchOperation
+		case "kpatch-apply-failed":
+			return platform.KpatchSettingsStatus{}, platform.ErrKpatchApply
+		default:
+			return platform.KpatchSettingsStatus{}, errors.New(response.Error)
+		}
+	}
+	if response.KpatchSettings == nil {
+		return platform.KpatchSettingsStatus{}, ErrServiceUnavailable
+	}
+	return *response.KpatchSettings, nil
 }
 
 func QueryJournal(ctx context.Context, path string, request JournalRequest) (platform.JournalPage, error) {
@@ -1020,6 +1081,8 @@ type Response struct {
 	SSHKeyState            *platform.SSHKeyState               `json:"sshKeyState,omitempty"`
 	SSHKeyPreview          *platform.SSHKeyPreview             `json:"sshKeyPreview,omitempty"`
 	UpdateResult           *platform.UpdateResult              `json:"updateResult,omitempty"`
+	AutoUpdatesConfig      *platform.AutoUpdatesConfig         `json:"autoUpdatesConfig,omitempty"`
+	KpatchSettings         *platform.KpatchSettingsStatus      `json:"kpatchSettings,omitempty"`
 	FileResult             *platform.FileResult                `json:"fileResult,omitempty"`
 	JournalPage            *platform.JournalPage               `json:"journalPage,omitempty"`
 	LogEntry               *platform.LogEntry                  `json:"logEntry,omitempty"`

@@ -183,10 +183,10 @@ func handleWithSSHKeysBackend(conn net.Conn, service auth.PAMAuthenticator, conv
 }
 
 func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, serviceBackends ...serviceBackend) {
-	handleWithAllBackendsAndUpdates(conn, service, conversations, grants, policy, logger, backend, power, timer, override, password, sshKeys, account, groups, roles, systemUpdateBackend{}, serviceBackends...)
+	handleWithAllBackendsAndUpdates(conn, service, conversations, grants, policy, logger, backend, power, timer, override, password, sshKeys, account, groups, roles, systemUpdateBackend{}, systemAutoUpdatesBackend{}, systemKpatchBackend{}, serviceBackends...)
 }
 
-func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, updates updateBackend, serviceBackends ...serviceBackend) {
+func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, updates updateBackend, autoUpdates autoUpdatesBackend, kpatch kpatchBackend, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -217,6 +217,12 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 	}
 	if updates == nil {
 		updates = systemUpdateBackend{}
+	}
+	if autoUpdates == nil {
+		autoUpdates = systemAutoUpdatesBackend{}
+	}
+	if kpatch == nil {
+		kpatch = systemKpatchBackend{}
 	}
 	serviceBackend := serviceBackend(systemServiceBackend{})
 	if len(serviceBackends) > 0 && serviceBackends[0] != nil {
@@ -272,6 +278,14 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation != "updates" && request.Updates != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "updates-auto" && request.AutoUpdates != nil {
+		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if request.Operation != "kpatch" && request.Kpatch != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
 		return
 	}
@@ -643,7 +657,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "local-account" {
-		if request.Account == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil {
+		if request.Account == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-local-account-request"})
 			return
 		}
@@ -678,7 +692,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "group-membership" {
-		if request.GroupMembership == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.AdminRole != nil {
+		if request.GroupMembership == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.AdminRole != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-group-request"})
 			return
 		}
@@ -713,7 +727,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "admin-role" {
-		if request.AdminRole == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil {
+		if request.AdminRole == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-admin-role-request"})
 			return
 		}
@@ -748,7 +762,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "password-change" {
-		if request.PasswordChange == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil {
+		if request.PasswordChange == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-password-operation"})
 			return
 		}
@@ -802,7 +816,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "ssh-keys" {
-		if request.SSHKeys == nil || (request.Token == "" && request.AdminToken == "") || (request.Token != "" && request.AdminToken != "") || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil {
+		if request.SSHKeys == nil || (request.Token == "" && request.AdminToken == "") || (request.Token != "" && request.AdminToken != "") || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-ssh-key-operation"})
 			return
 		}
@@ -853,7 +867,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "updates" {
-		if request.Updates == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil {
+		if request.Updates == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-update-operation"})
 			return
 		}
@@ -881,8 +895,71 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		_ = encoder.Encode(auth.Response{UpdateResult: &result})
 		return
 	}
+	if request.Operation == "updates-auto" {
+		if request.AutoUpdates == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.Kpatch != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-auto-updates-operation"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.AutoUpdates
+		request.AutoUpdates = nil
+		if err := platform.ValidateAutoUpdatesOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-auto-updates-operation"})
+			return
+		}
+		autoCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		config, applyErr := autoUpdates.Apply(autoCtx, operation, identity)
+		cancel()
+		if applyErr != nil {
+			_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+			_ = encoder.Encode(auth.Response{Error: autoUpdatesErrorCode(applyErr)})
+			return
+		}
+		logger.Info("automatic updates reconfigured", zap.String("username", identity.Username), zap.Bool("enabled", config.Enabled), zap.String("provider", config.Provider))
+		_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+		_ = encoder.Encode(auth.Response{AutoUpdatesConfig: &config})
+		return
+	}
+	if request.Operation == "kpatch" {
+		if request.Kpatch == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.AutoUpdates != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-kpatch-operation"})
+			return
+		}
+		identity, ok := grants.adminIdentity(request.AdminToken)
+		if !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.Kpatch
+		request.Kpatch = nil
+		if err := platform.ValidateKpatchOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-kpatch-operation"})
+			return
+		}
+		kpatchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		settings, applyErr := kpatch.Apply(kpatchCtx, operation, identity)
+		cancel()
+		if applyErr != nil {
+			_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+			switch {
+			case errors.Is(applyErr, platform.ErrInvalidKpatchOperation):
+				_ = encoder.Encode(auth.Response{Error: "invalid-kpatch-operation"})
+			default:
+				_ = encoder.Encode(auth.Response{Error: "kpatch-apply-failed"})
+			}
+			return
+		}
+		logger.Info("kpatch settings changed", zap.String("username", identity.Username), zap.Bool("apply", operation.Apply != nil && *operation.Apply))
+		_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+		_ = encoder.Encode(auth.Response{KpatchSettings: &settings})
+		return
+	}
 	if request.Operation == "file" {
-		if request.File == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil {
+		if request.File == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-file-operation"})
 			return
 		}
@@ -938,7 +1015,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "network" {
-		if request.Network == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil {
+		if request.Network == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-network-operation"})
 			return
 		}
@@ -971,7 +1048,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "firewall" {
-		if request.Firewall == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil {
+		if request.Firewall == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-firewall-operation"})
 			return
 		}
@@ -1002,7 +1079,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "security" {
-		if request.Security == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil || request.Firewall != nil {
+		if request.Security == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil || request.Firewall != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-security-operation"})
 			return
 		}
@@ -1033,7 +1110,7 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 		return
 	}
 	if request.Operation == "support-report" {
-		if request.SupportReport == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil || request.Firewall != nil || request.Security != nil {
+		if request.SupportReport == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Network != nil || request.Firewall != nil || request.Security != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-support-report"})
 			return
 		}

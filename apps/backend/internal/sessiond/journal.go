@@ -15,7 +15,7 @@ import (
 )
 
 func handleJournal(conn net.Conn, encoder *json.Encoder, request auth.Request, grants *grantStore, follow bool) {
-	if request.Journal == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil {
+	if request.Journal == nil || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.AutoUpdates != nil || request.Kpatch != nil {
 		_ = encoder.Encode(auth.Response{Error: "invalid-journal-query"})
 		return
 	}
