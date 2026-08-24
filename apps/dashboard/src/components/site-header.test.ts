@@ -11,7 +11,7 @@ vi.mock("@tanstack/react-router", () => ({
   useLocation: () => ({ pathname: "/files" }),
 }))
 vi.mock("@/components/theme-provider", () => ({
-  useTheme: () => ({ theme: "light", setTheme: vi.fn() }),
+  useTheme: () => ({ theme: "system", setTheme: vi.fn() }),
 }))
 
 afterEach(() => vi.unstubAllGlobals())
