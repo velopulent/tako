@@ -250,9 +250,9 @@ func TestCapabilitiesExposeRuntimeContractsAndGuidance(t *testing.T) {
 	defer server.preferences.Close()
 	server.detectCapabilities = func(context.Context) []platform.Capability {
 		return []platform.Capability{
-			{ID: "services", State: platform.StateReady, Backend: "systemd", Version: "systemd 257", Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "dbus-read-only"},
+			{ID: "services", State: platform.StateReady, Backend: "systemd", Version: "systemd 257", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "dbus"},
 			{ID: "network", State: platform.StateConflicted, Backend: "NetworkManager+networkd", Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "conflicted-read-only", Reason: "Multiple managers are active", SetupGuidance: "Choose one network manager."},
-			{ID: "updates", State: platform.StateDegraded, Backend: "apt-get", Version: "apt 3.0", Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "bounded-command-read-only", Reason: "PackageKit unavailable", SetupGuidance: "Install PackageKit.", MissingDependency: "org.freedesktop.PackageKit"},
+			{ID: "updates", State: platform.StateReady, Backend: "apt-get", Version: "apt 3.0", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "bounded-command", Reason: "apt-get command path in use; PackageKit is unavailable", SetupGuidance: "Install and start PackageKit for richer advisory metadata, update history, and live transaction progress."},
 		}
 	}
 	cookie, _ := loginForTest(t, server.routes())

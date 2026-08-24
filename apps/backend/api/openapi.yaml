@@ -616,6 +616,132 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /updates/refresh:
+    post:
+      operationId: refreshUpdates
+      summary: Refresh package manager cache (PackageKit RefreshCache)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Refreshed inventory with backend contract and lock state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdateStatus' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /updates/live:
+    get:
+      operationId: getUpdateLiveStatus
+      summary: Observe the running package-update transaction and its action log
+      responses:
+        '200':
+          description: Live transaction snapshot (possibly inactive) with recent package actions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdateObservation' }
+  /updates/history:
+    get:
+      operationId: getUpdateHistory
+      summary: Recent completed package-update transactions, newest first
+      responses:
+        '200':
+          description: Update history window; available=false degrades gracefully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, available]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: '#/components/schemas/UpdateHistoryEntry' }
+                  available: { type: boolean }
+  /updates/cancel:
+    post:
+      operationId: cancelRunningUpdate
+      summary: Cancel the currently running package-update transaction
+      responses:
+        '200':
+          description: Whether a running transaction was found and cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [canceled]
+                properties:
+                  canceled: { type: boolean }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /updates/kpatch:
+    get:
+      operationId: getKpatchStatus
+      summary: Kernel live-patch status and settings probe (RHEL hosts only)
+      responses:
+        '200':
+          description: Loaded/installed modules plus the settings state machine
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, settings]
+                properties:
+                  status: { $ref: '#/components/schemas/KpatchStatus' }
+                  settings: { $ref: '#/components/schemas/KpatchSettings' }
+    put:
+      operationId: applyKpatchSettings
+      summary: Enable or disable kernel live patching through sessiond
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/KpatchOperation' }
+      responses:
+        '200':
+          description: Settings state after applying the change
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KpatchSettings' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /updates/automatic:
+    get:
+      operationId: getAutomaticUpdates
+      summary: Inspect automatic-update configuration for this host
+      responses:
+        '200':
+          description: Provider-specific automatic-update configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AutoUpdatesConfig' }
+    put:
+      operationId: applyAutomaticUpdates
+      summary: Change automatic-update configuration through sessiond
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AutoUpdatesOperation' }
+      responses:
+        '200':
+          description: Configuration after applying the change
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AutoUpdatesConfig' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /services:
     get:
       operationId: listServices
@@ -873,7 +999,7 @@ paths:
       operationId: getDiagnosticJob
       responses:
         '200':
-          description: Durable diagnostic job state
+          description: Durable diagnostic job state; software-update jobs also carry a live PackageKit observation
           content:
             application/json:
               schema:
@@ -881,6 +1007,7 @@ paths:
                 required: [job]
                 properties:
                   job: { $ref: '#/components/schemas/DiagnosticJob' }
+                  update: { $ref: '#/components/schemas/UpdateObservation' }
         '404': { $ref: '#/components/responses/Problem' }
   /jobs/{id}/cancel:
     parameters:
@@ -1426,6 +1553,7 @@ components:
         reason: { type: string, maxLength: 512 }
         recovery: { $ref: '#/components/schemas/UpdateRecovery' }
         lastChecked: { type: string, format: date-time }
+        timeSinceRefresh: { type: integer, minimum: 0 }
     UpdateRecovery:
       type: object
       required: [authoritative, rebootRequired, restartServices, hints, source]
@@ -1433,8 +1561,11 @@ components:
         authoritative: { type: boolean }
         rebootRequired: { type: boolean }
         restartServices: { type: array, maxItems: 128, items: { type: string, maxLength: 256 } }
+        rebootPackages: { type: array, maxItems: 128, items: { type: string, maxLength: 256 } }
+        manualPackages: { type: array, maxItems: 128, items: { type: string, maxLength: 256 } }
         hints: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
         source: { type: string, maxLength: 128 }
+        reason: { type: string, maxLength: 512 }
     FileOperation:
       type: object
       additionalProperties: false
@@ -1645,6 +1776,10 @@ components:
         currentVersion: { type: string, maxLength: 256 }
         candidateVersion: { type: string, maxLength: 256 }
         severity: { type: string, maxLength: 64 }
+        secSeverity:
+          type: string
+          enum: [critical, important, moderate, low]
+          description: Vendor errata sub-severity anchor when published
         size: { type: integer, minimum: 0 }
         summary: { type: string, maxLength: 1024 }
         details: { type: string, maxLength: 4096 }
@@ -1655,6 +1790,7 @@ components:
         description: { type: string, maxLength: 4096 }
         groupKey: { type: string, maxLength: 256 }
         dependencies: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
+        packageId: { type: string, maxLength: 512 }
     UpdateOperation:
       type: object
       additionalProperties: false
@@ -1697,6 +1833,95 @@ components:
         message: { type: string, maxLength: 512 }
         fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         recovery: { $ref: '#/components/schemas/UpdateRecovery' }
+    UpdateHistoryEntry:
+      type: object
+      required: [time, packages]
+      properties:
+        time: { type: integer }
+        packages:
+          type: object
+          maxProperties: 500
+          additionalProperties: { type: string, maxLength: 256 }
+    UpdateActionLogEntry:
+      type: object
+      required: [statusLabel, packageId]
+      properties:
+        status: { type: integer }
+        statusLabel: { type: string, maxLength: 64 }
+        packageId: { type: string, maxLength: 512 }
+        timestamp: { type: string, format: date-time }
+    UpdateLive:
+      type: object
+      required: [active, percentage, allowCancel]
+      properties:
+        active: { type: boolean }
+        source: { type: string, maxLength: 32 }
+        percentage: { type: integer, minimum: -1, maximum: 100 }
+        allowCancel: { type: boolean }
+        status: { type: string, maxLength: 64 }
+        currentPackage: { type: string, maxLength: 512 }
+        remainingSeconds: { type: integer, minimum: 0 }
+        transactionPath: { type: string, maxLength: 256 }
+    UpdateObservation:
+      type: object
+      required: [live, log]
+      properties:
+        live: { $ref: '#/components/schemas/UpdateLive' }
+        log:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/UpdateActionLogEntry' }
+    AutoUpdatesConfig:
+      type: object
+      required: [available, supported, installed, enabled, type, day, time]
+      properties:
+        available: { type: boolean }
+        supported: { type: boolean }
+        installed: { type: boolean }
+        enabled: { type: boolean }
+        type: { type: string, enum: [all, security] }
+        day: { type: string, enum: ["", mon, tue, wed, thu, fri, sat, sun] }
+        time: { type: string, maxLength: 5, pattern: '^$|^([01]?[0-9]|2[0-3]):[0-5][0-9]$' }
+        provider: { type: string, maxLength: 64 }
+        packageName: { type: string, maxLength: 128 }
+        reason: { type: string, maxLength: 512 }
+    AutoUpdatesOperation:
+      type: object
+      additionalProperties: false
+      description: Null/omitted fields are left unchanged; a schedule change requires both day and time.
+      properties:
+        enabled: { type: boolean }
+        type: { type: string, enum: [all, security] }
+        day: { type: string, enum: ["", mon, tue, wed, thu, fri, sat, sun] }
+        time: { type: string, maxLength: 5, pattern: '^$|^([01]?[0-9]|2[0-3]):[0-5][0-9]$' }
+    KpatchStatus:
+      type: object
+      required: [supported, loaded, installed]
+      properties:
+        supported: { type: boolean }
+        loaded: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
+        installed: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
+    KpatchSettings:
+      type: object
+      required: [supported, missing, unavailable, auto, serviceEnabled, patchInstalled, patchUnavailable]
+      properties:
+        supported: { type: boolean }
+        missing: { type: array, maxItems: 8, items: { type: string, maxLength: 128 } }
+        unavailable: { type: array, maxItems: 8, items: { type: string, maxLength: 128 } }
+        auto: { type: boolean }
+        serviceEnabled: { type: boolean }
+        kernel: { type: string, maxLength: 128 }
+        patchName: { type: string, maxLength: 128 }
+        patchInstalled: { type: boolean }
+        patchUnavailable: { type: boolean }
+    KpatchOperation:
+      type: object
+      additionalProperties: false
+      required: [apply]
+      description: When apply=true, currentOnly selects patching only the running kernel instead of all future kernels.
+      properties:
+        apply: { type: boolean }
+        currentOnly: { type: boolean }
     AdministrativeElevationRequest:
       type: object
       required: [password]

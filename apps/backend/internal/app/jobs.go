@@ -168,7 +168,7 @@ func (manager *diagnosticJobManager) run(id string) {
 	result, runErr := manager.execute(jobCtx, job, func(progress int, message string) error {
 		return manager.store.UpdateJobProgress(context.Background(), id, progress, message)
 	})
-	if jobCtx.Err() != nil {
+	if jobCtx.Err() != nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return
 	}
 	if runErr != nil {
@@ -264,7 +264,14 @@ func (server *Server) jobDetail(writer http.ResponseWriter, request *http.Reques
 		problem(writer, http.StatusInternalServerError, "jobs-unavailable", "Diagnostic jobs are unavailable")
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"job": job})
+	payload := map[string]any{"job": job}
+	// Software-update jobs carry a live observation of the PackageKit
+	// transaction so the UI can render real progress even though sessiond
+	// performs the update.
+	if job.Kind == softwareUpdateJob {
+		payload["update"] = server.observeUpdates(request.Context())
+	}
+	writeJSON(writer, http.StatusOK, payload)
 }
 
 func (server *Server) cancelJob(writer http.ResponseWriter, request *http.Request) {

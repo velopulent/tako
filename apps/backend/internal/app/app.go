@@ -34,6 +34,7 @@ import (
 	"github.com/velopulent/tako/internal/dashboard"
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/metrics"
+	"github.com/velopulent/tako/internal/packagekit"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
@@ -66,9 +67,15 @@ type Server struct {
 	readUpdatesFn         func(context.Context) platform.UpdateStatus
 	previewUpdatesFn      func(context.Context, platform.UpdateOperation) (platform.UpdatePreview, error)
 	applyUpdatesFn        func(context.Context, auth.UpdateRequest) (platform.UpdateResult, error)
+	autoUpdatesFn         func(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error)
+	autoUpdatesStatusFn   func(context.Context) platform.AutoUpdatesConfig
+	kpatchSettingsFn      func(context.Context, auth.KpatchRequest) (platform.KpatchSettingsStatus, error)
 	updateTokensMu        sync.Mutex
 	updateTokens          map[string]string
 	updateSlots           chan struct{}
+	sharedClientMu        sync.Mutex
+	sharedUpdateClient    *packagekit.Client
+	updateWatcher         *packagekit.TransactionWatcher
 	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	previewAccountFn      func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
@@ -147,6 +154,13 @@ func New(cfg config.Config) (*Server, error) {
 		},
 		applyUpdatesFn: func(ctx context.Context, request auth.UpdateRequest) (platform.UpdateResult, error) {
 			return auth.ApplyUpdates(ctx, cfg.SessionSocket, request)
+		},
+		autoUpdatesFn: func(ctx context.Context, request auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
+			return auth.ApplyAutoUpdatesConfig(ctx, cfg.SessionSocket, request)
+		},
+		autoUpdatesStatusFn: platform.AutoUpdatesStatus,
+		kpatchSettingsFn: func(ctx context.Context, request auth.KpatchRequest) (platform.KpatchSettingsStatus, error) {
+			return auth.ApplyKpatchSettings(ctx, cfg.SessionSocket, request)
 		},
 		updateTokens: make(map[string]string),
 		updateSlots:  make(chan struct{}, 1),
@@ -336,6 +350,7 @@ func (server *Server) Shutdown(ctx context.Context) error {
 		shutdownErr = errors.Join(shutdownErr, ctx.Err())
 	}
 	jobErr := server.jobs.Close(ctx)
+	server.closeSharedUpdateClients()
 	server.clearUpdateTokens()
 	closeErr := server.preferences.Close()
 	return errors.Join(shutdownErr, closeErr, jobErr)
@@ -399,7 +414,15 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/accounts/groups", server.applyLocalGroup)
 			router.Get("/updates", server.updates)
 			router.Post("/updates/preview", server.previewUpdates)
+			router.Post("/updates/refresh", server.refreshUpdates)
 			router.With(server.requireCSRF).Post("/updates", server.startUpdateJob)
+			router.Get("/updates/history", server.updateHistory)
+			router.Get("/updates/live", server.updateLiveStatus)
+			router.Get("/updates/kpatch", server.kpatchStatus)
+			router.With(server.requireCSRF).Put("/updates/kpatch", server.applyKpatchSettings)
+			router.Get("/updates/automatic", server.automaticUpdatesStatus)
+			router.With(server.requireCSRF).Post("/updates/cancel", server.cancelRunningUpdate)
+			router.With(server.requireCSRF).Put("/updates/automatic", server.applyAutomaticUpdates)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)
 			router.Get("/services/{scope}/{unit}/configuration", server.serviceConfiguration)
@@ -689,12 +712,25 @@ func (server *Server) capabilities(writer http.ResponseWriter, request *http.Req
 	capabilities := server.detectCapabilities(request.Context())
 	current := request.Context().Value(sessionKey{}).(session.Session)
 	for index := range capabilities {
-		if capabilities[index].ID == "terminal" && current.Identity.BridgeToken != "" {
+		switch {
+		case capabilities[index].ID == "terminal" && current.Identity.BridgeToken != "":
 			capabilities[index].State = platform.StateReady
 			capabilities[index].Readable = true
 			capabilities[index].ReadAuthority = "user"
 			capabilities[index].MutationAuthority = "user"
 			capabilities[index].Contract = "user-bridge"
+			capabilities[index].Reason = ""
+			capabilities[index].SetupGuidance = ""
+		case capabilities[index].ID == "files" && current.Identity.BridgeToken != "":
+			// File browsing and edits run as the authenticated user over the
+			// bridge; privileged paths additionally require administrative
+			// access and execute through sessiond.
+			capabilities[index].State = platform.StateReady
+			capabilities[index].Readable = true
+			capabilities[index].Mutable = true
+			capabilities[index].ReadAuthority = "user"
+			capabilities[index].MutationAuthority = "administrative"
+			capabilities[index].Contract = "user-bridge+sessiond"
 			capabilities[index].Reason = ""
 			capabilities[index].SetupGuidance = ""
 		}
@@ -2340,6 +2376,7 @@ func (server *Server) updates(writer http.ResponseWriter, request *http.Request)
 	if status.Fingerprint == "" {
 		status.Fingerprint = platform.UpdateFingerprint(status)
 	}
+	server.syncUpdateNotifications(status)
 	writeJSON(writer, http.StatusOK, status)
 }
 
