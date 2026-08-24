@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/velopulent/tako/internal/packagekit"
 )
 
 const (
@@ -40,6 +41,7 @@ type UpdatePackage struct {
 	CurrentVersion   string   `json:"currentVersion,omitempty"`
 	CandidateVersion string   `json:"candidateVersion"`
 	Severity         string   `json:"severity,omitempty"`
+	SecSeverity      string   `json:"secSeverity,omitempty"`
 	Size             uint64   `json:"size,omitempty"`
 	Summary          string   `json:"summary,omitempty"`
 	Details          string   `json:"details,omitempty"`
@@ -48,23 +50,26 @@ type UpdatePackage struct {
 	BugUrls          []string `json:"bugUrls,omitempty"`
 	VendorUrls       []string `json:"vendorUrls,omitempty"`
 	Description      string   `json:"description,omitempty"`
+	Markdown         bool     `json:"markdown,omitempty"`
 	GroupKey         string   `json:"groupKey,omitempty"`
 	Dependencies     []string `json:"dependencies,omitempty"`
+	PackageID        string   `json:"packageId,omitempty"`
 }
 
 type UpdateStatus struct {
-	Available    bool            `json:"available"`
-	Backend      string          `json:"backend"`
-	Version      string          `json:"version,omitempty"`
-	Contract     string          `json:"contract"`
-	Packages     []UpdatePackage `json:"packages"`
-	Fingerprint  string          `json:"fingerprint"`
-	ExternalLock bool            `json:"externalLock"`
-	LockReason   string          `json:"lockReason,omitempty"`
-	Message      string          `json:"message"`
-	Reason       string          `json:"reason,omitempty"`
-	Recovery     UpdateRecovery  `json:"recovery"`
-	LastChecked  string          `json:"lastChecked,omitempty"`
+	Available        bool            `json:"available"`
+	Backend          string          `json:"backend"`
+	Version          string          `json:"version,omitempty"`
+	Contract         string          `json:"contract"`
+	Packages         []UpdatePackage `json:"packages"`
+	Fingerprint      string          `json:"fingerprint"`
+	ExternalLock     bool            `json:"externalLock"`
+	LockReason       string          `json:"lockReason,omitempty"`
+	Message          string          `json:"message"`
+	Reason           string          `json:"reason,omitempty"`
+	Recovery         UpdateRecovery  `json:"recovery"`
+	LastChecked      string          `json:"lastChecked,omitempty"`
+	TimeSinceRefresh *int64          `json:"timeSinceRefresh,omitempty"`
 }
 
 // UpdateRecovery describes post-update work without pretending that every
@@ -73,6 +78,8 @@ type UpdateRecovery struct {
 	Authoritative   bool     `json:"authoritative"`
 	RebootRequired  bool     `json:"rebootRequired"`
 	RestartServices []string `json:"restartServices"`
+	RebootPackages  []string `json:"rebootPackages,omitempty"`
+	ManualPackages  []string `json:"manualPackages,omitempty"`
 	Hints           []string `json:"hints"`
 	Source          string   `json:"source"`
 	Reason          string   `json:"reason,omitempty"`
@@ -86,6 +93,8 @@ type updateCommandResult struct {
 
 type updateDependencies struct {
 	packageKitAvailable func(context.Context) bool
+	packageKitDBusFetch func(context.Context) ([]UpdatePackage, string, error)
+	packageKitLocked    func(context.Context) bool
 	commandExists       func(string) bool
 	commandVersion      func(context.Context, string, ...string) (string, bool)
 	commandOutput       func(context.Context, string, ...string) updateCommandResult
@@ -99,7 +108,23 @@ func Updates(ctx context.Context) UpdateStatus {
 	defer cancel()
 	status := updatesWithDependencies(deadline, defaultUpdateDependencies())
 	status.Fingerprint = UpdateFingerprint(status)
-	status.Recovery = UpdateRecoveryForBackend(deadline, status.Backend)
+	// Use a fresh timeout for recovery so inventory time does not starve the
+	// reboot check (the dnf fallback may probe up to three needs-restarting
+	// modes).
+	recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 6*time.Second)
+	defer recoveryCancel()
+	status.Recovery = UpdateRecoveryForBackend(recoveryCtx, status.Backend)
+	// Populate TimeSinceRefresh via GetTimeSinceAction(REFRESH_CACHE)
+	if status.Backend == "PackageKit" {
+		if client, err := packagekit.New(); err == nil {
+			refreshCtx, refreshCancel := context.WithTimeout(ctx, 1*time.Second)
+			if secs, err := client.GetTimeSinceAction(refreshCtx, packagekit.RoleRefreshCache); err == nil {
+				status.TimeSinceRefresh = &secs
+			}
+			refreshCancel()
+			client.Close()
+		}
+	}
 	status.LastChecked = time.Now().UTC().Format(time.RFC3339)
 	return status
 }
@@ -110,6 +135,32 @@ func UpdateRecoveryForBackend(ctx context.Context, backend string) UpdateRecover
 		recovery.Reason = "No update backend is available to assess recovery needs."
 		return recovery
 	}
+	// Try the python tracer first
+	if tracerResult := tryTracerRecovery(ctx); tracerResult != nil {
+		recovery.RebootRequired = len(tracerResult.Reboot) > 0
+		recovery.RestartServices = tracerResult.Daemons
+		recovery.RebootPackages = tracerResult.Reboot
+		recovery.ManualPackages = tracerResult.Manual
+		recovery.Authoritative = true
+		recovery.Source = "tracer"
+		if recovery.RebootRequired {
+			recovery.Hints = append(recovery.Hints, "Reboot the host after the update job completes.")
+		} else if len(tracerResult.Daemons) > 0 {
+			recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
+			recovery.Reason = fmt.Sprintf("%d services need restart", len(tracerResult.Daemons))
+		} else if len(tracerResult.Manual) > 0 {
+			recovery.Hints = append(recovery.Hints, "Some software needs to be restarted manually.")
+			recovery.Reason = "Some software needs manual restart"
+		} else {
+			recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
+		}
+		// Include manual as hints detail
+		if len(tracerResult.Manual) > 0 {
+			recovery.Hints = append(recovery.Hints, "Manual restart: "+strings.Join(tracerResult.Manual, ", "))
+		}
+		return recovery
+	}
+	// Fallback to dnf needs-restarting for dnf, else file check
 	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
 		recovery.RebootRequired = true
 		recovery.Authoritative = true
@@ -117,11 +168,37 @@ func UpdateRecoveryForBackend(ctx context.Context, backend string) UpdateRecover
 		recovery.Hints = append(recovery.Hints, "Reboot the host after the update job completes.")
 	}
 	if backend == "dnf" {
-		if result := runUpdateCommand(ctx, "needs-restarting", "-r"); result.Err == nil && result.ExitCode == 1 {
+		if detail, available := dnfNeedsRestartingDetail(ctx); available {
+			// Fine-grained restart facts when the plugin
+			// supports them; fall back to a coarse boolean otherwise.
+			recovery.Source = "needs-restarting"
+			if len(detail.RebootPackages) > 0 {
+				recovery.RebootRequired = true
+				recovery.Authoritative = true
+				recovery.RebootPackages = append(recovery.RebootPackages, detail.RebootPackages...)
+				recovery.Hints = append(recovery.Hints, "Reboot the host after the update job completes.")
+			}
+			if len(detail.Services) > 0 {
+				recovery.RestartServices = append(recovery.RestartServices, detail.Services...)
+				recovery.Authoritative = true
+			}
+			if len(detail.Manual) > 0 {
+				recovery.ManualPackages = append(recovery.ManualPackages, detail.Manual...)
+				recovery.Authoritative = true
+			}
+			if recovery.Authoritative && !recovery.RebootRequired {
+				recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
+			}
+		} else if result := runUpdateCommand(ctx, "needs-restarting", "-r"); result.Err == nil && result.ExitCode == 1 {
 			recovery.RebootRequired = true
 			recovery.Authoritative = true
 			recovery.Source = "needs-restarting"
 			recovery.Hints = append(recovery.Hints, "A reboot is required according to needs-restarting.")
+		} else if services := tryDnfNeedsRestartingServices(ctx); len(services) > 0 {
+			recovery.RestartServices = services
+			recovery.Authoritative = true
+			recovery.Source = "needs-restarting"
+			recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
 		}
 	}
 	if !recovery.RebootRequired {
@@ -130,9 +207,121 @@ func UpdateRecoveryForBackend(ctx context.Context, backend string) UpdateRecover
 	return recovery
 }
 
+type tracerResult struct {
+	Reboot  []string `json:"reboot"`
+	Daemons []string `json:"daemons"`
+	Manual  []string `json:"manual"`
+}
+
+func tryTracerRecovery(ctx context.Context) *tracerResult {
+	// Run the python tracer
+	tracerScript := "from tracer.query import Query\nimport json\nq=Query()\napps=q.affected_applications().get()\n"
+	tracerScript += "def f(apps,t): return [a.name for a in apps if a.type==t]\n"
+	tracerScript += "print(json.dumps({\"reboot\":f(apps,\"static\"),\"daemons\":f(apps,\"daemon\"),\"manual\":f(apps,\"application\")}))\n"
+	result := runUpdateCommand(ctx, "python3", "-c", tracerScript)
+	if result.Err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Output) == "" {
+		return nil
+	}
+	var res tracerResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result.Output)), &res); err != nil {
+		return nil
+	}
+	// Deduplicate and shorten cockpit-wsinstance entries
+	res.Reboot = deduplicateAndShorten(res.Reboot)
+	res.Daemons = deduplicateAndShorten(res.Daemons)
+	res.Manual = deduplicateAndShorten(res.Manual)
+	return &res
+}
+
+func tryDnfNeedsRestartingServices(ctx context.Context) []string {
+	result := runUpdateCommand(ctx, "dnf", "needs-restarting", "--services")
+	if result.Err != nil || result.ExitCode != 0 {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(result.Output), "\n")
+	var services []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if strings.HasSuffix(l, ".service") {
+			services = append(services, l)
+		}
+	}
+	return services
+}
+
+// dnfNeedsRestartingDetail probes needs-restarting's fine-grained flags,
+// which newer plugin versions expose as machine-parseable (though not
+// stable-API) output. It reports whether the fine-grained probing was
+// available at all.
+type dnfRestartDetail struct {
+	RebootPackages []string
+	Services       []string
+	Manual         []string
+}
+
+func dnfNeedsRestartingDetail(ctx context.Context) (dnfRestartDetail, bool) {
+	var detail dnfRestartDetail
+	// --exclude-services was added much later than -r; probe for it first so
+	// ancient plugins fall back to the coarse boolean path.
+	exclusive := runUpdateCommand(ctx, "dnf", "needs-restarting", "--exclude-services")
+	if exclusive.Err != nil || exclusive.ExitCode != 0 {
+		return detail, false
+	}
+	// Format: "pid : argv", e.g. "1234 : mydaemon 3600"
+	for _, line := range strings.Split(exclusive.Output, "\n") {
+		line = strings.TrimSpace(line)
+		if pidArgumentRe.MatchString(line) {
+			detail.Manual = append(detail.Manual, line)
+		}
+	}
+
+	if services := runUpdateCommand(ctx, "dnf", "needs-restarting", "--services"); services.Err == nil && services.ExitCode == 0 {
+		for _, line := range strings.Split(services.Output, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasSuffix(line, ".service") {
+				detail.Services = append(detail.Services, line)
+			}
+		}
+	}
+
+	// --reboothint exits nonzero iff a reboot is required; package names are
+	// printed as "  * kernel-core".
+	if hint := runUpdateCommand(ctx, "dnf", "needs-restarting", "--reboothint"); hint.Err == nil {
+		if hint.ExitCode == 1 {
+			for _, line := range strings.Split(hint.Output, "\n") {
+				if strings.HasPrefix(line, "  * ") {
+					detail.RebootPackages = append(detail.RebootPackages, strings.TrimPrefix(line, "  * "))
+				}
+			}
+		}
+	}
+	return detail, true
+}
+
+func deduplicateAndShorten(list []string) []string {
+	if len(list) == 0 {
+		return list
+	}
+	seen := make(map[string]struct{}, len(list))
+	var out []string
+	for _, v := range list {
+		if strings.HasPrefix(v, "cockpit-wsinstance-https") {
+			v = "cockpit-wsinstance-https@."
+		}
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func defaultUpdateDependencies() updateDependencies {
 	return updateDependencies{
 		packageKitAvailable: packageKitAvailable,
+		packageKitDBusFetch: fetchPackageKitDBus,
+		packageKitLocked:    isPackageKitLocked,
 		commandExists:       commandExists,
 		commandVersion: func(ctx context.Context, name string, arguments ...string) (string, bool) {
 			return (hostProbe{}).CommandVersion(ctx, name, arguments...)
@@ -140,6 +329,112 @@ func defaultUpdateDependencies() updateDependencies {
 		commandOutput: runUpdateCommand,
 		lockHeld:      updateLockHeld,
 	}
+}
+
+func isPackageKitLocked(ctx context.Context) bool {
+	client, err := packagekit.New()
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+	paths, err := client.GetTransactionList(ctx)
+	if err != nil {
+		return false
+	}
+	// Only role-matched live transactions (refresh/update) count as busy;
+	// finished or unrelated transactions linger in the list without holding a
+	// lock, avoiding the false positive where our own inventory query locked
+	// the page.
+	for _, path := range paths {
+		if busy, _ := client.TransactionBusy(ctx, path); busy {
+			return true
+		}
+	}
+	return false
+}
+
+// packageKitLockReason returns a human reason for the first busy transaction,
+// or an empty string when no relevant transaction is running.
+func packageKitLockReason(ctx context.Context) string {
+	client, err := packagekit.New()
+	if err != nil {
+		return ""
+	}
+	defer client.Close()
+	paths, err := client.GetTransactionList(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, path := range paths {
+		if busy, reason := client.TransactionBusy(ctx, path); busy && reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+func fetchPackageKitDBus(ctx context.Context) ([]UpdatePackage, string, error) {
+	client, err := packagekit.New()
+	if err != nil {
+		return nil, "", err
+	}
+	defer client.Close()
+	if !client.Detect(ctx) {
+		return nil, "", ErrUpdateUnavailable
+	}
+	// Get backend version (VersionMajor is uint32)
+	version := ""
+	if conn, err := dbus.ConnectSystemBus(); err == nil {
+		obj := conn.Object("org.freedesktop.PackageKit", "/org/freedesktop/PackageKit")
+		var variant dbus.Variant
+		if err := obj.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, "org.freedesktop.PackageKit", "VersionMajor").Store(&variant); err == nil {
+			if v, ok := variant.Value().(uint32); ok {
+				version = fmt.Sprintf("%d", v)
+			} else if vs, ok := variant.Value().(string); ok {
+				version = vs
+			}
+		}
+		conn.Close()
+	}
+	updates, err := client.GetUpdates(ctx)
+	if err != nil {
+		return nil, version, err
+	}
+	pkgs := make([]UpdatePackage, 0, len(updates))
+	for _, u := range updates {
+		pkgs = append(pkgs, UpdatePackage{
+			Name:             u.Name,
+			Architecture:     u.Arch,
+			CandidateVersion: u.Version,
+			Severity:         u.Severity,
+			Summary:          u.Summary,
+			Description:      u.Description,
+			Markdown:         u.Markdown,
+			CVEUrls:          u.CVEURLs,
+			BugUrls:          u.BugURLs,
+			VendorUrls:       u.VendorURLs,
+			AdvisoryID:       "",
+			GroupKey:         "",
+			PackageID:        u.ID,
+		})
+		if len(u.CVEURLs) > 0 && pkgs[len(pkgs)-1].AdvisoryID == "" {
+			pkgs[len(pkgs)-1].AdvisoryID = u.CVEURLs[0]
+		}
+	}
+	pkgs = sortUpdates(pkgs)
+	return pkgs, version, nil
+}
+
+func RefreshUpdatesCache(ctx context.Context, force bool) error {
+	client, err := packagekit.New()
+	if err != nil {
+		return ErrUpdateUnavailable
+	}
+	defer client.Close()
+	if !client.Detect(ctx) {
+		return ErrUpdateUnavailable
+	}
+	return client.RefreshCache(ctx, force)
 }
 
 func tryEnrichWithDnfInfo(ctx context.Context, deps updateDependencies, pkgs []UpdatePackage) []UpdatePackage {
@@ -361,13 +656,47 @@ func updatesWithDependencies(ctx context.Context, dependencies updateDependencie
 		if dependencies.commandVersion != nil {
 			status.Version, _ = dependencies.commandVersion(ctx, "pkcon", "--version")
 		}
+		// Prefer D-Bus transaction over CLI parsing
+		if dependencies.packageKitDBusFetch != nil {
+			if pkgs, version, err := dependencies.packageKitDBusFetch(ctx); err == nil {
+				if version != "" {
+					status.Version = version
+				}
+				status.Packages = pkgs
+				// D-Bus already includes CVE/bug/vendor enrichment
+				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
+				status.Packages = sortUpdates(status.Packages)
+				if dependencies.packageKitLocked != nil && dependencies.packageKitLocked(ctx) {
+					status.ExternalLock = true
+					status.LockReason = packageKitLockReason(ctx)
+					if status.LockReason == "" {
+						status.LockReason = "PackageKit transaction in progress"
+					}
+				}
+				status.Message = updateMessage(len(status.Packages))
+				if len(status.Packages) == MaxUpdatePackages {
+					status.Message += " Package list truncated at 500."
+				}
+				return status
+			}
+		}
 		if dependencies.commandExists != nil && dependencies.commandOutput != nil && dependencies.commandExists("pkcon") {
 			result := dependencies.commandOutput(ctx, "pkcon", "--noninteractive", "get-updates")
 			if result.Err == nil && result.ExitCode == 0 {
 				status.Packages = parsePackageKitUpdates(result.Output)
 				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
 				status.Packages = sortUpdates(status.Packages)
+				if dependencies.packageKitLocked != nil && dependencies.packageKitLocked(ctx) {
+					status.ExternalLock = true
+					status.LockReason = packageKitLockReason(ctx)
+					if status.LockReason == "" {
+						status.LockReason = "PackageKit transaction in progress"
+					}
+				}
 				status.Message = updateMessage(len(status.Packages))
+				if len(status.Packages) == MaxUpdatePackages {
+					status.Message += " Package list truncated at 500."
+				}
 				return status
 			}
 		}
@@ -384,6 +713,9 @@ func updatesWithDependencies(ctx context.Context, dependencies updateDependencie
 				if result.Err == nil && result.ExitCode == 0 {
 					status.Packages = parseAPTUpdates(result.Output)
 					status.Message = updateMessage(len(status.Packages))
+					if len(status.Packages) == MaxUpdatePackages {
+						status.Message += " Package list truncated at 500."
+					}
 					return status
 				}
 			}
@@ -391,6 +723,9 @@ func updatesWithDependencies(ctx context.Context, dependencies updateDependencie
 			if result.Err == nil && result.ExitCode == 0 {
 				status.Packages = parseAPTGetUpdates(result.Output)
 				status.Message = updateMessage(len(status.Packages))
+				if len(status.Packages) == MaxUpdatePackages {
+					status.Message += " Package list truncated at 500."
+				}
 				return status
 			}
 			status.Message = "APT is available; update inventory could not be read"
@@ -405,6 +740,9 @@ func updatesWithDependencies(ctx context.Context, dependencies updateDependencie
 				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
 				status.Packages = sortUpdates(status.Packages)
 				status.Message = updateMessage(len(status.Packages))
+				if len(status.Packages) == MaxUpdatePackages {
+					status.Message += " Package list truncated at 500."
+				}
 				return status
 			}
 			status.Message = "DNF is available; update inventory could not be read"
@@ -433,10 +771,28 @@ func updateLockHeld(path string) bool {
 		return false
 	}
 	defer file.Close()
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+	fd := int(file.Fd())
+	// Try flock first; PackageKit lock detection covers D-Bus, the CLI
+	// fallback needs a real file lock
+	if err := syscall.Flock(fd, syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
 		return true
 	}
-	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	_ = syscall.Flock(fd, syscall.LOCK_UN)
+	// Dpkg uses fcntl OFD locks, not flock, so also try fcntl (apt/dnf locks)
+	// Use non-blocking F_SETLK to test if lock held
+	flock := &syscall.Flock_t{
+		Type:   syscall.F_WRLCK,
+		Whence: 0,
+		Start:  0,
+		Len:    0,
+		Pid:    0,
+	}
+	if err := syscall.FcntlFlock(uintptr(fd), syscall.F_SETLK, flock); err != nil {
+		return true
+	}
+	// Unlock fcntl
+	flock.Type = syscall.F_UNLCK
+	_ = syscall.FcntlFlock(uintptr(fd), syscall.F_SETLK, flock)
 	return false
 }
 
@@ -511,8 +867,10 @@ func runUpdateCommand(ctx context.Context, name string, arguments ...string) upd
 	return result
 }
 
+var versionAtLeastPattern = regexp.MustCompile(`(?:^|\s)([0-9]+)(?:\.[0-9]+)?`)
+
 func versionAtLeast(version string, minimumMajor int) bool {
-	match := regexp.MustCompile(`(?:^|\s)([0-9]+)(?:\.[0-9]+)?`).FindStringSubmatch(version)
+	match := versionAtLeastPattern.FindStringSubmatch(version)
 	if len(match) < 2 {
 		return false
 	}
@@ -619,12 +977,21 @@ func UpdateFingerprint(status UpdateStatus) string {
 		}
 		return packages[left].CandidateVersion < packages[right].CandidateVersion
 	})
+	// Use stable fields only, not volatile enrichment (Size, Severity, Summary).
+	type stablePackage struct {
+		Name             string `json:"name"`
+		Architecture     string `json:"architecture,omitempty"`
+		CandidateVersion string `json:"candidateVersion"`
+	}
+	stables := make([]stablePackage, len(packages))
+	for i, p := range packages {
+		stables[i] = stablePackage{Name: p.Name, Architecture: p.Architecture, CandidateVersion: p.CandidateVersion}
+	}
 	payload, _ := json.Marshal(struct {
-		Backend      string
-		Version      string
-		Packages     []UpdatePackage
-		ExternalLock bool
-	}{status.Backend, status.Version, packages, status.ExternalLock})
+		Backend      string          `json:"backend"`
+		Packages     []stablePackage `json:"packages"`
+		ExternalLock bool            `json:"externalLock"`
+	}{status.Backend, stables, status.ExternalLock})
 	hash := sha256.Sum256(payload)
 	return hex.EncodeToString(hash[:])
 }
@@ -684,6 +1051,12 @@ func PreviewUpdates(ctx context.Context, operation UpdateOperation, statusFn fun
 	preview.Allowed = true
 	preview.RequiresConfirmation = true
 	preview.Changes = append(preview.Changes, fmt.Sprintf("update %d package%s", len(preview.Selected), pluralSuffix(len(preview.Selected))))
+	for _, item := range preview.Selected {
+		if item.Name == "tako" {
+			preview.Warnings = append(preview.Warnings, "The web console will restart during this update; the update continues in the background and you can reconnect afterwards.")
+			break
+		}
+	}
 	preview.Warnings = append(preview.Warnings, "Updates can restart services or require a host reboot.", "An interrupted package operation will not be retried automatically.")
 	return preview, nil
 }
@@ -726,13 +1099,32 @@ func ApplyUpdates(ctx context.Context, operation UpdateOperation) (UpdateResult,
 	if len(selected) == 0 {
 		return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: []string{}, Updated: []UpdatePackage{}, Verified: true, Message: "No updates were available.", Fingerprint: fingerprint, Recovery: UpdateRecoveryForBackend(ctx, current.Backend)}, nil
 	}
-	arguments, err := updateApplyArguments(current.Backend, operation.Scope, operation.Packages)
-	if err != nil {
-		return UpdateResult{}, err
-	}
-	result := runLongUpdateCommand(ctx, arguments[0], arguments[1:]...)
-	if result.Err != nil || result.ExitCode != 0 {
-		return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(result.Err, result.Output))
+	// Prefer D-Bus UpdatePackages for the PackageKit backend
+	if current.Backend == "PackageKit" {
+		if err := applyViaPackageKitDBus(ctx, selected); err == nil {
+			// D-Bus success, proceed to verification
+		} else if errors.Is(err, ErrUpdateUnavailable) {
+			// Fallback to CLI if D-Bus not available
+			arguments, err := updateApplyArguments(current.Backend, operation.Scope, operation.Packages)
+			if err != nil {
+				return UpdateResult{}, err
+			}
+			result := runLongUpdateCommand(ctx, arguments[0], arguments[1:]...)
+			if result.Err != nil || result.ExitCode != 0 {
+				return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(result.Err, result.Output))
+			}
+		} else {
+			return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(err, ""))
+		}
+	} else {
+		arguments, err := updateApplyArguments(current.Backend, operation.Scope, operation.Packages)
+		if err != nil {
+			return UpdateResult{}, err
+		}
+		result := runLongUpdateCommand(ctx, arguments[0], arguments[1:]...)
+		if result.Err != nil || result.ExitCode != 0 {
+			return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(result.Err, result.Output))
+		}
 	}
 	final := Updates(ctx)
 	if !final.Available {
@@ -740,11 +1132,19 @@ func ApplyUpdates(ctx context.Context, operation UpdateOperation) (UpdateResult,
 	}
 	remaining := make(map[string]struct{}, len(final.Packages))
 	for _, item := range final.Packages {
-		remaining[item.Name] = struct{}{}
+		key := item.Name + ":" + item.Architecture
+		remaining[key] = struct{}{}
+		remaining[item.Name] = struct{}{} // also keep name-only for backward compat with CLI fallback
 	}
 	for _, item := range selected {
-		if _, exists := remaining[item.Name]; exists {
+		key := item.Name + ":" + item.Architecture
+		if _, exists := remaining[key]; exists {
 			return UpdateResult{}, ErrUpdateVerification
+		}
+		if item.Architecture == "" {
+			if _, exists := remaining[item.Name]; exists {
+				return UpdateResult{}, ErrUpdateVerification
+			}
 		}
 	}
 	packages := make([]string, 0, len(selected))
@@ -761,6 +1161,31 @@ func ApplyUpdates(ctx context.Context, operation UpdateOperation) (UpdateResult,
 		})
 	}
 	return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: packages, Updated: updated, Verified: true, Message: "Updates applied and verified.", Fingerprint: UpdateFingerprint(final), Recovery: UpdateRecoveryForBackend(ctx, current.Backend)}, nil
+}
+
+func applyViaPackageKitDBus(ctx context.Context, selected []UpdatePackage) error {
+	// Full package IDs look like "name;version;arch;repo"
+	var ids []string
+	for _, p := range selected {
+		if p.PackageID == "" {
+			return ErrUpdateUnavailable
+		}
+		ids = append(ids, p.PackageID)
+	}
+	if len(ids) == 0 {
+		return ErrUpdateUnavailable
+	}
+	client, err := packagekit.New()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if !client.Detect(ctx) {
+		return ErrUpdateUnavailable
+	}
+	// The transaction itself is observed live by the gateway via D-Bus
+	// (UpdateSnapshot), so no progress callback is threaded through here.
+	return client.UpdatePackages(ctx, ids)
 }
 
 func updateApplyArguments(backend, scope string, packages []string) ([]string, error) {
@@ -1087,8 +1512,11 @@ func parsePackageKitUpdates(output string) []UpdatePackage {
 }
 
 var (
-	cvePattern = regexp.MustCompile(`CVE-\d{4}-\d{4,7}`)
+	cvePattern   = regexp.MustCompile(`CVE-\d{4}-\d{4,7}`)
 	bugIDPattern = regexp.MustCompile(`(?i)(?:bug|bz|rhbz)[^0-9]*([0-9]{5,8})`)
+	// HACK: dnf prints manual-restart lines as "pid : argv"; RHEL-84657 can
+	// also emit malformed entries, so require the pid prefix.
+	pidArgumentRe = regexp.MustCompile(`^\d+ : `)
 )
 
 func enrichUpdatePackages(updates []UpdatePackage) []UpdatePackage {
@@ -1096,6 +1524,10 @@ func enrichUpdatePackages(updates []UpdatePackage) []UpdatePackage {
 		pkg := &updates[index]
 		sourceText := strings.Join([]string{pkg.Summary, pkg.Details, pkg.Description}, " ")
 		lower := strings.ToLower(sourceText)
+
+		// Sub-classify security severity from vendor errata anchors
+		// (#Critical/#Important/#Moderate/#Low).
+		pkg.SecSeverity = secSeverityFromURLs(pkg.VendorUrls)
 
 		if pkg.Severity == "" {
 			if strings.Contains(lower, "security") || cvePattern.MatchString(sourceText) {
@@ -1236,6 +1668,28 @@ func validPackageField(value string) bool {
 	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\x00\r\n")
 }
 
+// secSeverityFromURLs extracts the errata severity anchor (#Critical and
+// friends) from vendor URLs.
+func secSeverityFromURLs(urls []string) string {
+	for _, url := range urls {
+		hash := strings.LastIndex(url, "#")
+		if hash == -1 {
+			continue
+		}
+		switch strings.ToLower(url[hash+1:]) {
+		case "critical":
+			return "critical"
+		case "important":
+			return "important"
+		case "moderate":
+			return "moderate"
+		case "low":
+			return "low"
+		}
+	}
+	return ""
+}
+
 func validArchitecture(value string) bool {
-	return validPackageField(value) && len(value) <= 32 && !strings.ContainsAny(value, "/[]")
+	return validPackageField(value) && len(value) <= 32 && !strings.ContainsAny(value, "/[]:")
 }
