@@ -5,13 +5,6 @@ import { api, type LoginHistoryPage, type SessionResponse } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -87,15 +80,11 @@ export function AccountLoginHistory({ username }: { username?: string }) {
   })
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Login and session history</CardTitle>
-        <CardDescription>
-          Bounded events are read directly from the journal; Tako does not copy
-          journal records into its database.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        Bounded events are read directly from the journal; Tako does not copy
+        journal records into its database.
+      </p>
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="login-history-user">Account</FieldLabel>
@@ -238,7 +227,6 @@ export function AccountLoginHistory({ username }: { username?: string }) {
               )}
             </>
           )}
-      </CardContent>
-    </Card>
+    </div>
   )
 }

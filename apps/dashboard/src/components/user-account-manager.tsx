@@ -13,13 +13,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
   Field,
   FieldDescription,
   FieldGroup,
@@ -120,26 +113,14 @@ export function UserAccountManager({
     administrative && !selectedRemote && Boolean(user || action === "create")
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle>
-              {user ? `Manage ${user.username}` : "Create local account"}
-            </CardTitle>
-            <CardDescription>
-              Shadow-utils changes are previewed, fingerprint-checked, and
-              verified after they run.
-            </CardDescription>
-          </div>
-          {user && (
-            <Badge variant={user.local ? "secondary" : "outline"}>
-              {user.local ? "Local" : "NSS read-only"}
-            </Badge>
-          )}
+    <div className="flex flex-col gap-5">
+      {user && (
+        <div className="flex">
+          <Badge variant={user.local ? "secondary" : "outline"}>
+            {user.local ? "Local" : "NSS read-only"}
+          </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-5">
+      )}
         {!administrative && (
           <Alert>
             <AlertTitle>Administrative access required</AlertTitle>
@@ -301,7 +282,6 @@ export function UserAccountManager({
           </Button>
         </div>
         {pending && <Skeleton className="h-1 w-full" />}
-      </CardContent>
-    </Card>
+    </div>
   )
 }

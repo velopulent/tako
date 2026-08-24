@@ -16,6 +16,14 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const columns: ColumnDef<UserInfo>[] = [
   { accessorKey: "username", header: "User" },
@@ -48,6 +56,7 @@ export function UserInventory({
 }) {
   const [selected, setSelected] = React.useState<UserInfo>()
   const [creating, setCreating] = React.useState(false)
+  const [activeTab, setActiveTab] = React.useState("details")
   const query = useQuery({
     queryKey: ["users"],
     queryFn: () => api<{ items: UserInfo[] }>("/accounts/users"),
@@ -61,6 +70,17 @@ export function UserInventory({
     queryFn: () => api<{ administrative: boolean }>("/admin"),
     refetchInterval: 10_000,
   })
+
+  React.useEffect(() => {
+    const handler = () => {
+      setSelected(undefined)
+      setCreating(true)
+      setActiveTab("details")
+    }
+    window.addEventListener("accounts:create-user", handler)
+    return () => window.removeEventListener("accounts:create-user", handler)
+  }, [])
+
   const items = query.data?.items ?? []
   if (query.isPending) return <Skeleton className="h-72" />
   if (query.isError) {
@@ -83,24 +103,13 @@ export function UserInventory({
   }
   const localCount = items.filter((item) => item.local).length
   const remoteCount = items.length - localCount
+  const sheetOpen = creating || Boolean(selected)
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground" aria-live="polite">
         {items.length} identities · {localCount} local · {remoteCount} NSS
         read-only
       </p>
-      {(creating || selected) && (
-        <UserAccountManager
-          key={creating ? "create" : selected?.username}
-          user={creating ? undefined : selected}
-          csrfToken={session.data?.csrfToken ?? ""}
-          administrative={admin.data?.administrative === true}
-          onApplied={() => {
-            setCreating(false)
-            setSelected(undefined)
-          }}
-        />
-      )}
       <DataTable
         data={items}
         columns={columns}
@@ -110,6 +119,7 @@ export function UserInventory({
         onRowClick={(row) => {
           setCreating(false)
           setSelected(row)
+          setActiveTab("details")
         }}
         toolbar={
           <Button
@@ -118,13 +128,77 @@ export function UserInventory({
             onClick={() => {
               setSelected(undefined)
               setCreating(true)
+              setActiveTab("details")
             }}
           >
-            Create local account
+            Create user
           </Button>
         }
       />
-      <AccountLoginHistory username={selected?.username} />
+      <Sheet
+        open={sheetOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCreating(false)
+            setSelected(undefined)
+          }
+        }}
+      >
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>
+              {creating ? "Create local account" : `Manage ${selected?.username ?? ""}`}
+            </SheetTitle>
+            <SheetDescription>
+              Shadow-utils changes are previewed, fingerprint-checked, and
+              verified after they run.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            {selected ? (
+              <Tabs
+                value={activeTab}
+                onValueChange={setActiveTab}
+                orientation="horizontal"
+                className="mt-2 flex flex-col"
+              >
+                <TabsList className="w-full justify-start">
+                  <TabsTrigger value="details">Details</TabsTrigger>
+                  <TabsTrigger value="history">Login history</TabsTrigger>
+                </TabsList>
+                <TabsContent value="details" className="mt-4">
+                  <UserAccountManager
+                    key={selected.username}
+                    user={selected}
+                    csrfToken={session.data?.csrfToken ?? ""}
+                    administrative={admin.data?.administrative === true}
+                    onApplied={() => {
+                      setCreating(false)
+                      setSelected(undefined)
+                    }}
+                  />
+                </TabsContent>
+                <TabsContent value="history" className="mt-4">
+                  <AccountLoginHistory username={selected.username} />
+                </TabsContent>
+              </Tabs>
+            ) : (
+              <div className="mt-4">
+                <UserAccountManager
+                  key="create"
+                  user={undefined}
+                  csrfToken={session.data?.csrfToken ?? ""}
+                  administrative={admin.data?.administrative === true}
+                  onApplied={() => {
+                    setCreating(false)
+                    setSelected(undefined)
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

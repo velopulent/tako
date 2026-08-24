@@ -12,13 +12,6 @@ import {
 } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import {
   Select,
@@ -88,15 +81,7 @@ export function GroupMembershipManager({
     administrative && group.local && group.mutable && username !== ""
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Manage {group.name} membership</CardTitle>
-        <CardDescription>
-          Changes use the local group database only. Remote NSS groups remain
-          read-only.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-5">
+    <div className="flex flex-col gap-5">
         {!group.local && (
           <Alert>
             <AlertTitle>Remote group is read-only</AlertTitle>
@@ -210,7 +195,6 @@ export function GroupMembershipManager({
           </Button>
         </div>
         {pending && <Skeleton className="h-1 w-full" />}
-      </CardContent>
-    </Card>
+    </div>
   )
 }
