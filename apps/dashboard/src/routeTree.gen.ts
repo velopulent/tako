@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AccountsRouteImport } from './routes/accounts'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as HostRouteImport } from './routes/host'
 import { Route as IncidentsRouteImport } from './routes/incidents'
@@ -26,7 +27,11 @@ import { Route as StorageRouteImport } from './routes/storage'
 import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as TimersRouteImport } from './routes/timers'
 import { Route as UpdatesRouteImport } from './routes/updates'
-import { Route as UsersRouteImport } from './routes/users'
+import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
+import { Route as AccountsGroupsRouteImport } from './routes/accounts.groups'
+import { Route as AccountsPasswordsRouteImport } from './routes/accounts.passwords'
+import { Route as AccountsSshKeysRouteImport } from './routes/accounts.ssh-keys'
+import { Route as AccountsUsersRouteImport } from './routes/accounts.users'
 import { Route as ProcessesIndexRouteImport } from './routes/processes.index'
 import { Route as ProcessesPidRouteImport } from './routes/processes.$pid'
 import { Route as ServicesIndexRouteImport } from './routes/services.index'
@@ -35,6 +40,11 @@ import { Route as ServicesScopeUnitRouteImport } from './routes/services.$scope.
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountsRoute = AccountsRouteImport.update({
+  id: '/accounts',
+  path: '/accounts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FilesRoute = FilesRouteImport.update({
@@ -117,10 +127,30 @@ const UpdatesRoute = UpdatesRouteImport.update({
   path: '/updates',
   getParentRoute: () => rootRouteImport,
 } as any)
-const UsersRoute = UsersRouteImport.update({
+const AccountsIndexRoute = AccountsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AccountsRoute,
+} as any)
+const AccountsGroupsRoute = AccountsGroupsRouteImport.update({
+  id: '/groups',
+  path: '/groups',
+  getParentRoute: () => AccountsRoute,
+} as any)
+const AccountsPasswordsRoute = AccountsPasswordsRouteImport.update({
+  id: '/passwords',
+  path: '/passwords',
+  getParentRoute: () => AccountsRoute,
+} as any)
+const AccountsSshKeysRoute = AccountsSshKeysRouteImport.update({
+  id: '/ssh-keys',
+  path: '/ssh-keys',
+  getParentRoute: () => AccountsRoute,
+} as any)
+const AccountsUsersRoute = AccountsUsersRouteImport.update({
   id: '/users',
   path: '/users',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AccountsRoute,
 } as any)
 const ProcessesIndexRoute = ProcessesIndexRouteImport.update({
   id: '/',
@@ -145,6 +175,7 @@ const ServicesScopeUnitRoute = ServicesScopeUnitRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRouteWithChildren
   '/files': typeof FilesRoute
   '/host': typeof HostRoute
   '/incidents': typeof IncidentsRoute
@@ -161,8 +192,12 @@ export interface FileRoutesByFullPath {
   '/terminal': typeof TerminalRoute
   '/timers': typeof TimersRoute
   '/updates': typeof UpdatesRoute
-  '/users': typeof UsersRoute
+  '/accounts/groups': typeof AccountsGroupsRoute
+  '/accounts/passwords': typeof AccountsPasswordsRoute
+  '/accounts/ssh-keys': typeof AccountsSshKeysRoute
+  '/accounts/users': typeof AccountsUsersRoute
   '/processes/$pid': typeof ProcessesPidRoute
+  '/accounts/': typeof AccountsIndexRoute
   '/processes/': typeof ProcessesIndexRoute
   '/services/': typeof ServicesIndexRoute
   '/services/$scope/$unit': typeof ServicesScopeUnitRoute
@@ -183,8 +218,12 @@ export interface FileRoutesByTo {
   '/terminal': typeof TerminalRoute
   '/timers': typeof TimersRoute
   '/updates': typeof UpdatesRoute
-  '/users': typeof UsersRoute
+  '/accounts/groups': typeof AccountsGroupsRoute
+  '/accounts/passwords': typeof AccountsPasswordsRoute
+  '/accounts/ssh-keys': typeof AccountsSshKeysRoute
+  '/accounts/users': typeof AccountsUsersRoute
   '/processes/$pid': typeof ProcessesPidRoute
+  '/accounts': typeof AccountsIndexRoute
   '/processes': typeof ProcessesIndexRoute
   '/services': typeof ServicesIndexRoute
   '/services/$scope/$unit': typeof ServicesScopeUnitRoute
@@ -192,6 +231,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRouteWithChildren
   '/files': typeof FilesRoute
   '/host': typeof HostRoute
   '/incidents': typeof IncidentsRoute
@@ -208,8 +248,12 @@ export interface FileRoutesById {
   '/terminal': typeof TerminalRoute
   '/timers': typeof TimersRoute
   '/updates': typeof UpdatesRoute
-  '/users': typeof UsersRoute
+  '/accounts/groups': typeof AccountsGroupsRoute
+  '/accounts/passwords': typeof AccountsPasswordsRoute
+  '/accounts/ssh-keys': typeof AccountsSshKeysRoute
+  '/accounts/users': typeof AccountsUsersRoute
   '/processes/$pid': typeof ProcessesPidRoute
+  '/accounts/': typeof AccountsIndexRoute
   '/processes/': typeof ProcessesIndexRoute
   '/services/': typeof ServicesIndexRoute
   '/services/$scope/$unit': typeof ServicesScopeUnitRoute
@@ -218,6 +262,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/accounts'
     | '/files'
     | '/host'
     | '/incidents'
@@ -234,8 +279,12 @@ export interface FileRouteTypes {
     | '/terminal'
     | '/timers'
     | '/updates'
-    | '/users'
+    | '/accounts/groups'
+    | '/accounts/passwords'
+    | '/accounts/ssh-keys'
+    | '/accounts/users'
     | '/processes/$pid'
+    | '/accounts/'
     | '/processes/'
     | '/services/'
     | '/services/$scope/$unit'
@@ -256,14 +305,19 @@ export interface FileRouteTypes {
     | '/terminal'
     | '/timers'
     | '/updates'
-    | '/users'
+    | '/accounts/groups'
+    | '/accounts/passwords'
+    | '/accounts/ssh-keys'
+    | '/accounts/users'
     | '/processes/$pid'
+    | '/accounts'
     | '/processes'
     | '/services'
     | '/services/$scope/$unit'
   id:
     | '__root__'
     | '/'
+    | '/accounts'
     | '/files'
     | '/host'
     | '/incidents'
@@ -280,8 +334,12 @@ export interface FileRouteTypes {
     | '/terminal'
     | '/timers'
     | '/updates'
-    | '/users'
+    | '/accounts/groups'
+    | '/accounts/passwords'
+    | '/accounts/ssh-keys'
+    | '/accounts/users'
     | '/processes/$pid'
+    | '/accounts/'
     | '/processes/'
     | '/services/'
     | '/services/$scope/$unit'
@@ -289,6 +347,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AccountsRoute: typeof AccountsRouteWithChildren
   FilesRoute: typeof FilesRoute
   HostRoute: typeof HostRoute
   IncidentsRoute: typeof IncidentsRoute
@@ -305,7 +364,6 @@ export interface RootRouteChildren {
   TerminalRoute: typeof TerminalRoute
   TimersRoute: typeof TimersRoute
   UpdatesRoute: typeof UpdatesRoute
-  UsersRoute: typeof UsersRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -315,6 +373,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/accounts': {
+      id: '/accounts'
+      path: '/accounts'
+      fullPath: '/accounts'
+      preLoaderRoute: typeof AccountsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/files': {
@@ -429,12 +494,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UpdatesRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/users': {
-      id: '/users'
+    '/accounts/': {
+      id: '/accounts/'
+      path: '/'
+      fullPath: '/accounts/'
+      preLoaderRoute: typeof AccountsIndexRouteImport
+      parentRoute: typeof AccountsRoute
+    }
+    '/accounts/groups': {
+      id: '/accounts/groups'
+      path: '/groups'
+      fullPath: '/accounts/groups'
+      preLoaderRoute: typeof AccountsGroupsRouteImport
+      parentRoute: typeof AccountsRoute
+    }
+    '/accounts/passwords': {
+      id: '/accounts/passwords'
+      path: '/passwords'
+      fullPath: '/accounts/passwords'
+      preLoaderRoute: typeof AccountsPasswordsRouteImport
+      parentRoute: typeof AccountsRoute
+    }
+    '/accounts/ssh-keys': {
+      id: '/accounts/ssh-keys'
+      path: '/ssh-keys'
+      fullPath: '/accounts/ssh-keys'
+      preLoaderRoute: typeof AccountsSshKeysRouteImport
+      parentRoute: typeof AccountsRoute
+    }
+    '/accounts/users': {
+      id: '/accounts/users'
       path: '/users'
-      fullPath: '/users'
-      preLoaderRoute: typeof UsersRouteImport
-      parentRoute: typeof rootRouteImport
+      fullPath: '/accounts/users'
+      preLoaderRoute: typeof AccountsUsersRouteImport
+      parentRoute: typeof AccountsRoute
     }
     '/processes/': {
       id: '/processes/'
@@ -467,6 +560,26 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AccountsRouteChildren {
+  AccountsGroupsRoute: typeof AccountsGroupsRoute
+  AccountsPasswordsRoute: typeof AccountsPasswordsRoute
+  AccountsSshKeysRoute: typeof AccountsSshKeysRoute
+  AccountsUsersRoute: typeof AccountsUsersRoute
+  AccountsIndexRoute: typeof AccountsIndexRoute
+}
+
+const AccountsRouteChildren: AccountsRouteChildren = {
+  AccountsGroupsRoute: AccountsGroupsRoute,
+  AccountsPasswordsRoute: AccountsPasswordsRoute,
+  AccountsSshKeysRoute: AccountsSshKeysRoute,
+  AccountsUsersRoute: AccountsUsersRoute,
+  AccountsIndexRoute: AccountsIndexRoute,
+}
+
+const AccountsRouteWithChildren = AccountsRoute._addFileChildren(
+  AccountsRouteChildren,
+)
+
 interface ProcessesRouteChildren {
   ProcessesPidRoute: typeof ProcessesPidRoute
   ProcessesIndexRoute: typeof ProcessesIndexRoute
@@ -497,6 +610,7 @@ const ServicesRouteWithChildren = ServicesRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AccountsRoute: AccountsRouteWithChildren,
   FilesRoute: FilesRoute,
   HostRoute: HostRoute,
   IncidentsRoute: IncidentsRoute,
@@ -513,7 +627,6 @@ const rootRouteChildren: RootRouteChildren = {
   TerminalRoute: TerminalRoute,
   TimersRoute: TimersRoute,
   UpdatesRoute: UpdatesRoute,
-  UsersRoute: UsersRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
