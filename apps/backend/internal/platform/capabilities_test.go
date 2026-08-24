@@ -30,8 +30,8 @@ func TestInactiveUFWDoesNotConflictWithFirewalld(t *testing.T) {
 		contains: map[string]bool{"/etc/ufw/ufw.conf:ENABLED=yes": false},
 	})
 	firewall := findCapability(t, capabilities, "firewall")
-	if firewall.State != StateReady || firewall.Backend != "firewalld" || firewall.Mutable {
-		t.Fatalf("inactive UFW caused a false conflict: %#v", firewall)
+	if firewall.State != StateReady || firewall.Backend != "firewalld" || !firewall.Mutable {
+		t.Fatalf("inactive UFW caused a false conflict or lost mutability: %#v", firewall)
 	}
 }
 
@@ -116,8 +116,11 @@ func TestDetectExplainsMissingAndDegradedDependencies(t *testing.T) {
 	})
 
 	updates := findCapability(t, capabilities, "updates")
-	if updates.State != StateDegraded || updates.Mutable || updates.Version != "apt 3.0" || updates.MissingDependency == "" {
-		t.Fatalf("degraded update backend is incomplete: %#v", updates)
+	if updates.State != StateReady || !updates.Mutable || updates.Version != "apt 3.0" || updates.Contract != "bounded-command" {
+		t.Fatalf("apt command path should be ready and writable: %#v", updates)
+	}
+	if updates.MissingDependency != "" || updates.SetupGuidance == "" {
+		t.Fatalf("PackageKit enrichment guidance missing: %#v", updates)
 	}
 	storage := findCapability(t, capabilities, "storage")
 	if storage.State != StateDegraded || storage.Reason == "" || storage.SetupGuidance == "" {
@@ -126,6 +129,45 @@ func TestDetectExplainsMissingAndDegradedDependencies(t *testing.T) {
 	selinux := findCapability(t, capabilities, "selinux")
 	if selinux.State != StateUnavailable || selinux.MissingDependency == "" {
 		t.Fatalf("missing SELinux dependency is unexplained: %#v", selinux)
+	}
+}
+
+func TestDetectAdvertisesImplementedMutations(t *testing.T) {
+	capabilities := detect(context.Background(), fakeProbe{
+		bus: map[string]bool{
+			"org.freedesktop.systemd1":             true,
+			"org.freedesktop.NetworkManager":       true,
+			"available:org.freedesktop.PackageKit": true,
+		},
+		files:    map[string]bool{"/proc": true, "/proc/stat": true, "/etc/passwd": true},
+		commands: map[string]string{"nmcli": "nmcli 1.50", "pkcon": "pkcon 1.2.8"},
+	})
+
+	// PackageKit present: writable through the sessiond-brokered apply job.
+	updates := findCapability(t, capabilities, "updates")
+	if !updates.Mutable || updates.MutationAuthority != "administrative" || updates.Contract != "dbus" || updates.Rollback {
+		t.Fatalf("PackageKit updates should be administratively writable without rollback: %#v", updates)
+	}
+	// Service actions and timers mutate systemd state.
+	if services := findCapability(t, capabilities, "services"); !services.Mutable || services.Rollback {
+		t.Fatalf("services should be mutable: %#v", services)
+	}
+	// Process signals and account management are privileged mutations.
+	for _, id := range []string{"processes", "users"} {
+		if capability := findCapability(t, capabilities, id); !capability.Mutable || capability.MutationAuthority != "administrative" {
+			t.Fatalf("%s should be administratively mutable: %#v", id, capability)
+		}
+	}
+	// NetworkManager mutations checkpoint and roll back automatically.
+	network := findCapability(t, capabilities, "network")
+	if !network.Mutable || !network.Rollback || network.Contract != "bounded-command" {
+		t.Fatalf("NetworkManager should be mutable with rollback: %#v", network)
+	}
+	// Genuinely read-only modules stay read-only.
+	for _, id := range []string{"dashboard", "metrics", "logs", "storage"} {
+		if capability := findCapability(t, capabilities, id); capability.Mutable {
+			t.Fatalf("%s must remain read-only: %#v", id, capability)
+		}
 	}
 }
 

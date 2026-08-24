@@ -198,15 +198,15 @@ func Detect(ctx context.Context) []Capability {
 func detect(ctx context.Context, probe runtimeProbe) []Capability {
 	busNames, busErr := probe.BusNames(ctx)
 	capabilities := []Capability{
-		localCapability("dashboard", "built-in", true),
-		localCapability("metrics", "/proc", probe.FileExists("/proc/stat")),
-		localCapability("processes", "/proc", probe.FileExists("/proc")),
-		localCapability("users", "NSS", probe.FileExists("/etc/passwd")),
+		localCapability("dashboard", "built-in", true, false),
+		localCapability("metrics", "/proc", probe.FileExists("/proc/stat"), false),
+		localCapability("processes", "/proc", probe.FileExists("/proc"), true),
+		localCapability("users", "NSS", probe.FileExists("/etc/passwd"), true),
 		unavailable("files", "user-bridge", "Authenticated user bridge is not connected", "Sign in through the production PAM service."),
 		unavailable("terminal", "user-bridge", "Authenticated user bridge is not connected", "Sign in through the production PAM service."),
 	}
 	capabilities = append(capabilities,
-		dbusCapability("services", "systemd", "org.freedesktop.systemd1", busNames, busErr, false, false),
+		dbusCapability("services", "systemd", "org.freedesktop.systemd1", busNames, busErr, true, false),
 		dbusCapability("logs", "journald", "org.freedesktop.systemd1", busNames, busErr, false, false),
 		dbusCapability("storage", "UDisks2", "org.freedesktop.UDisks2", busNames, busErr, false, false),
 	)
@@ -240,11 +240,18 @@ func detect(ctx context.Context, probe runtimeProbe) []Capability {
 	return capabilities
 }
 
-func localCapability(id, backend string, available bool) Capability {
+// localCapability describes kernel/NSS-backed modules. Mutable ones execute
+// their privileged operations through sessiond (process signals, account and
+// group management), so they advertise administrative write authority.
+func localCapability(id, backend string, available, mutable bool) Capability {
 	if !available {
 		return unavailable(id, backend, "Required kernel interface is unavailable", "Run Tako on a supported Linux host.")
 	}
-	return Capability{ID: id, State: StateReady, Backend: backend, Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "native"}
+	authority := "none"
+	if mutable {
+		authority = "administrative"
+	}
+	return Capability{ID: id, State: StateReady, Backend: backend, Readable: true, Mutable: mutable, ReadAuthority: "session", MutationAuthority: authority, Contract: "native"}
 }
 
 func unavailable(id, backend, reason, guidance string) Capability {
@@ -266,8 +273,13 @@ func dbusCapability(id, backend, busName string, names map[string]bool, busErr e
 }
 
 func updateCapability(ctx context.Context, probe runtimeProbe, names map[string]bool, busErr error) Capability {
+	// Updates are writable in both branches: inventory reads happen over
+	// PackageKit D-Bus (or bounded CLI fallback), while the apply job,
+	// automatic-update configuration, and kpatch settings execute through
+	// sessiond with administrative authority. Rollback is not offered by any
+	// supported backend.
 	if busErr == nil && busAvailable(names, "org.freedesktop.PackageKit") {
-		return Capability{ID: "updates", State: StateReady, Backend: "PackageKit", Readable: true, Contract: "dbus-read-only"}
+		return Capability{ID: "updates", State: StateReady, Backend: "PackageKit", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "dbus"}
 	}
 	for _, candidate := range []struct {
 		command      string
@@ -278,7 +290,13 @@ func updateCapability(ctx context.Context, probe runtimeProbe, names map[string]
 		{command: "dnf", argument: "--version", minimumMajor: 4},
 	} {
 		if version, ok := probe.CommandVersion(ctx, candidate.command, candidate.argument); ok && versionAtLeast(version, candidate.minimumMajor) {
-			return Capability{ID: "updates", State: StateDegraded, Backend: candidate.command, Version: version, Readable: true, Contract: "bounded-command-read-only", Reason: "PackageKit is unavailable; mutations fail closed", MissingDependency: "org.freedesktop.PackageKit", SetupGuidance: "Install and start PackageKit to enable managed updates."}
+			return Capability{
+				ID: "updates", State: StateReady, Backend: candidate.command, Version: version,
+				Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative",
+				Contract:      "bounded-command",
+				Reason:        candidate.command + " command path in use; PackageKit is unavailable",
+				SetupGuidance: "Install and start PackageKit for richer advisory metadata, update history, and live transaction progress.",
+			}
 		}
 	}
 	return unavailable("updates", "PackageKit", "No supported update backend detected", "Install and start PackageKit.")
@@ -292,7 +310,9 @@ func networkCapability(ctx context.Context, probe runtimeProbe, names map[string
 	}
 	if networkManager {
 		version, _ := probe.CommandVersion(ctx, "nmcli", "--version")
-		return Capability{ID: "network", State: StateReady, Backend: "NetworkManager", Version: version, Readable: true, Contract: "dbus-read-only"}
+		// Mutations run through bounded nmcli commands with device
+		// checkpoints; failures roll back automatically (network.go).
+		return Capability{ID: "network", State: StateReady, Backend: "NetworkManager", Version: version, Readable: true, Mutable: true, Rollback: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "bounded-command"}
 	}
 	if networkd {
 		return Capability{ID: "network", State: StateDegraded, Backend: "systemd-networkd", Readable: true, Contract: "degraded-read-only", Reason: "networkd mutation adapter is not available in this release", SetupGuidance: "Use the terminal for changes; Tako will continue read-only inspection."}
@@ -309,10 +329,11 @@ func firewallCapability(ctx context.Context, probe runtimeProbe, names map[strin
 	}
 	if firewalld {
 		version, _ := probe.CommandVersion(ctx, "firewall-cmd", "--version")
-		return Capability{ID: "firewall", State: StateReady, Backend: "firewalld", Version: version, Readable: true, Contract: "dbus-read-only"}
+		// Zone and service mutations run as bounded firewall-cmd commands.
+		return Capability{ID: "firewall", State: StateReady, Backend: "firewalld", Version: version, Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "bounded-command"}
 	}
 	if ufw {
-		return Capability{ID: "firewall", State: StateReady, Backend: "UFW", Version: ufwVersion, Readable: true, Contract: "bounded-command-read-only"}
+		return Capability{ID: "firewall", State: StateReady, Backend: "UFW", Version: ufwVersion, Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "bounded-command"}
 	}
 	return unavailable("firewall", "none", "No supported firewall manager detected", "Install firewalld or UFW.")
 }
@@ -331,13 +352,15 @@ func policyCapability(ctx context.Context, probe runtimeProbe, id, statusCommand
 	if kernelFound && commandFound {
 		status, statusOK := probe.CommandOutput(ctx, statusCommand)
 		if !statusOK {
-			return Capability{ID: id, State: StateDegraded, Backend: id, Readable: false, Contract: "kernel+bounded-command-read-only", Reason: "The policy status command is installed but did not return a trustworthy result.", SetupGuidance: guidance}
+			return Capability{ID: id, State: StateDegraded, Backend: id, Readable: false, Contract: "kernel+bounded-command", Reason: "The policy status command is installed but did not return a trustworthy result.", SetupGuidance: guidance}
 		}
 		version, _ := probe.CommandVersion(ctx, versionCommand, "--version")
 		if strings.EqualFold(strings.TrimSpace(status), "disabled") {
-			return Capability{ID: id, State: StateDegraded, Backend: id, Version: version, Readable: true, Contract: "kernel+bounded-command-read-only", Reason: id + " is installed but not enforcing", SetupGuidance: guidance}
+			return Capability{ID: id, State: StateDegraded, Backend: id, Version: version, Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "kernel+bounded-command", Reason: id + " is installed but not enforcing", SetupGuidance: guidance}
 		}
-		return Capability{ID: id, State: StateReady, Backend: id, Version: version, Readable: true, Contract: "kernel+bounded-command-read-only"}
+		// Booleans (setsebool), file contexts (restorecon), and AppArmor
+		// profile modes are implemented mutations.
+		return Capability{ID: id, State: StateReady, Backend: id, Version: version, Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "kernel+bounded-command"}
 	}
 	missing := statusCommand
 	if !kernelFound {
