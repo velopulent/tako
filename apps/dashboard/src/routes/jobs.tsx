@@ -1,3 +1,4 @@
+import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ClipboardListIcon, DatabaseIcon, XCircleIcon } from "lucide-react"
 
@@ -220,3 +221,7 @@ export function JobsPage() {
     </main>
   )
 }
+
+export const Route = createFileRoute("/jobs")({
+  component: JobsPage,
+})

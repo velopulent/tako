@@ -1,5 +1,6 @@
 import * as React from "react"
-import { Link, getRouteApi } from "@tanstack/react-router"
+import { Link, createFileRoute, getRouteApi } from "@tanstack/react-router"
+import { processDetailSearch } from "@/lib/search"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
 import {
@@ -592,9 +593,14 @@ export function ProcessDetailPage() {
                 <p className="text-sm text-muted-foreground">No readable sockets.</p>
               )}
             </CardContent>
-          </Card>
+            </Card>
         </div>
       </div>
     </main>
   )
 }
+
+export const Route = createFileRoute("/processes/$pid")({
+  validateSearch: processDetailSearch,
+  component: ProcessDetailPage,
+})

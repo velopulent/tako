@@ -1,4 +1,5 @@
 import * as React from "react"
+import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery } from "@tanstack/react-query"
 
 import { TimerForm } from "@/components/timer-form"
@@ -197,3 +198,7 @@ export function TimersPage() {
     </main>
   )
 }
+
+export const Route = createFileRoute("/timers")({
+  component: TimersPage,
+})

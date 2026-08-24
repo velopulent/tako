@@ -1,3 +1,4 @@
+import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { CapabilitySettings } from "@/components/settings/capability-settings"
@@ -58,3 +59,7 @@ export function SettingsPage() {
     </main>
   )
 }
+
+export const Route = createFileRoute("/settings")({
+  component: SettingsPage,
+})

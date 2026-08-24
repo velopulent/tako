@@ -1,4 +1,5 @@
 import * as React from "react"
+import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -288,3 +289,7 @@ export function HostPage() {
     </main>
   )
 }
+
+export const Route = createFileRoute("/host")({
+  component: HostPage,
+})

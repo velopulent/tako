@@ -31,4 +31,14 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'off',
     },
   },
+  {
+    files: [
+      'src/routes/**/*.{ts,tsx}',
+      'src/routeTree.gen.ts',
+      'src/lib/page.tsx',
+    ],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

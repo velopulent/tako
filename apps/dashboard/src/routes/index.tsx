@@ -1,5 +1,5 @@
 import * as React from "react"
-import { getRouteApi, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
 import {
@@ -36,6 +36,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import { usePreference } from "@/hooks/use-preference"
 import { refreshIntervals, type RefreshInterval } from "@/lib/monitoring"
+import { qSearch } from "@/lib/search"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -54,7 +55,7 @@ const duration = (seconds: number) => {
   return `${days ? `${days}d ` : ""}${hours}h ${minutes}m`
 }
 
-export function DashboardPage() {
+function DashboardPage() {
   const search = getRouteApi("/").useSearch()
   const navigate = useNavigate({ from: "/" })
   const defaultInterval =
@@ -284,3 +285,8 @@ function Summary({
     </Card>
   )
 }
+
+export const Route = createFileRoute("/")({
+  validateSearch: qSearch,
+  component: DashboardPage,
+})

@@ -2,8 +2,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router"
 
 import { JournalBrowser } from "@/components/journal-browser"
+import { logsSearch } from "@/lib/search"
 
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -12,13 +20,27 @@ function jsonResponse(value: unknown, status = 200) {
   })
 }
 
+function createTestRouter() {
+  const rootRoute = createRootRoute()
+  const logsRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/logs",
+    validateSearch: logsSearch,
+    component: JournalBrowser,
+  })
+  const routeTree = rootRoute.addChildren([logsRoute])
+  const history = createMemoryHistory({ initialEntries: ["/logs"] })
+  return createRouter({ routeTree, history })
+}
+
 function renderJournal() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  const router = createTestRouter()
   return render(
     <QueryClientProvider client={client}>
-      <JournalBrowser />
+      <RouterProvider router={router} />
     </QueryClientProvider>
   )
 }
@@ -33,7 +55,9 @@ describe("JournalBrowser", () => {
       vi.fn(() => never)
     )
     const { container } = renderJournal()
-    expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull()
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull()
+    )
 
     vi.unstubAllGlobals()
     vi.stubGlobal(

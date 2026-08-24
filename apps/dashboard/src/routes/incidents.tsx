@@ -1,3 +1,4 @@
+import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api, type IncidentTimeline, type SessionResponse } from "@/lib/api"
@@ -104,3 +105,7 @@ export function IncidentsPage() {
     </main>
   )
 }
+
+export const Route = createFileRoute("/incidents")({
+  component: IncidentsPage,
+})

@@ -1,5 +1,12 @@
 import * as React from "react"
-import { Link, getRouteApi, useNavigate, useParams } from "@tanstack/react-router"
+import {
+  Link,
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+  useParams,
+} from "@tanstack/react-router"
+import { qSearch } from "@/lib/search"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import {
@@ -211,3 +218,8 @@ export function ServiceDetailPage() {
     </main>
   )
 }
+
+export const Route = createFileRoute("/services/$scope/$unit")({
+  validateSearch: qSearch,
+  component: ServiceDetailPage,
+})
