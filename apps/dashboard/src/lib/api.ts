@@ -426,6 +426,30 @@ export type AdministrativeRolePreview = {
   reason?: string
   requiresConfirmation: boolean
 }
+export type LocalGroupOperation = {
+  action: "create" | "delete"
+  group: string
+  expectedFingerprint?: string
+  confirmation?: string
+}
+export type LocalGroupState = {
+  group: string
+  exists: boolean
+  groupInfo?: GroupInfo
+  fingerprint: string
+  source?: "local" | "nss-read-only"
+}
+export type LocalGroupPreview = {
+  action: LocalGroupOperation["action"]
+  group: string
+  current: LocalGroupState
+  changes: string[]
+  warnings: string[]
+  stale: boolean
+  allowed: boolean
+  reason?: string
+  requiresConfirmation: boolean
+}
 export type MountPoint = {
   target: string
   root?: string

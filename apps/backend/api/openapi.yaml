@@ -460,6 +460,23 @@ paths:
                     maxItems: 100000
                     items: { $ref: '#/components/schemas/NSSGroup' }
         '503': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: applyLocalGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalGroupOperation' }
+      responses:
+        '200':
+          description: Verified local group state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalGroupState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /accounts/groups/membership/preview:
     post:
       operationId: previewGroupMembership
@@ -530,6 +547,24 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /accounts/groups/preview:
+    post:
+      operationId: previewLocalGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalGroupOperation' }
+      responses:
+        '200':
+          description: Stale-aware local group preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalGroupPreview' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+
   /updates:
     get:
       operationId: getUpdateStatus
@@ -2251,6 +2286,43 @@ components:
         username: { type: string, maxLength: 32 }
         role: { type: string, enum: [administrator] }
         current: { $ref: '#/components/schemas/AdministrativeRoleState' }
+        changes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        warnings:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 512 }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+        requiresConfirmation: { type: boolean }
+    LocalGroupOperation:
+      type: object
+      required: [action, group]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [create, delete] }
+        group: { type: string, minLength: 1, maxLength: 256, pattern: '^[a-z_][a-z0-9_$-]*$' }
+        expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
+        confirmation: { type: string, maxLength: 128 }
+    LocalGroupState:
+      type: object
+      required: [group, exists, fingerprint]
+      properties:
+        group: { type: string, maxLength: 256 }
+        exists: { type: boolean }
+        groupInfo: { $ref: '#/components/schemas/NSSGroup' }
+        fingerprint: { type: string, minLength: 64, maxLength: 64 }
+        source: { type: string, enum: [local, nss-read-only] }
+    LocalGroupPreview:
+      type: object
+      required: [action, group, current, changes, warnings, stale, allowed, requiresConfirmation]
+      properties:
+        action: { type: string, enum: [create, delete] }
+        group: { type: string, maxLength: 256 }
+        current: { $ref: '#/components/schemas/LocalGroupState' }
         changes:
           type: array
           maxItems: 16

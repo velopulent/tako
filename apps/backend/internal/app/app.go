@@ -395,6 +395,8 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/accounts/groups/membership", server.applyGroupMembership)
 			router.Post("/accounts/groups/admin-role/preview", server.previewAdministrativeRole)
 			router.With(server.requireCSRF).Post("/accounts/groups/admin-role", server.applyAdministrativeRole)
+			router.Post("/accounts/groups/preview", server.previewLocalGroup)
+			router.With(server.requireCSRF).Post("/accounts/groups", server.applyLocalGroup)
 			router.Get("/updates", server.updates)
 			router.Post("/updates/preview", server.previewUpdates)
 			router.With(server.requireCSRF).Post("/updates", server.startUpdateJob)
