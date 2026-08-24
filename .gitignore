@@ -10,3 +10,4 @@ node_modules/
 *.test
 /out/
 /package-zip.sh
+.tanstack/
