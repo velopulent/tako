@@ -54,6 +54,7 @@ type Store struct {
 	absolute time.Duration
 	now      func() time.Time
 	onDelete func(auth.Identity)
+	onCount  func(int)
 }
 
 func NewStore(idle, absolute time.Duration) *Store {
@@ -64,6 +65,13 @@ func (store *Store) SetDeleteHook(hook func(auth.Identity)) {
 	store.mu.Lock()
 	store.onDelete = hook
 	store.mu.Unlock()
+}
+
+func (store *Store) SetCountHook(hook func(int)) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.onCount = hook
+	store.notifyCountLocked()
 }
 
 func (store *Store) Create(identity auth.Identity) (Session, error) {
@@ -81,6 +89,7 @@ func (store *Store) Create(identity auth.Identity) (Session, error) {
 	removed := store.prune(now)
 	store.sessions[id] = session
 	hook := store.onDelete
+	store.notifyCountLocked()
 	store.mu.Unlock()
 	notifyDeleted(hook, removed)
 	return session, nil
@@ -108,6 +117,7 @@ func (store *Store) Get(id string) (Session, bool) {
 	if now.Sub(session.SeenAt) > store.idle || now.Sub(session.CreatedAt) > store.absolute {
 		delete(store.sessions, id)
 		hook := store.onDelete
+		store.notifyCountLocked()
 		store.mu.Unlock()
 		notifyDeleted(hook, []auth.Identity{session.Identity})
 		return Session{}, false
@@ -133,6 +143,7 @@ func (store *Store) DeleteWithoutNotify(id string) (auth.Identity, bool) {
 	current, ok := store.sessions[id]
 	if ok {
 		delete(store.sessions, id)
+		store.notifyCountLocked()
 	}
 	store.mu.Unlock()
 	return current.Identity, ok
@@ -146,6 +157,7 @@ func (store *Store) Close() {
 		delete(store.sessions, id)
 	}
 	hook := store.onDelete
+	store.notifyCountLocked()
 	store.mu.Unlock()
 	notifyDeleted(hook, removed)
 }
@@ -154,8 +166,17 @@ func (store *Store) Prune() {
 	store.mu.Lock()
 	removed := store.prune(store.now())
 	hook := store.onDelete
+	if len(removed) > 0 {
+		store.notifyCountLocked()
+	}
 	store.mu.Unlock()
 	notifyDeleted(hook, removed)
+}
+
+func (store *Store) notifyCountLocked() {
+	if store.onCount != nil {
+		store.onCount(len(store.sessions))
+	}
 }
 
 func notifyDeleted(hook func(auth.Identity), identities []auth.Identity) {

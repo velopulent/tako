@@ -53,6 +53,27 @@ func TestStoreNotifiesWhenSessionsClose(t *testing.T) {
 	}
 }
 
+func TestStoreNotifiesSessionCountChanges(t *testing.T) {
+	store := NewStore(time.Minute, time.Hour)
+	var mu sync.Mutex
+	var counts []int
+	store.SetCountHook(func(count int) {
+		mu.Lock()
+		counts = append(counts, count)
+		mu.Unlock()
+	})
+	created, err := store.Create(auth.Identity{Username: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.DeleteWithoutNotify(created.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(counts) < 3 || counts[0] != 0 || counts[1] != 1 || counts[len(counts)-1] != 0 {
+		t.Fatalf("session counts=%v", counts)
+	}
+}
+
 func TestStoreClearsAdministrativeGrantWhenDropped(t *testing.T) {
 	store := NewStore(time.Minute, time.Hour)
 	var deleted auth.Identity
