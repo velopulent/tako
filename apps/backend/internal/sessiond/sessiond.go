@@ -27,6 +27,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/platform"
 	"go.uber.org/zap"
 )
@@ -57,10 +58,10 @@ type serviceBackend interface {
 type systemServiceBackend struct{}
 
 func (systemServiceBackend) Run(ctx context.Context, operation serviceOperation) error {
-	arguments := []string{operation.Action, "--", operation.Unit}
 	if operation.Scope == "user" {
-		arguments = append([]string{"--user"}, arguments...)
+		return errors.New("user service actions require the authenticated user bridge")
 	}
+	arguments := []string{operation.Action, "--", operation.Unit}
 	return exec.CommandContext(ctx, "systemctl", arguments...).Run()
 }
 
@@ -71,7 +72,12 @@ var errAdministrativeUnavailable = errors.New("administrative policy unavailable
 func Run(args []string) error {
 	flags := flag.NewFlagSet("sessiond", flag.ContinueOnError)
 	socket := flags.String("socket", "/run/tako/session.sock", "Unix socket path")
+	configPath := flags.String("config", "/etc/tako/config.toml", "gateway configuration file")
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	runtimeConfig, err := config.Load(*configPath, false)
+	if err != nil {
 		return err
 	}
 
@@ -110,6 +116,10 @@ func Run(args []string) error {
 
 	service := auth.PAMAuthenticator{Service: "tako"}
 	grants := &grantStore{values: make(map[string]bridgeGrant)}
+	hostRuntime := newHostRuntime(runtimeConfig.MonitoringInterval, runtimeConfig.HistoryRetention)
+	hostRuntime.certificatePath = runtimeConfig.Certificate
+	go hostRuntime.run(ctx)
+	defer hostRuntime.close()
 	policy := newAdministrativePolicy()
 	conversations := newConversationStore(service, func(session auth.UserSession) (string, error) {
 		return grants.addUserSession(session)
@@ -125,7 +135,7 @@ func Run(args []string) error {
 			logger.Warn("connection accept failed", zap.Error(err))
 			continue
 		}
-		go handle(conn, service, conversations, grants, policy, logger)
+		go handleWithRuntime(conn, service, conversations, grants, policy, logger, hostRuntime)
 	}
 }
 
@@ -158,6 +168,14 @@ func handle(conn net.Conn, service auth.PAMAuthenticator, conversations *convers
 	handleWithBackends(conn, service, conversations, grants, policy, logger, backend, systemPowerBackend{}, systemServiceBackend{})
 }
 
+// handleWithRuntime is the production entry point. Tests keep using the
+// legacy wrapper functions below so their narrow backend seams remain useful;
+// hostRuntime itself is still the only owner of shared host collectors in the
+// production session service.
+func handleWithRuntime(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, runtime *hostRuntime) {
+	handleWithAllBackendsAndUpdatesRuntime(conn, service, conversations, grants, policy, logger, systemHostConfigBackend{}, systemPowerBackend{}, systemTimerBackend{}, systemOverrideBackend{}, systemPasswordBackend{service: service}, systemSSHKeysBackend{}, systemLocalAccountBackend{}, systemGroupMembershipBackend{}, systemAdministrativeRoleBackend{}, systemUpdateBackend{}, systemAutoUpdatesBackend{}, systemKpatchBackend{}, runtime, systemServiceBackend{})
+}
+
 func handleWithBackends(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, serviceBackends ...serviceBackend) {
 	handleWithTimerBackends(conn, service, conversations, grants, policy, logger, backend, power, systemTimerBackend{}, systemOverrideBackend{}, serviceBackends...)
 }
@@ -187,6 +205,10 @@ func handleWithAllBackends(conn net.Conn, service auth.PAMAuthenticator, convers
 }
 
 func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, updates updateBackend, autoUpdates autoUpdatesBackend, kpatch kpatchBackend, serviceBackends ...serviceBackend) {
+	handleWithAllBackendsAndUpdatesRuntime(conn, service, conversations, grants, policy, logger, backend, power, timer, override, password, sshKeys, account, groups, roles, updates, autoUpdates, kpatch, nil, serviceBackends...)
+}
+
+func handleWithAllBackendsAndUpdatesRuntime(conn net.Conn, service auth.PAMAuthenticator, conversations *conversationStore, grants *grantStore, policy administrativePolicy, logger *zap.Logger, backend hostConfigBackend, power powerBackend, timer timerBackend, override overrideBackend, password passwordBackend, sshKeys sshKeysBackend, account localAccountBackend, groups groupMembershipBackend, roles administrativeRoleBackend, updates updateBackend, autoUpdates autoUpdatesBackend, kpatch kpatchBackend, runtime *hostRuntime, serviceBackends ...serviceBackend) {
 	defer conn.Close()
 	if backend == nil {
 		backend = systemHostConfigBackend{}
@@ -235,6 +257,9 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 	if err := decodeRequestLine(reader, &request); err != nil {
 		logger.Warn("session request rejected", zap.String("reason", "invalid-request"), zap.Error(err))
 		_ = encoder.Encode(auth.Response{Error: "invalid-request"})
+		return
+	}
+	if handled := handleHostOperation(conn, encoder, request, grants, runtime, logger); handled {
 		return
 	}
 	if request.Operation != "host-config" && request.Operation != "power" && hasHostConfigurationFields(request) {
@@ -499,7 +524,28 @@ func handleWithAllBackendsAndUpdates(conn net.Conn, service auth.PAMAuthenticato
 			_ = encoder.Encode(auth.Response{Error: "invalid-service-operation"})
 			return
 		}
-		errorCode := runServiceAction(serviceBackend, operation)
+		var errorCode string
+		if operation.Scope == "user" {
+			bridge, bridgeOK := grants.bridgeFor(request.Token)
+			if userService, ok := bridge.(interface {
+				serviceAction(context.Context, platform.ServiceOperation) error
+			}); ok {
+				errorCode = runUserServiceAction(userService, operation)
+			} else if !bridgeOK {
+				// A production systemServiceBackend must never impersonate a user.
+				// The injected-backend branch exists only for the narrow unit-test
+				// seam retained by the legacy handler tests.
+				if _, builtIn := serviceBackend.(systemServiceBackend); builtIn {
+					errorCode = "user-bridge-unavailable"
+				} else {
+					errorCode = runServiceAction(serviceBackend, operation)
+				}
+			} else {
+				errorCode = "user-bridge-unavailable"
+			}
+		} else {
+			errorCode = runServiceAction(serviceBackend, operation)
+		}
 		logger.Info("service action", zap.String("username", identity.Username), zap.String("scope", request.Scope), zap.String("unit", request.Unit), zap.String("action", request.Action), zap.String("result", errorCode))
 		_ = encoder.Encode(auth.Response{Error: errorCode})
 		return
