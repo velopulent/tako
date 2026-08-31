@@ -1,7 +1,7 @@
 # Hacking on Tako
 
-Linux only (Arch, Fedora, Debian/Ubuntu). Development mirrors production: an
-unprivileged `tako serve` gateway, socket-activated `tako sessiond`, PAM login,
+Linux only (Arch, Fedora, Debian/Ubuntu). Development mirrors production: a
+socket-activated unprivileged `tako serve` gateway and `tako sessiond`, PAM login,
 and a checkout dashboard overlay.
 
 ## Requirements

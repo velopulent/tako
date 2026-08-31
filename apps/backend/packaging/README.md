@@ -2,9 +2,9 @@
 
 The package installs one `/usr/bin/tako` multicall executable and keeps the trust domains separate:
 
-- `tako.service` is the unprivileged HTTPS gateway and requires `tako.socket` for socket activation. It uses systemd `DynamicUser=yes` (`User=tako-gateway`) with primary group `tako-session`, and writes only to `/var/lib/tako` via `StateDirectory`.
+- `tako.service` is the unprivileged HTTPS gateway and starts on demand from `tako.socket`. It uses systemd `DynamicUser=yes` (`User=tako-gateway`) with primary group `tako-session`, writes only to `/var/lib/tako` via `StateDirectory`, and exits after the configured idle interval when no sessions or work remain.
 - `sysusers.d/tako.conf` creates the persistent `tako-session` group used for session-socket ACLs. There is no static `tako` login or system user.
-- `tako-sessiond.socket` listens on `/run/tako/session.sock` as `root:tako-session` mode `0660`; `tako-sessiond.service` is the root-owned PAM/session boundary.
+- `tako-sessiond.socket` listens on `/run/tako/session.sock` as `root:tako-session` mode `0660` and starts the root-owned `tako-sessiond.service` on demand. Sessiond exits when no connections, PAM conversations, or grants remain for the configured idle interval.
 - `tmpfiles.d/tako.conf` creates `/run/tako` as `root:tako-session` with mode `0750` before socket activation.
 - `tako bridge` is launched by the session service for an authenticated UNIX user and is never reachable from the network gateway.
 - `tako-sessiond.service` is a login and host-authority helper: it PAM-authenticates, resolves typed operations, then setuid-execs `tako bridge` as that user. The child inherits the unit sandbox, so sessiond is not locked down like `tako.service`. `tako serve --dev` uses a fake broker, skips PAM and the user bridge, and is not a production auth test.
@@ -17,6 +17,8 @@ manager; Tako reports `user-manager-unavailable` when those prerequisites are
 missing. Sessiond does not enable linger, start a missing manager, or
 impersonate another user. External certificate paths are read by sessiond;
 certificates in Tako's own state directory remain gateway-owned.
+
+Set `server.service_idle_timeout` to a Go duration such as `10m`; `0` disables automatic service exit. Idle exit stops sessiond's in-memory metric sampler, so metric history contains gaps while Tako is stopped.
 
 Hosts must resolve systemd dynamic users. `nsswitch.conf` `passwd` (and typically `group`) must include `systemd`, for example `passwd: files systemd`. Without that, `DynamicUser` fails with status 217/USER.
 
@@ -31,7 +33,7 @@ Run `bun run package` from repository root to build local snapshot packages in `
 
 Generated packages install full production runtime files: executable, four systemd units, sysusers and tmpfiles definitions, Polkit policy, the example TOML configuration under `/usr/share/doc/tako/`, and a distribution-specific PAM stack at `/etc/pam.d/tako`. Debian uses `pam/tako.debian`; RPM uses `pam/tako.redhat`. PAM files are package-managed as `config|noreplace`. Packages do not install a live `/etc/tako/config.toml`, sudoers example, smoke test, or operational README.
 
-Package installation requires systemd, PAM, D-Bus, Polkit, and PackageKit. Debian packages additionally require `packagekit-tools` for `pkcon` and `init-system-helpers` for Debian systemd maintainer helpers. NetworkManager, UDisks2, Netplan, UFW/firewalld, SELinux, AppArmor, and other host-specific integrations remain optional; capability degradation is reported explicitly. Package scripts create Tako users and runtime directories, reload systemd, and manage only Tako units. They never start or enable external D-Bus, Polkit, or PackageKit services. Fresh installs enable and start `tako.socket`, `tako-sessiond.socket`, and `tako.service`; upgrades restart only active Tako units and preserve disabled or masked state.
+Package installation requires systemd, PAM, D-Bus, Polkit, and PackageKit. Debian packages additionally require `packagekit-tools` for `pkcon` and `init-system-helpers` for Debian systemd maintainer helpers. NetworkManager, UDisks2, Netplan, UFW/firewalld, SELinux, AppArmor, and other host-specific integrations remain optional; capability degradation is reported explicitly. Package scripts create Tako users and runtime directories, reload systemd, and manage only Tako units. They never start or enable external D-Bus, Polkit, or PackageKit services. Fresh installs enable and start only `tako.socket` and `tako-sessiond.socket`; service processes start on socket traffic. Upgrades disable the formerly boot-enabled gateway service unless it is masked and restart only active Tako units.
 
 Removal stops and disables Tako units, reloads systemd, and leaves configuration, state, the `tako-session` group, and administrator drop-ins in place.
 
