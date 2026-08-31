@@ -5,7 +5,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,13 +119,79 @@ func (server *Server) notificationsList(writer http.ResponseWriter, request *htt
 	writeJSON(writer, http.StatusOK, map[string]any{"items": server.notifications.list(request.URL.Query().Get("state"))})
 }
 
-func (server *Server) certificates(writer http.ResponseWriter, _ *http.Request) {
-	status, err := platform.InspectCertificate(server.config.Certificate)
-	if err != nil {
-		writeJSON(writer, http.StatusOK, status)
-		return
+func (server *Server) certificates(writer http.ResponseWriter, request *http.Request) {
+	var (
+		status platform.CertificateStatus
+		err    error
+	)
+	if path, owned := server.gatewayCertificatePath(); owned {
+		status, err = platform.InspectCertificate(path)
+	} else {
+		status, err = server.hostBroker().ReadCertificate(request.Context(), credentialsFromContext(request.Context()))
 	}
+	// Certificate status is intentionally a degraded 200 response. The UI can
+	// explain a missing or unreadable certificate without turning the settings
+	// page into a gateway error, while the actual external-path read remains in
+	// sessiond.
+	_ = err
 	writeJSON(writer, http.StatusOK, status)
+}
+
+func (server *Server) gatewayCertificatePath() (string, bool) {
+	path := server.config.Certificate
+	if path == "" {
+		return filepath.Join(server.config.DataDir, "tako.crt"), true
+	}
+	dataDir, err := filepath.Abs(server.config.DataDir)
+	if err != nil {
+		return "", false
+	}
+	certificate, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	if !certificatePathWithin(dataDir, certificate) {
+		return "", false
+	}
+	return certificate, true
+}
+
+// certificatePathWithin applies the gateway-owned DataDir boundary after
+// resolving symlinks. A configured path outside that boundary is intentionally
+// left for root sessiond, even when the symlink itself is stored in DataDir.
+func certificatePathWithin(dataDir, certificate string) bool {
+	resolvedDataDir, dataErr := filepath.EvalSymlinks(dataDir)
+	if dataErr != nil {
+		resolvedDataDir = dataDir
+	}
+
+	// A dangling symlink must not become gateway-owned merely because its
+	// lexical parent is inside DataDir. Let sessiond report its stable status.
+	if info, err := os.Lstat(certificate); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		resolvedCertificate, err := filepath.EvalSymlinks(certificate)
+		if err != nil {
+			return false
+		}
+		certificate = resolvedCertificate
+	} else if err == nil {
+		resolvedCertificate, resolveErr := filepath.EvalSymlinks(certificate)
+		if resolveErr != nil {
+			return false
+		}
+		certificate = resolvedCertificate
+	} else if !os.IsNotExist(err) {
+		return false
+	} else {
+		// The leaf may not exist yet. Resolve its parent so a symlinked parent
+		// cannot move an apparently local path outside the owned directory.
+		parent, parentErr := filepath.EvalSymlinks(filepath.Dir(certificate))
+		if parentErr == nil {
+			certificate = filepath.Join(parent, filepath.Base(certificate))
+		}
+	}
+
+	relative, err := filepath.Rel(resolvedDataDir, certificate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func (server *Server) notificationTransition(writer http.ResponseWriter, request *http.Request) {
@@ -160,7 +229,7 @@ func (server *Server) supportReport(writer http.ResponseWriter, request *http.Re
 		problem(writer, http.StatusBadRequest, "invalid-support-report", "Support report confirmation is required")
 		return
 	}
-	report, err := auth.CollectSupportReport(request.Context(), server.config.SessionSocket, auth.SupportReportRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	report, err := server.hostBroker().CollectSupportReport(request.Context(), auth.SupportReportRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		if errors.Is(err, platform.ErrInvalidSupportReport) {
 			problem(writer, http.StatusBadRequest, "invalid-support-report", "Support report confirmation is required")

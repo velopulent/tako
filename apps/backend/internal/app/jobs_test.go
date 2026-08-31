@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/preferences"
 )
@@ -91,6 +94,17 @@ func TestDiagnosticJobCancellationStopsExecution(t *testing.T) {
 	})
 	if err := manager.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProductionInventoryJobRequiresEphemeralAuthority(t *testing.T) {
+	server := &Server{
+		config:               config.Default(),
+		inventoryCredentials: make(map[string]auth.HostReadCredentials),
+	}
+	_, err := server.runDiagnosticJob(context.Background(), preferences.Job{ID: "recovered", Kind: hostInventoryJob}, func(int, string) error { return nil })
+	if !errors.Is(err, auth.ErrServiceUnavailable) {
+		t.Fatalf("inventory without live host grant returned %v, want service unavailable", err)
 	}
 }
 

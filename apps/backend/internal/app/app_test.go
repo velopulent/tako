@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -689,6 +690,26 @@ func TestProcessDetailRouteUsesStartIdentityAndDegradesAccess(t *testing.T) {
 	}
 }
 
+func TestProcessListRouteDoesNotRequireAdministrativeAccess(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	defer server.preferences.Close()
+	server.readProcessesFn = func(context.Context) ([]platform.Process, error) {
+		return []platform.Process{{PID: 1, UID: 0, User: "root", Program: "init", Command: "init", State: "S"}}, nil
+	}
+	cookie, _ := loginForTest(t, server.routes())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/processes", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"uid":0`) {
+		t.Fatalf("non-administrative process list returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestProcessSignalRouteUsesCSRFAndAuthenticatedBridge(t *testing.T) {
 	server, err := New(testConfig(t))
 	if err != nil {
@@ -805,6 +826,32 @@ func TestGeneratedCertificateIsUsable(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("private key permissions are %o", info.Mode().Perm())
+	}
+}
+
+func TestGatewayCertificatePathRejectsExternalSymlink(t *testing.T) {
+	dataDir := t.TempDir()
+	externalDir := t.TempDir()
+	external := filepath.Join(externalDir, "host.crt")
+	if err := os.WriteFile(external, []byte("certificate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dataDir, "configured.crt")
+	if err := os.Symlink(external, link); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{config: config.Config{DataDir: dataDir, Certificate: link}}
+	if _, owned := server.gatewayCertificatePath(); owned {
+		t.Fatal("external certificate symlink was classified as gateway-owned")
+	}
+
+	ownedPath := filepath.Join(dataDir, "owned.crt")
+	if err := os.WriteFile(ownedPath, []byte("certificate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server.config.Certificate = ownedPath
+	if _, owned := server.gatewayCertificatePath(); !owned {
+		t.Fatal("certificate inside DataDir was not classified as gateway-owned")
 	}
 }
 

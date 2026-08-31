@@ -79,7 +79,7 @@ func (server *Server) updateHostConfiguration(writer http.ResponseWriter, reques
 		return
 	}
 	startedAt := time.Now().UTC()
-	err = auth.ApplyHostConfiguration(request.Context(), server.config.SessionSocket, auth.HostConfigurationRequest{
+	err = server.hostBroker().ApplyHostConfiguration(request.Context(), auth.HostConfigurationRequest{
 		AdminToken:          currentSession.Identity.AdminToken,
 		Hostname:            payload.Hostname,
 		Timezone:            payload.Timezone,

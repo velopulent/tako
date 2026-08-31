@@ -34,7 +34,6 @@ import (
 	"github.com/velopulent/tako/internal/dashboard"
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/metrics"
-	"github.com/velopulent/tako/internal/packagekit"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
@@ -42,61 +41,73 @@ import (
 )
 
 type Server struct {
-	config                config.Config
-	http                  *http.Server
-	sessions              *session.Store
-	authenticator         auth.Authenticator
-	metrics               *metrics.Sampler
-	preferences           *preferences.Store
-	jobs                  *diagnosticJobManager
-	loginAttempts         *loginLimiter
-	logger                *zap.Logger
-	cancel                context.CancelFunc
-	cleanupQueue          chan auth.Identity
-	pruneDone             chan struct{}
-	workersWG             sync.WaitGroup
-	cleanupMu             sync.Mutex
-	cleanupClosed         bool
-	hostMu                sync.Mutex
-	hostSnapshot          host.Info
-	hostSnapshotAt        time.Time
-	readHostConfiguration func(context.Context) (platform.HostConfiguration, error)
-	readPowerStatusFn     func(context.Context) (platform.PowerStatus, error)
-	readUnitDetails       func(context.Context, string, string) (platform.UnitDetail, error)
-	readUnitConfiguration func(context.Context, string, string) (platform.UnitConfiguration, error)
-	readUpdatesFn         func(context.Context) platform.UpdateStatus
-	previewUpdatesFn      func(context.Context, platform.UpdateOperation) (platform.UpdatePreview, error)
-	applyUpdatesFn        func(context.Context, auth.UpdateRequest) (platform.UpdateResult, error)
-	autoUpdatesFn         func(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error)
-	autoUpdatesStatusFn   func(context.Context) platform.AutoUpdatesConfig
-	kpatchSettingsFn      func(context.Context, auth.KpatchRequest) (platform.KpatchSettingsStatus, error)
-	updateTokensMu        sync.Mutex
-	updateTokens          map[string]string
-	updateSlots           chan struct{}
-	sharedClientMu        sync.Mutex
-	sharedUpdateClient    *packagekit.Client
-	updateWatcher         *packagekit.TransactionWatcher
-	applyTimer            func(context.Context, auth.TimerRequest) (platform.TimerState, error)
-	applyOverride         func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
-	previewAccountFn      func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
-	applyAccountFn        func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountState, error)
-	previewGroupFn        func(context.Context, auth.GroupMembershipRequest) (platform.GroupMembershipPreview, error)
-	applyGroupFn          func(context.Context, auth.GroupMembershipRequest) (platform.GroupMembershipState, error)
-	previewAdminRoleFn    func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRolePreview, error)
-	applyAdminRoleFn      func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRoleState, error)
-	changePasswordFn      func(context.Context, auth.PasswordChangeRequest) error
-	previewSSHKeysFn      func(context.Context, auth.SSHKeyRequest) (platform.SSHKeyPreview, error)
-	applySSHKeysFn        func(context.Context, auth.SSHKeyRequest) (platform.SSHKeyState, error)
-	queryLogs             func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
-	queryLoginHistory     func(context.Context, platform.LoginHistoryQuery) (platform.LoginHistoryPage, error)
-	followLogs            func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
-	processTracker        *platform.ProcessTracker
-	readProcessDetails    func(context.Context, int, uint64) (platform.ProcessDetails, error)
-	signalProcesses       func(context.Context, auth.SignalRequest) (platform.SignalResult, error)
-	detectCapabilities    func(context.Context) []platform.Capability
-	notifications         *notificationStore
-	previewMu             sync.Mutex
-	previewGrants         map[string]filePreviewGrant
+	config                 config.Config
+	http                   *http.Server
+	sessions               *session.Store
+	authenticator          auth.Authenticator
+	broker                 HostBroker
+	preferences            *preferences.Store
+	jobs                   *diagnosticJobManager
+	loginAttempts          *loginLimiter
+	logger                 *zap.Logger
+	cancel                 context.CancelFunc
+	cleanupQueue           chan auth.Identity
+	pruneDone              chan struct{}
+	workersWG              sync.WaitGroup
+	cleanupMu              sync.Mutex
+	cleanupClosed          bool
+	hostMu                 sync.Mutex
+	hostSnapshot           host.Info
+	hostSnapshotAt         time.Time
+	readHostInfoFn         func(context.Context) (host.Info, error)
+	readHostConfiguration  func(context.Context) (platform.HostConfiguration, error)
+	readPowerStatusFn      func(context.Context) (platform.PowerStatus, error)
+	readServicesFn         func(context.Context, auth.ServiceReadOperation) ([]platform.Unit, error)
+	readUnitDetails        func(context.Context, string, string) (platform.UnitDetail, error)
+	readUnitConfiguration  func(context.Context, string, string) (platform.UnitConfiguration, error)
+	serviceActionFn        func(context.Context, platform.ServiceOperation) error
+	readUpdatesFn          func(context.Context) platform.UpdateStatus
+	previewUpdatesFn       func(context.Context, platform.UpdateOperation) (platform.UpdatePreview, error)
+	applyUpdatesFn         func(context.Context, auth.UpdateRequest) (platform.UpdateResult, error)
+	autoUpdatesFn          func(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error)
+	autoUpdatesStatusFn    func(context.Context) platform.AutoUpdatesConfig
+	kpatchSettingsFn       func(context.Context, auth.KpatchRequest) (platform.KpatchSettingsStatus, error)
+	updateTokensMu         sync.Mutex
+	updateTokens           map[string]string
+	inventoryCredentialsMu sync.Mutex
+	inventoryCredentials   map[string]auth.HostReadCredentials
+	updateSlots            chan struct{}
+	readProcessesFn        func(context.Context) ([]platform.Process, error)
+	readIdentityFn         func(context.Context) (platform.IdentityInventory, error)
+	readFilesystemsFn      func(context.Context) ([]platform.Filesystem, error)
+	readNetworkFn          func(context.Context) (platform.NetworkSnapshot, error)
+	previewSignalFn        func(context.Context, platform.SignalOperation) (platform.SignalPreview, error)
+	readMetricHistoryFn    func(context.Context, time.Time, int) ([]metrics.Sample, error)
+	followMetricsFn        func(context.Context, time.Duration, func(metrics.Sample) error) error
+	readUpdateHistoryFn    func(context.Context) ([]platform.UpdateHistoryEntry, error)
+	readUpdateLiveFn       func(context.Context) (auth.UpdateObservation, error)
+	refreshUpdatesFn       func(context.Context, bool) (platform.UpdateStatus, error)
+	cancelUpdateFn         func(context.Context) (bool, error)
+	applyTimer             func(context.Context, auth.TimerRequest) (platform.TimerState, error)
+	applyOverride          func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
+	previewAccountFn       func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
+	applyAccountFn         func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountState, error)
+	previewGroupFn         func(context.Context, auth.GroupMembershipRequest) (platform.GroupMembershipPreview, error)
+	applyGroupFn           func(context.Context, auth.GroupMembershipRequest) (platform.GroupMembershipState, error)
+	previewAdminRoleFn     func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRolePreview, error)
+	applyAdminRoleFn       func(context.Context, auth.AdministrativeRoleRequest) (platform.AdministrativeRoleState, error)
+	changePasswordFn       func(context.Context, auth.PasswordChangeRequest) error
+	previewSSHKeysFn       func(context.Context, auth.SSHKeyRequest) (platform.SSHKeyPreview, error)
+	applySSHKeysFn         func(context.Context, auth.SSHKeyRequest) (platform.SSHKeyState, error)
+	queryLogs              func(context.Context, platform.JournalQuery) (platform.JournalPage, error)
+	queryLoginHistory      func(context.Context, platform.LoginHistoryQuery) (platform.LoginHistoryPage, error)
+	followLogs             func(context.Context, platform.JournalQuery, func(platform.LogEntry) error) error
+	readProcessDetails     func(context.Context, int, uint64) (platform.ProcessDetails, error)
+	signalProcesses        func(context.Context, auth.SignalRequest) (platform.SignalResult, error)
+	detectCapabilities     func(context.Context) []platform.Capability
+	notifications          *notificationStore
+	previewMu              sync.Mutex
+	previewGrants          map[string]filePreviewGrant
 }
 
 const filePreviewGrantTTL = 15 * time.Minute
@@ -114,9 +125,10 @@ func New(cfg config.Config) (*Server, error) {
 	if cfg.Development {
 		authenticator = auth.DevelopmentAuthenticator{}
 	}
-	capacity := int(cfg.HistoryRetention/time.Second) + 1
-	sampler := metrics.NewSampler(capacity)
-	sampler.Configure(cfg.MonitoringInterval, cfg.HistoryRetention)
+	var broker HostBroker = socketHostBroker{path: cfg.SessionSocket}
+	if cfg.Development {
+		broker = fakeHostBroker{}
+	}
 	preferenceStore, err := preferences.Open(cfg.DataDir)
 	if err != nil {
 		cancel()
@@ -128,87 +140,149 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
-	processTracker := platform.NewProcessTracker()
-	go sampler.Run(ctx, cfg.MonitoringInterval)
-	server := &Server{
-		config:                cfg,
-		sessions:              sessions,
-		authenticator:         authenticator,
-		metrics:               sampler,
-		preferences:           preferenceStore,
-		loginAttempts:         newLoginLimiter(5, time.Minute),
-		logger:                zap.L().Named("gateway"),
-		cancel:                cancel,
-		cleanupQueue:          make(chan auth.Identity, 64),
-		pruneDone:             make(chan struct{}),
-		detectCapabilities:    platform.Detect,
-		notifications:         newNotificationStore(),
-		previewGrants:         make(map[string]filePreviewGrant),
-		readHostConfiguration: platform.ReadHostConfiguration,
-		readPowerStatusFn:     platform.ReadPowerStatus,
-		readUnitDetails:       platform.UnitDetails,
-		readUnitConfiguration: platform.ReadUnitConfiguration,
-		readUpdatesFn:         platform.Updates,
+	var server *Server
+	server = &Server{
+		config:        cfg,
+		sessions:      sessions,
+		authenticator: authenticator,
+		broker:        broker,
+		preferences:   preferenceStore,
+		loginAttempts: newLoginLimiter(5, time.Minute),
+		logger:        zap.L().Named("gateway"),
+		cancel:        cancel,
+		cleanupQueue:  make(chan auth.Identity, 64),
+		pruneDone:     make(chan struct{}),
+		notifications: newNotificationStore(),
+		previewGrants: make(map[string]filePreviewGrant),
+		readHostInfoFn: func(ctx context.Context) (host.Info, error) {
+			return server.hostBroker().ReadHostInfo(ctx, credentialsFromContext(ctx))
+		},
+		readHostConfiguration: func(ctx context.Context) (platform.HostConfiguration, error) {
+			return server.hostBroker().ReadHostConfiguration(ctx, credentialsFromContext(ctx))
+		},
+		readPowerStatusFn: func(ctx context.Context) (platform.PowerStatus, error) {
+			return server.hostBroker().ReadPowerStatus(ctx, credentialsFromContext(ctx))
+		},
+		readServicesFn: func(ctx context.Context, operation auth.ServiceReadOperation) ([]platform.Unit, error) {
+			return server.hostBroker().ReadServices(ctx, credentialsForScope(ctx, operation.Scope), operation)
+		},
+		readUnitDetails: func(ctx context.Context, scope, unit string) (platform.UnitDetail, error) {
+			return server.hostBroker().ReadUnitDetails(ctx, credentialsForScope(ctx, scope), scope, unit)
+		},
+		readUnitConfiguration: func(ctx context.Context, scope, unit string) (platform.UnitConfiguration, error) {
+			return server.hostBroker().ReadUnitConfiguration(ctx, credentialsForScope(ctx, scope), scope, unit)
+		},
+		serviceActionFn: func(ctx context.Context, operation platform.ServiceOperation) error {
+			return server.hostBroker().ServiceAction(ctx, credentialsForScope(ctx, operation.Scope), operation)
+		},
+		readUpdatesFn: func(ctx context.Context) platform.UpdateStatus {
+			status, _ := server.hostBroker().ReadUpdateStatus(ctx, credentialsFromContext(ctx))
+			return status
+		},
 		previewUpdatesFn: func(ctx context.Context, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
-			return platform.PreviewUpdates(ctx, operation, platform.Updates)
+			return server.hostBroker().PreviewUpdates(ctx, credentialsFromContext(ctx), operation)
 		},
 		applyUpdatesFn: func(ctx context.Context, request auth.UpdateRequest) (platform.UpdateResult, error) {
-			return auth.ApplyUpdates(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyUpdates(ctx, request)
 		},
 		autoUpdatesFn: func(ctx context.Context, request auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
-			return auth.ApplyAutoUpdatesConfig(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyAutoUpdates(ctx, request)
 		},
-		autoUpdatesStatusFn: platform.AutoUpdatesStatus,
+		autoUpdatesStatusFn: func(ctx context.Context) platform.AutoUpdatesConfig {
+			status, _ := server.hostBroker().ReadAutoUpdatesStatus(ctx, credentialsFromContext(ctx))
+			return status
+		},
 		kpatchSettingsFn: func(ctx context.Context, request auth.KpatchRequest) (platform.KpatchSettingsStatus, error) {
-			return auth.ApplyKpatchSettings(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyKpatch(ctx, request)
 		},
-		updateTokens: make(map[string]string),
-		updateSlots:  make(chan struct{}, 1),
+		updateTokens:         make(map[string]string),
+		inventoryCredentials: make(map[string]auth.HostReadCredentials),
+		updateSlots:          make(chan struct{}, 1),
 		applyTimer: func(ctx context.Context, request auth.TimerRequest) (platform.TimerState, error) {
-			return auth.ApplyTimer(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyTimer(ctx, request)
 		},
 		applyOverride: func(ctx context.Context, request auth.OverrideRequest) (platform.OverrideState, error) {
-			return auth.ApplyOverride(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyOverride(ctx, request)
 		},
 		previewAccountFn: func(ctx context.Context, request auth.LocalAccountRequest) (platform.LocalAccountPreview, error) {
-			return auth.PreviewLocalAccount(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().PreviewLocalAccount(ctx, request)
 		},
 		applyAccountFn: func(ctx context.Context, request auth.LocalAccountRequest) (platform.LocalAccountState, error) {
-			return auth.ApplyLocalAccount(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyLocalAccount(ctx, request)
 		},
 		previewGroupFn: func(ctx context.Context, request auth.GroupMembershipRequest) (platform.GroupMembershipPreview, error) {
-			return auth.PreviewGroupMembership(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().PreviewGroupMembership(ctx, request)
 		},
 		applyGroupFn: func(ctx context.Context, request auth.GroupMembershipRequest) (platform.GroupMembershipState, error) {
-			return auth.ApplyGroupMembership(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyGroupMembership(ctx, request)
 		},
 		previewAdminRoleFn: func(ctx context.Context, request auth.AdministrativeRoleRequest) (platform.AdministrativeRolePreview, error) {
-			return auth.PreviewAdministrativeRole(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().PreviewAdministrativeRole(ctx, request)
 		},
 		applyAdminRoleFn: func(ctx context.Context, request auth.AdministrativeRoleRequest) (platform.AdministrativeRoleState, error) {
-			return auth.ApplyAdministrativeRole(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplyAdministrativeRole(ctx, request)
 		},
 		changePasswordFn: func(ctx context.Context, request auth.PasswordChangeRequest) error {
-			return auth.ChangePassword(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ChangePassword(ctx, request)
 		},
 		previewSSHKeysFn: func(ctx context.Context, request auth.SSHKeyRequest) (platform.SSHKeyPreview, error) {
-			return auth.PreviewSSHKeys(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().PreviewSSHKeys(ctx, request)
 		},
 		applySSHKeysFn: func(ctx context.Context, request auth.SSHKeyRequest) (platform.SSHKeyState, error) {
-			return auth.ApplySSHKeys(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().ApplySSHKeys(ctx, request)
 		},
-		processTracker:     processTracker,
-		readProcessDetails: processTracker.Inspect,
+		readProcessDetails: func(ctx context.Context, pid int, started uint64) (platform.ProcessDetails, error) {
+			return server.hostBroker().ReadProcessDetails(ctx, credentialsFromContext(ctx), pid, started)
+		},
 		signalProcesses: func(ctx context.Context, request auth.SignalRequest) (platform.SignalResult, error) {
-			return auth.SignalProcesses(ctx, cfg.SessionSocket, request)
+			return server.hostBroker().SignalProcesses(ctx, request)
 		},
+	}
+	server.readProcessesFn = func(ctx context.Context) ([]platform.Process, error) {
+		return server.hostBroker().ReadProcesses(ctx, credentialsFromContext(ctx))
+	}
+	server.readIdentityFn = func(ctx context.Context) (platform.IdentityInventory, error) {
+		return server.hostBroker().ReadIdentityInventory(ctx, credentialsFromContext(ctx))
+	}
+	server.readFilesystemsFn = func(ctx context.Context) ([]platform.Filesystem, error) {
+		return server.hostBroker().ReadFilesystems(ctx, credentialsFromContext(ctx))
+	}
+	server.readNetworkFn = func(ctx context.Context) (platform.NetworkSnapshot, error) {
+		return server.hostBroker().ReadNetworkSnapshot(ctx, credentialsFromContext(ctx))
+	}
+	server.previewSignalFn = func(ctx context.Context, operation platform.SignalOperation) (platform.SignalPreview, error) {
+		return server.hostBroker().PreviewProcessSignal(ctx, credentialsFromContext(ctx), operation)
+	}
+	server.readMetricHistoryFn = func(ctx context.Context, since time.Time, maximum int) ([]metrics.Sample, error) {
+		return server.hostBroker().ReadMetricHistory(ctx, credentialsFromContext(ctx), since, maximum)
+	}
+	server.followMetricsFn = func(ctx context.Context, interval time.Duration, emit func(metrics.Sample) error) error {
+		return server.hostBroker().FollowMetrics(ctx, credentialsFromContext(ctx), interval, emit)
+	}
+	server.readUpdateHistoryFn = func(ctx context.Context) ([]platform.UpdateHistoryEntry, error) {
+		return server.hostBroker().ReadUpdateHistory(ctx, credentialsFromContext(ctx))
+	}
+	server.readUpdateLiveFn = func(ctx context.Context) (auth.UpdateObservation, error) {
+		return server.hostBroker().ReadUpdateObservation(ctx, credentialsFromContext(ctx))
+	}
+	server.refreshUpdatesFn = func(ctx context.Context, force bool) (platform.UpdateStatus, error) {
+		current, _ := ctx.Value(sessionKey{}).(session.Session)
+		return server.hostBroker().RefreshUpdates(ctx, current.Identity.AdminToken, force)
+	}
+	server.cancelUpdateFn = func(ctx context.Context) (bool, error) {
+		current, _ := ctx.Value(sessionKey{}).(session.Session)
+		return server.hostBroker().CancelUpdate(ctx, current.Identity.AdminToken)
+	}
+	server.detectCapabilities = func(ctx context.Context) []platform.Capability {
+		capabilities, _ := server.hostBroker().ReadCapabilities(ctx, credentialsFromContext(ctx))
+		return capabilities
 	}
 	queryLogs := func(ctx context.Context, query platform.JournalQuery) (platform.JournalPage, error) {
 		return server.queryJournal(ctx, query)
 	}
 	server.queryLogs = queryLogs
 	server.queryLoginHistory = func(ctx context.Context, query platform.LoginHistoryQuery) (platform.LoginHistoryPage, error) {
-		return platform.QueryLoginHistoryUsing(ctx, query, queryLogs)
+		return server.hostBroker().ReadLoginHistory(ctx, credentialsFromContext(ctx), query)
 	}
 	server.followLogs = server.followJournal
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
@@ -290,17 +364,6 @@ func (server *Server) cleanupWorker() {
 }
 
 func (server *Server) ListenAndServe() error {
-	if !server.config.Development {
-		info, statErr := os.Stat(server.config.SessionSocket)
-		switch {
-		case statErr != nil:
-			server.logger.Warn("authentication service socket unavailable", zap.String("path", server.config.SessionSocket), zap.Error(statErr))
-		case info.Mode()&os.ModeSocket == 0:
-			server.logger.Warn("authentication service path is not a socket", zap.String("path", server.config.SessionSocket))
-		default:
-			server.logger.Info("authentication service socket found", zap.String("path", server.config.SessionSocket))
-		}
-	}
 	listener, err := activatedListener()
 	if err != nil {
 		return err
@@ -350,8 +413,8 @@ func (server *Server) Shutdown(ctx context.Context) error {
 		shutdownErr = errors.Join(shutdownErr, ctx.Err())
 	}
 	jobErr := server.jobs.Close(ctx)
-	server.closeSharedUpdateClients()
 	server.clearUpdateTokens()
+	server.clearInventoryCredentials()
 	closeErr := server.preferences.Close()
 	return errors.Join(shutdownErr, closeErr, jobErr)
 }
@@ -700,6 +763,7 @@ func (server *Server) logRequest(next http.Handler) http.Handler {
 			zap.String("request_id", middleware.GetReqID(request.Context())),
 			zap.String("method", request.Method),
 			zap.String("path", request.URL.Path),
+			zap.String("query", request.URL.RawQuery),
 			zap.Int("status", wrapped.Status()),
 			zap.Int("bytes", wrapped.BytesWritten()),
 			zap.String("remote_ip", request.RemoteAddr),
@@ -735,13 +799,43 @@ func (server *Server) capabilities(writer http.ResponseWriter, request *http.Req
 			capabilities[index].SetupGuidance = ""
 		}
 	}
+	addCapabilityScopes(capabilities, current)
 	writeJSON(writer, http.StatusOK, map[string]any{"capabilities": capabilities})
 }
 
+func addCapabilityScopes(capabilities []platform.Capability, current session.Session) {
+	bridgeReady := current.Identity.BridgeToken != ""
+	adminReady := hasAdministrativeAccess(current)
+	for index := range capabilities {
+		capability := &capabilities[index]
+		systemAuthority := "user-bridge"
+		if adminReady {
+			systemAuthority = "root-sessiond"
+		}
+		system := platform.CapabilityScope{
+			State: capability.State, Readable: capability.Readable, Mutable: capability.Mutable, Authority: systemAuthority, Reason: capability.Reason,
+		}
+		user := platform.CapabilityScope{
+			State: platform.StateUnavailable, Authority: "none", Reason: "Authenticated user bridge is not connected",
+		}
+		if bridgeReady {
+			user = platform.CapabilityScope{
+				State: capability.State, Readable: capability.Readable, Mutable: capability.Mutable, Authority: "user-bridge", Reason: capability.Reason,
+			}
+		}
+		capability.Scopes = map[string]platform.CapabilityScope{"system": system, "user": user}
+	}
+}
+
 func (server *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
-	current, _ := server.metrics.Current()
+	current := metrics.Sample{}
+	if server.readMetricHistoryFn != nil {
+		if samples, err := server.readMetricHistoryFn(request.Context(), time.Now().Add(-24*time.Hour), 1); err == nil && len(samples) > 0 {
+			current = samples[len(samples)-1]
+		}
+	}
 	payload := map[string]any{"host": server.hostInfo(request.Context()), "metrics": current}
-	if filesystems, err := platform.Filesystems(); err == nil {
+	if filesystems, err := server.readFilesystemsFn(request.Context()); err == nil {
 		payload["storage"] = platform.SummarizeStorage(filesystems)
 	}
 	writeJSON(writer, http.StatusOK, payload)
@@ -753,7 +847,11 @@ func (server *Server) hostInfo(ctx context.Context) host.Info {
 	if !server.hostSnapshotAt.IsZero() && time.Since(server.hostSnapshotAt) < 15*time.Second {
 		return server.hostSnapshot
 	}
-	server.hostSnapshot = host.ReadContext(ctx)
+	if server.readHostInfoFn != nil {
+		if snapshot, err := server.readHostInfoFn(ctx); err == nil {
+			server.hostSnapshot = snapshot
+		}
+	}
 	server.hostSnapshotAt = time.Now()
 	return server.hostSnapshot
 }
@@ -764,7 +862,16 @@ func (server *Server) metricHistory(writer http.ResponseWriter, request *http.Re
 	if duration == 0 {
 		duration = time.Hour
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"samples": server.metrics.HistorySince(time.Now().Add(-duration), 1000)})
+	if server.readMetricHistoryFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "metrics-unavailable", "Metrics are unavailable")
+		return
+	}
+	samples, err := server.readMetricHistoryFn(request.Context(), time.Now().Add(-duration), 1000)
+	if err != nil {
+		problem(writer, http.StatusServiceUnavailable, "metrics-unavailable", "Metrics are unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"samples": samples})
 }
 
 func (server *Server) metricStream(writer http.ResponseWriter, request *http.Request) {
@@ -786,8 +893,24 @@ func (server *Server) metricStream(writer http.ResponseWriter, request *http.Req
 	if interval == 0 {
 		interval = server.config.MonitoringInterval
 	}
-	stream, unsubscribe := server.metrics.SubscribeEvery(interval)
-	defer unsubscribe()
+	if server.followMetricsFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "metrics-unavailable", "Metrics are unavailable")
+		return
+	}
+	stream := make(chan metrics.Sample, 4)
+	streamContext, streamCancel := context.WithCancel(request.Context())
+	defer streamCancel()
+	go func() {
+		defer close(stream)
+		_ = server.followMetricsFn(streamContext, interval, func(sample metrics.Sample) error {
+			select {
+			case stream <- sample:
+				return nil
+			case <-streamContext.Done():
+				return streamContext.Err()
+			}
+		})
+	}()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	maximumLifetime := time.NewTimer(15 * time.Minute)
@@ -830,7 +953,7 @@ func (server *Server) terminalWebSocket(writer http.ResponseWriter, request *htt
 	}
 	columns, _ := strconv.ParseUint(request.URL.Query().Get("columns"), 10, 16)
 	rows, _ := strconv.ParseUint(request.URL.Query().Get("rows"), 10, 16)
-	terminal, err := auth.OpenTerminal(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, uint16(columns), uint16(rows))
+	terminal, err := server.hostBroker().OpenTerminal(request.Context(), current.Identity.BridgeToken, uint16(columns), uint16(rows))
 	if err != nil {
 		server.logger.Error("terminal launch failed", zap.String("username", current.Identity.Username), zap.Error(err))
 		_ = connection.Close(websocket.StatusInternalError, "terminal launch failed")
@@ -868,7 +991,7 @@ func (server *Server) terminalWebSocket(writer http.ResponseWriter, request *htt
 				Rows    uint16 `json:"rows"`
 			}
 			if json.Unmarshal(payload, &resize) == nil && resize.Columns > 0 && resize.Rows > 0 {
-				_ = auth.ResizeTerminal(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, resize.Columns, resize.Rows)
+				_ = server.hostBroker().ResizeTerminal(request.Context(), current.Identity.BridgeToken, resize.Columns, resize.Rows)
 			}
 		}
 		done <- struct{}{}
@@ -882,16 +1005,12 @@ func (server *Server) terminalWebSocket(writer http.ResponseWriter, request *htt
 	}
 }
 
-func (server *Server) processes(writer http.ResponseWriter, _ *http.Request) {
-	var (
-		items []platform.Process
-		err   error
-	)
-	if server.processTracker != nil {
-		items, err = server.processTracker.Snapshot()
-	} else {
-		items, err = platform.Processes()
+func (server *Server) processes(writer http.ResponseWriter, request *http.Request) {
+	if server.readProcessesFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "processes-unavailable", "Process inventory is unavailable")
+		return
 	}
+	items, err := server.readProcessesFn(request.Context())
 	server.writeModule(writer, "processes", items, err)
 }
 
@@ -966,7 +1085,11 @@ func (server *Server) processSignalPreview(writer http.ResponseWriter, request *
 	if !ok {
 		return
 	}
-	preview, err := platform.PreviewSignal(request.Context(), operation)
+	if server.previewSignalFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "process-signal-unavailable", "Process signaling service is unavailable")
+		return
+	}
+	preview, err := server.previewSignalFn(request.Context(), operation)
 	if err != nil {
 		writeProcessSignalError(writer, err)
 		return
@@ -991,13 +1114,13 @@ func (server *Server) processSignal(writer http.ResponseWriter, request *http.Re
 	}
 	startedAt := time.Now().UTC()
 	signalRequest := auth.SignalRequest{Operation: operation}
-	if current.Identity.AdminToken != "" {
+	administrative := hasAdministrativeAccess(current)
+	if administrative {
 		signalRequest.AdminToken = current.Identity.AdminToken
 	} else {
 		signalRequest.Token = current.Identity.BridgeToken
 	}
 	result, err := server.signalProcesses(request.Context(), signalRequest)
-	administrative := signalRequest.AdminToken != ""
 	target := fmt.Sprintf("process/%d/%s", pid, operation.Signal)
 	if err != nil {
 		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "process signal failed", administrative)
@@ -1030,22 +1153,38 @@ func writeProcessSignalError(writer http.ResponseWriter, err error) {
 }
 
 func (server *Server) users(writer http.ResponseWriter, request *http.Request) {
-	inventory, err := platform.ListIdentityInventory(request.Context())
+	if server.readIdentityFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "users-unavailable", "User inventory is unavailable")
+		return
+	}
+	inventory, err := server.readIdentityFn(request.Context())
 	server.writeModule(writer, "users", inventory.Users, err)
 }
 
 func (server *Server) groups(writer http.ResponseWriter, request *http.Request) {
-	inventory, err := platform.ListIdentityInventory(request.Context())
+	if server.readIdentityFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "groups-unavailable", "Group inventory is unavailable")
+		return
+	}
+	inventory, err := server.readIdentityFn(request.Context())
 	server.writeModule(writer, "groups", inventory.Groups, err)
 }
 
-func (server *Server) storage(writer http.ResponseWriter, _ *http.Request) {
-	items, err := platform.Filesystems()
+func (server *Server) storage(writer http.ResponseWriter, request *http.Request) {
+	if server.readFilesystemsFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "storage-unavailable", "Storage inventory is unavailable")
+		return
+	}
+	items, err := server.readFilesystemsFn(request.Context())
 	server.writeModule(writer, "storage", items, err)
 }
 
 func (server *Server) network(writer http.ResponseWriter, request *http.Request) {
-	snapshot, err := platform.NetworkSnapshotRead(request.Context())
+	if server.readNetworkFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "network-unavailable", "Network inventory is unavailable")
+		return
+	}
+	snapshot, err := server.readNetworkFn(request.Context())
 	if err != nil {
 		server.writeModule(writer, "network", nil, err)
 		return
@@ -1087,7 +1226,7 @@ func (server *Server) networkPreview(writer http.ResponseWriter, request *http.R
 		return
 	}
 	operation.Action = "preview"
-	state, err := auth.PreviewNetwork(request.Context(), server.config.SessionSocket, auth.NetworkRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	state, err := server.hostBroker().PreviewNetwork(request.Context(), auth.NetworkRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeNetworkOperationError(writer, err)
 		return
@@ -1106,7 +1245,7 @@ func (server *Server) networkApply(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	startedAt := time.Now().UTC()
-	state, err := auth.ApplyNetwork(request.Context(), server.config.SessionSocket, auth.NetworkRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	state, err := server.hostBroker().ApplyNetwork(request.Context(), auth.NetworkRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeNetworkOperationError(writer, err)
 		server.recordOperation(request.Context(), current.Identity.Username, "network/"+operation.Action, startedAt, "failed", err.Error(), true)
@@ -1155,7 +1294,7 @@ func (server *Server) firewallStatus(writer http.ResponseWriter, request *http.R
 		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before inspecting firewall state")
 		return
 	}
-	state, err := auth.PreviewFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: platform.FirewallOperation{Backend: "auto"}})
+	state, err := server.hostBroker().PreviewFirewall(request.Context(), auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: platform.FirewallOperation{Backend: "auto"}})
 	if err != nil {
 		writeFirewallOperationError(writer, err)
 		return
@@ -1174,7 +1313,7 @@ func (server *Server) firewallPreview(writer http.ResponseWriter, request *http.
 		return
 	}
 	operation.Action = "preview"
-	state, err := auth.PreviewFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	state, err := server.hostBroker().PreviewFirewall(request.Context(), auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeFirewallOperationError(writer, err)
 		return
@@ -1193,7 +1332,7 @@ func (server *Server) firewallApply(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	startedAt := time.Now().UTC()
-	state, err := auth.ApplyFirewall(request.Context(), server.config.SessionSocket, auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	state, err := server.hostBroker().ApplyFirewall(request.Context(), auth.FirewallRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeFirewallOperationError(writer, err)
 		server.recordOperation(request.Context(), current.Identity.Username, "firewall/"+operation.Action, startedAt, "failed", err.Error(), true)
@@ -1244,7 +1383,7 @@ func (server *Server) securityStatus(writer http.ResponseWriter, request *http.R
 		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before inspecting policy state")
 		return
 	}
-	status, err := auth.PreviewSecurity(request.Context(), server.config.SessionSocket, auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: platform.SecurityOperation{Framework: "SELinux"}})
+	status, err := server.hostBroker().PreviewSecurity(request.Context(), auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: platform.SecurityOperation{Framework: "SELinux"}})
 	if err != nil {
 		writeSecurityOperationError(writer, err)
 		return
@@ -1263,7 +1402,7 @@ func (server *Server) securityPreview(writer http.ResponseWriter, request *http.
 		return
 	}
 	operation.Action = "inspect"
-	status, err := auth.PreviewSecurity(request.Context(), server.config.SessionSocket, auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	status, err := server.hostBroker().PreviewSecurity(request.Context(), auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeSecurityOperationError(writer, err)
 		return
@@ -1282,7 +1421,7 @@ func (server *Server) securityApply(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	startedAt := time.Now().UTC()
-	status, err := auth.ApplySecurity(request.Context(), server.config.SessionSocket, auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	status, err := server.hostBroker().ApplySecurity(request.Context(), auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeSecurityOperationError(writer, err)
 		server.recordOperation(request.Context(), current.Identity.Username, "security/"+operation.Action, startedAt, "failed", err.Error(), true)
@@ -1600,7 +1739,7 @@ func (server *Server) applyFileOperation(writer http.ResponseWriter, request *ht
 		return platform.FileResult{}, false
 	}
 	startedAt := time.Now().UTC()
-	result, err := auth.ApplyFileOperation(request.Context(), server.config.SessionSocket, fileRequest)
+	result, err := server.hostBroker().ApplyFileOperation(request.Context(), fileRequest)
 	if err != nil {
 		writeFileOperationError(writer, err)
 		server.recordOperation(request.Context(), current.Identity.Username, "file/"+operation.Action, startedAt, "failed", err.Error(), administrative)
@@ -1689,7 +1828,11 @@ func (server *Server) services(writer http.ResponseWriter, request *http.Request
 		problem(writer, 400, "invalid-unit-filter", "Unsupported unit scope or type")
 		return
 	}
-	items, err := platform.Units(request.Context(), scope, unitType)
+	if server.readServicesFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "services-unavailable", "Service inventory is unavailable")
+		return
+	}
+	items, err := server.readServicesFn(request.Context(), auth.ServiceReadOperation{Scope: scope, Type: unitType})
 	server.writeModule(writer, "services", items, err)
 }
 
@@ -1782,10 +1925,10 @@ func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Re
 	}
 	target := operation.Scope + "/" + operation.Unit + "/" + operation.Action
 	var actionErr error
-	if operation.Scope == "system" {
-		actionErr = auth.ServiceActionAsAdmin(request.Context(), server.config.SessionSocket, current.Identity.AdminToken, operation.Scope, operation.Unit, operation.Action)
+	if server.serviceActionFn == nil {
+		actionErr = auth.ErrServiceUnavailable
 	} else {
-		actionErr = auth.ServiceAction(request.Context(), server.config.SessionSocket, current.Identity.BridgeToken, operation.Scope, operation.Unit, operation.Action)
+		actionErr = server.serviceActionFn(request.Context(), operation)
 	}
 	if actionErr != nil {
 		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "service action failed", operation.Scope == "system")
@@ -2020,12 +2163,9 @@ func (server *Server) queryJournal(ctx context.Context, query platform.JournalQu
 		return platform.JournalPage{}, errors.New("session required")
 	}
 	if current.Identity.BridgeToken == "" && !hasAdministrativeAccess(current) {
-		if server.config.Development {
-			return platform.QueryLogs(ctx, query)
-		}
 		return platform.JournalPage{}, auth.ErrServiceUnavailable
 	}
-	return auth.QueryJournal(ctx, server.config.SessionSocket, server.journalRequest(current, query))
+	return server.hostBroker().QueryJournal(ctx, server.journalRequest(current, query))
 }
 
 func (server *Server) followJournal(ctx context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
@@ -2034,12 +2174,9 @@ func (server *Server) followJournal(ctx context.Context, query platform.JournalQ
 		return errors.New("session required")
 	}
 	if current.Identity.BridgeToken == "" && !hasAdministrativeAccess(current) {
-		if server.config.Development {
-			return platform.FollowJournal(ctx, query, emit)
-		}
 		return auth.ErrServiceUnavailable
 	}
-	return auth.FollowJournal(ctx, server.config.SessionSocket, server.journalRequest(current, query), emit)
+	return server.hostBroker().FollowJournal(ctx, server.journalRequest(current, query), emit)
 }
 
 func (server *Server) logs(writer http.ResponseWriter, request *http.Request) {

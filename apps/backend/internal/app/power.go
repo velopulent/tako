@@ -90,7 +90,7 @@ func (server *Server) requestPower(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	startedAt := time.Now().UTC()
-	err = auth.RequestPower(request.Context(), server.config.SessionSocket, auth.PowerRequest{
+	err = server.hostBroker().RequestPower(request.Context(), auth.PowerRequest{
 		AdminToken:          current.Identity.AdminToken,
 		Action:              payload.Action,
 		Confirmation:        payload.Confirmation,
@@ -149,7 +149,7 @@ func decodePowerPayload(writer http.ResponseWriter, request *http.Request, requi
 
 func (server *Server) readPowerStatus(ctx context.Context) (platform.PowerStatus, error) {
 	if server.readPowerStatusFn == nil {
-		return platform.ReadPowerStatus(ctx)
+		return platform.PowerStatus{}, auth.ErrServiceUnavailable
 	}
 	return server.readPowerStatusFn(ctx)
 }

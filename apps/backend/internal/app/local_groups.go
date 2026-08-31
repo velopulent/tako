@@ -22,7 +22,7 @@ func (server *Server) previewLocalGroup(writer http.ResponseWriter, request *htt
 	if !ok {
 		return
 	}
-	preview, err := platform.PreviewLocalGroup(request.Context(), operation)
+	preview, err := server.hostBroker().PreviewLocalGroup(request.Context(), current.Identity.AdminToken, operation)
 	if err != nil {
 		writeLocalGroupError(writer, err)
 		return
@@ -42,7 +42,7 @@ func (server *Server) applyLocalGroup(writer http.ResponseWriter, request *http.
 	}
 	operation.Preview = false
 	startedAt := time.Now().UTC()
-	state, err := platform.ApplyLocalGroup(request.Context(), operation)
+	state, err := server.hostBroker().ApplyLocalGroup(request.Context(), current.Identity.AdminToken, operation)
 	target := "group/" + operation.Group + "/" + operation.Action
 	if err != nil {
 		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "local group operation failed", true)

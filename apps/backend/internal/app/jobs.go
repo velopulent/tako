@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/preferences"
@@ -58,6 +59,13 @@ func newDiagnosticJobManager(parent context.Context, store *preferences.Store, e
 }
 
 func (manager *diagnosticJobManager) Submit(ctx context.Context, kind, actor string) (preferences.Job, error) {
+	return manager.SubmitWithSetup(ctx, kind, actor, nil)
+}
+
+// SubmitWithSetup lets a caller attach short-lived in-memory authority to a
+// durable job ID before a worker can observe it. The setup value is never part
+// of the persisted job record.
+func (manager *diagnosticJobManager) SubmitWithSetup(ctx context.Context, kind, actor string, setup func(string)) (preferences.Job, error) {
 	manager.mu.Lock()
 	if manager.closed {
 		manager.mu.Unlock()
@@ -70,6 +78,9 @@ func (manager *diagnosticJobManager) Submit(ctx context.Context, kind, actor str
 	job, err := manager.store.CreateJob(ctx, kind, actor, false)
 	if err != nil {
 		return preferences.Job{}, err
+	}
+	if setup != nil {
+		setup(job.ID)
 	}
 	select {
 	case manager.queue <- job.ID:
@@ -235,12 +246,24 @@ func (server *Server) startHostInventoryJob(writer http.ResponseWriter, request 
 		return
 	}
 	current := request.Context().Value(sessionKey{}).(session.Session)
-	job, err := server.jobs.Submit(request.Context(), hostInventoryJob, current.Identity.Username)
+	credentials := credentialsFromContext(request.Context())
+	var submittedID string
+	job, err := server.jobs.SubmitWithSetup(request.Context(), hostInventoryJob, current.Identity.Username, func(id string) {
+		submittedID = id
+		server.inventoryCredentialsMu.Lock()
+		if server.inventoryCredentials == nil {
+			server.inventoryCredentials = make(map[string]auth.HostReadCredentials)
+		}
+		server.inventoryCredentials[id] = credentials
+		server.inventoryCredentialsMu.Unlock()
+	})
 	if errors.Is(err, ErrJobQueueFull) {
+		server.deleteInventoryCredentials(submittedID)
 		problem(writer, http.StatusTooManyRequests, "jobs-busy", "Diagnostic job queue is full")
 		return
 	}
 	if err != nil {
+		server.deleteInventoryCredentials(submittedID)
 		server.logger.Error("diagnostic job submission failed", zap.Error(err))
 		problem(writer, http.StatusInternalServerError, "jobs-unavailable", "Could not start diagnostic job")
 		return
@@ -269,7 +292,13 @@ func (server *Server) jobDetail(writer http.ResponseWriter, request *http.Reques
 	// transaction so the UI can render real progress even though sessiond
 	// performs the update.
 	if job.Kind == softwareUpdateJob {
-		payload["update"] = server.observeUpdates(request.Context())
+		observation := auth.UpdateObservation{Live: platform.InactiveUpdateLive()}
+		if server.readUpdateLiveFn != nil {
+			if current, readErr := server.readUpdateLiveFn(request.Context()); readErr == nil {
+				observation = current
+			}
+		}
+		payload["update"] = observation
 	}
 	writeJSON(writer, http.StatusOK, payload)
 }
@@ -285,6 +314,7 @@ func (server *Server) cancelJob(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	job, err := server.jobs.Cancel(request.Context(), id)
+	server.deleteInventoryCredentials(id)
 	if errors.Is(err, preferences.ErrJobNotFound) {
 		problem(writer, http.StatusNotFound, "job-not-found", "Diagnostic job was not found")
 		return
@@ -312,14 +342,22 @@ func (server *Server) runDiagnosticJob(ctx context.Context, job preferences.Job,
 	if err := update(10, "Reading host identity"); err != nil {
 		return nil, err
 	}
-	info := server.hostInfo(ctx)
+	credentials := server.takeInventoryCredentials(job.ID)
+	if !server.config.Development && credentials.Token == "" && credentials.AdminToken == "" {
+		// Durable job rows intentionally do not contain host authority. A job
+		// that outlives the gateway process must not silently fall back to an
+		// empty or gateway-local host read.
+		return nil, auth.ErrServiceUnavailable
+	}
+	jobContext := context.WithValue(ctx, hostCredentialsKey{}, credentials)
+	info := server.hostInfo(jobContext)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if err := update(55, "Inspecting runtime capabilities"); err != nil {
 		return nil, err
 	}
-	capabilities := server.detectCapabilities(ctx)
+	capabilities := server.detectCapabilities(jobContext)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -334,4 +372,27 @@ func (server *Server) runDiagnosticJob(ctx context.Context, job preferences.Job,
 		return nil, err
 	}
 	return report, update(100, "Inventory ready")
+}
+
+func (server *Server) takeInventoryCredentials(id string) auth.HostReadCredentials {
+	server.inventoryCredentialsMu.Lock()
+	defer server.inventoryCredentialsMu.Unlock()
+	credentials := server.inventoryCredentials[id]
+	delete(server.inventoryCredentials, id)
+	return credentials
+}
+
+func (server *Server) deleteInventoryCredentials(id string) {
+	if id == "" {
+		return
+	}
+	server.inventoryCredentialsMu.Lock()
+	delete(server.inventoryCredentials, id)
+	server.inventoryCredentialsMu.Unlock()
+}
+
+func (server *Server) clearInventoryCredentials() {
+	server.inventoryCredentialsMu.Lock()
+	server.inventoryCredentials = make(map[string]auth.HostReadCredentials)
+	server.inventoryCredentialsMu.Unlock()
 }

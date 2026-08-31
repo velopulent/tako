@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
-	"github.com/velopulent/tako/internal/packagekit"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
@@ -235,8 +234,10 @@ func (server *Server) clearUpdateTokens() {
 
 func (server *Server) refreshUpdates(writer http.ResponseWriter, request *http.Request) {
 	current := request.Context().Value(sessionKey{}).(session.Session)
-	// Refresh requires session, but not necessarily admin
-	_ = current
+	if !hasAdministrativeAccess(current) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access first")
+		return
+	}
 	var body struct {
 		Force *bool `json:"force"`
 	}
@@ -250,93 +251,31 @@ func (server *Server) refreshUpdates(writer http.ResponseWriter, request *http.R
 			force = *body.Force
 		}
 	}
-	// Use administrative token if available for privileged refresh, else session
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Minute)
 	defer cancel()
-	if err := platform.RefreshUpdatesCache(ctx, force); err != nil {
+	if server.refreshUpdatesFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "The update inventory service is unavailable")
+		return
+	}
+	status, err := server.refreshUpdatesFn(ctx, force)
+	if err != nil {
 		writeUpdateProblem(writer, err)
 		return
 	}
-	// Return fresh status after refresh
-	status := platform.Updates(ctx)
 	server.syncUpdateNotifications(status)
 	writeJSON(writer, http.StatusOK, status)
 }
 
-// sharedPackageKitClient lazily creates the long-lived read-only D-Bus client
-// used to observe update transactions. PackageKit itself is activated per
-// call; only the bus connection is shared.
-func (server *Server) sharedPackageKitClient() *packagekit.Client {
-	server.sharedClientMu.Lock()
-	defer server.sharedClientMu.Unlock()
-	if server.sharedUpdateClient == nil {
-		client, err := packagekit.New()
-		if err != nil {
-			return nil
-		}
-		server.sharedUpdateClient = client
-	}
-	return server.sharedUpdateClient
-}
-
-// transactionWatcher lazily starts the Package-signal collector that powers
-// the "view update log" panel.
-func (server *Server) transactionWatcher() *packagekit.TransactionWatcher {
-	server.sharedClientMu.Lock()
-	defer server.sharedClientMu.Unlock()
-	if server.updateWatcher == nil {
-		watcher, err := packagekit.NewTransactionWatcher()
-		if err != nil {
-			return nil
-		}
-		watcher.Start()
-		server.updateWatcher = watcher
-	}
-	return server.updateWatcher
-}
-
-func (server *Server) closeSharedUpdateClients() {
-	server.sharedClientMu.Lock()
-	client, watcher := server.sharedUpdateClient, server.updateWatcher
-	server.sharedUpdateClient, server.updateWatcher = nil, nil
-	server.sharedClientMu.Unlock()
-	if watcher != nil {
-		watcher.Close()
-	}
-	if client != nil {
-		client.Close()
-	}
-}
-
-// updateObservation bundles the live snapshot and recorded action log for one
-// observation point.
-type updateObservation struct {
-	Live platform.UpdateLive         `json:"live"`
-	Log  []packagekit.ActionLogEntry `json:"log"`
-}
-
-func (server *Server) observeUpdates(ctx context.Context) updateObservation {
-	observation := updateObservation{Live: platform.InactiveUpdateLive(), Log: []packagekit.ActionLogEntry{}}
-	observeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	client := server.sharedPackageKitClient()
-	var snapshot *packagekit.LiveUpdateSnapshot
-	if client != nil && client.Detect(observeCtx) {
-		snapshot = client.UpdateSnapshot(observeCtx)
-		observation.Live = platform.UpdateLiveFromSnapshot(snapshot)
-	}
-	if watcher := server.transactionWatcher(); watcher != nil {
-		path := ""
-		if snapshot != nil {
-			path = snapshot.TransactionPath
-		}
-		observation.Log = watcher.LatestLog(path)
-	}
-	return observation
-}
-
 func (server *Server) updateLiveStatus(writer http.ResponseWriter, request *http.Request) {
-	observation := server.observeUpdates(request.Context())
+	if server.readUpdateLiveFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Live update status is unavailable")
+		return
+	}
+	observation, err := server.readUpdateLiveFn(request.Context())
+	if err != nil {
+		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Live update status is unavailable")
+		return
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"live": observation.Live,
 		"log":  observation.Log,
@@ -344,9 +283,11 @@ func (server *Server) updateLiveStatus(writer http.ResponseWriter, request *http
 }
 
 func (server *Server) updateHistory(writer http.ResponseWriter, request *http.Request) {
-	historyCtx, cancel := context.WithTimeout(request.Context(), 20*time.Second)
-	defer cancel()
-	items, err := platform.UpdateHistory(historyCtx)
+	if server.readUpdateHistoryFn == nil {
+		writeJSON(writer, http.StatusOK, map[string]any{"items": []platform.UpdateHistoryEntry{}, "available": false})
+		return
+	}
+	items, err := server.readUpdateHistoryFn(request.Context())
 	if err != nil {
 		// History is a nice-to-have; degrade to an empty window instead of
 		// failing the page.
@@ -364,7 +305,11 @@ func (server *Server) cancelRunningUpdate(writer http.ResponseWriter, request *h
 	}
 	cancelCtx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
 	defer cancel()
-	found, err := platform.CancelRunningUpdate(cancelCtx)
+	if server.cancelUpdateFn == nil {
+		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Update cancellation is unavailable")
+		return
+	}
+	found, err := server.cancelUpdateFn(cancelCtx)
 	if err != nil {
 		writeUpdateProblem(writer, err)
 		return
@@ -386,9 +331,14 @@ func (server *Server) automaticUpdatesStatus(writer http.ResponseWriter, request
 func (server *Server) kpatchStatus(writer http.ResponseWriter, request *http.Request) {
 	kpatchCtx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
 	defer cancel()
+	status, settings, err := server.hostBroker().ReadKpatch(kpatchCtx, credentialsFromContext(request.Context()))
+	if err != nil {
+		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Kernel live-patch status is unavailable")
+		return
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"status":   platform.InspectKpatchStatus(kpatchCtx),
-		"settings": platform.InspectKpatchSettings(kpatchCtx),
+		"status":   status,
+		"settings": settings,
 	})
 }
 
