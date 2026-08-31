@@ -28,6 +28,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
+	"github.com/velopulent/tako/internal/idle"
 	"github.com/velopulent/tako/internal/platform"
 	"go.uber.org/zap"
 )
@@ -45,8 +46,10 @@ type bridgeGrant struct {
 }
 
 type grantStore struct {
-	mu     sync.Mutex
-	values map[string]bridgeGrant
+	mu       sync.Mutex
+	notifyMu sync.Mutex
+	values   map[string]bridgeGrant
+	activity *idle.Tracker
 }
 
 type administrativePolicy func(context.Context, auth.Identity, string) error
@@ -107,15 +110,30 @@ func Run(args []string) error {
 		zap.Bool("socket_activated", activated),
 	)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	ctx, cancel := context.WithCancel(signalCtx)
+	defer cancel()
+	activity := idle.New(runtimeConfig.ServiceIdleTimeout)
+	defer activity.Stop()
+	if activated {
+		activity.Start()
+		go func() {
+			select {
+			case <-activity.Done():
+				logger.Info("session service idle; shutting down")
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
 
 	service := auth.PAMAuthenticator{Service: "tako"}
-	grants := &grantStore{values: make(map[string]bridgeGrant)}
+	grants := &grantStore{values: make(map[string]bridgeGrant), activity: activity}
 	hostRuntime := newHostRuntime(runtimeConfig.MonitoringInterval, runtimeConfig.HistoryRetention)
 	hostRuntime.certificatePath = runtimeConfig.Certificate
 	go hostRuntime.run(ctx)
@@ -124,6 +142,7 @@ func Run(args []string) error {
 	conversations := newConversationStore(service, func(session auth.UserSession) (string, error) {
 		return grants.addUserSession(session)
 	})
+	conversations.activity = activity
 	defer conversations.closeAll()
 	defer grants.closeAll()
 	for {
@@ -135,7 +154,11 @@ func Run(args []string) error {
 			logger.Warn("connection accept failed", zap.Error(err))
 			continue
 		}
-		go handleWithRuntime(conn, service, conversations, grants, policy, logger, hostRuntime)
+		release := activity.Block()
+		go func() {
+			defer release()
+			handleWithRuntime(conn, service, conversations, grants, policy, logger, hostRuntime)
+		}()
 	}
 }
 
@@ -1375,6 +1398,7 @@ func (store *grantStore) addGrant(identity auth.Identity, bridge io.Closer, clos
 	grant.timer = time.AfterFunc(30*time.Second, func() { store.expire(token) })
 	store.values[token] = grant
 	store.mu.Unlock()
+	store.notifyActivity()
 	return token, nil
 }
 
@@ -1394,6 +1418,7 @@ func (store *grantStore) expire(token string) {
 	}
 	delete(store.values, token)
 	store.mu.Unlock()
+	store.notifyActivity()
 	cleanupGrant(grant)
 }
 
@@ -1412,6 +1437,7 @@ func (store *grantStore) get(token string) (auth.Identity, bool) {
 		delete(store.values, token)
 		store.mu.Unlock()
 		if ok {
+			store.notifyActivity()
 			cleanupGrant(grant)
 		}
 		return auth.Identity{}, false
@@ -1533,6 +1559,7 @@ func (store *grantStore) claim(token string) (auth.Identity, bool) {
 		}
 		store.mu.Unlock()
 		if expired {
+			store.notifyActivity()
 			cleanupGrant(grant)
 		}
 		return auth.Identity{}, false
@@ -1548,6 +1575,7 @@ func (store *grantStore) closeAll() {
 	values := store.values
 	store.values = make(map[string]bridgeGrant)
 	store.mu.Unlock()
+	store.notifyActivity()
 	for _, grant := range values {
 		cleanupGrant(grant)
 	}
@@ -1563,8 +1591,21 @@ func (store *grantStore) close(token string) bool {
 	if !ok {
 		return false
 	}
+	store.notifyActivity()
 	cleanupGrant(grant)
 	return true
+}
+
+func (store *grantStore) notifyActivity() {
+	if store.activity == nil {
+		return
+	}
+	store.notifyMu.Lock()
+	defer store.notifyMu.Unlock()
+	store.mu.Lock()
+	busy := len(store.values) > 0
+	store.mu.Unlock()
+	store.activity.SetBusy("sessiond-grants", busy)
 }
 
 func cleanupGrant(grant bridgeGrant) {

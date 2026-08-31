@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/idle"
 )
 
 const (
@@ -50,11 +51,13 @@ type conversationState struct {
 
 type conversationStore struct {
 	mu       sync.Mutex
+	notifyMu sync.Mutex
 	values   map[string]*conversationState
 	workers  int
 	byUser   map[string]int
 	opener   sessionOpener
 	complete func(auth.UserSession) (string, error)
+	activity *idle.Tracker
 }
 
 const (
@@ -144,7 +147,13 @@ func (store *conversationStore) advance(ctx context.Context, request auth.Conver
 
 func (store *conversationStore) state(request auth.ConversationRequest) (*conversationState, error) {
 	store.mu.Lock()
-	defer store.mu.Unlock()
+	created := false
+	defer func() {
+		store.mu.Unlock()
+		if created {
+			store.notifyActivity()
+		}
+	}()
 	if request.ConversationID != "" {
 		state, ok := store.values[request.ConversationID]
 		if !ok {
@@ -179,6 +188,7 @@ func (store *conversationStore) state(request auth.ConversationRequest) (*conver
 	store.values[id] = state
 	store.workers++
 	store.byUser[request.Username]++
+	created = true
 	go store.run(conversationCtx, state)
 	return state, nil
 }
@@ -226,6 +236,7 @@ func (store *conversationStore) workerDone(username string) {
 		delete(store.byUser, username)
 	}
 	store.mu.Unlock()
+	store.notifyActivity()
 }
 
 func (store *conversationStore) answer(state *conversationState, responses []auth.PromptResponse) error {
@@ -276,4 +287,16 @@ func (store *conversationStore) closeAll() {
 		state.expires.Stop()
 		state.cancel()
 	}
+}
+
+func (store *conversationStore) notifyActivity() {
+	if store.activity == nil {
+		return
+	}
+	store.notifyMu.Lock()
+	defer store.notifyMu.Unlock()
+	store.mu.Lock()
+	busy := store.workers > 0
+	store.mu.Unlock()
+	store.activity.SetBusy("sessiond-conversations", busy)
 }
