@@ -33,6 +33,7 @@ import (
 	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/dashboard"
 	"github.com/velopulent/tako/internal/host"
+	"github.com/velopulent/tako/internal/idle"
 	"github.com/velopulent/tako/internal/metrics"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/preferences"
@@ -106,6 +107,7 @@ type Server struct {
 	signalProcesses        func(context.Context, auth.SignalRequest) (platform.SignalResult, error)
 	detectCapabilities     func(context.Context) []platform.Capability
 	notifications          *notificationStore
+	idle                   *idle.Tracker
 	previewMu              sync.Mutex
 	previewGrants          map[string]filePreviewGrant
 }
@@ -153,6 +155,7 @@ func New(cfg config.Config) (*Server, error) {
 		cleanupQueue:  make(chan auth.Identity, 64),
 		pruneDone:     make(chan struct{}),
 		notifications: newNotificationStore(),
+		idle:          idle.New(cfg.ServiceIdleTimeout),
 		previewGrants: make(map[string]filePreviewGrant),
 		readHostInfoFn: func(ctx context.Context) (host.Info, error) {
 			return server.hostBroker().ReadHostInfo(ctx, credentialsFromContext(ctx))
@@ -287,6 +290,8 @@ func New(cfg config.Config) (*Server, error) {
 	server.followLogs = server.followJournal
 	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
+	sessions.SetCountHook(func(count int) { server.idle.SetBusy("sessions", count > 0) })
+	server.jobs.SetBusyHook(func(busy bool) { server.idle.SetBusy("jobs", busy) })
 	_, sessionController := authenticator.(auth.SessionController)
 	_, administrativeController := authenticator.(auth.AdministrativeController)
 	if sessionController || administrativeController {
@@ -310,7 +315,7 @@ func New(cfg config.Config) (*Server, error) {
 	}()
 	server.http = &http.Server{
 		Addr:              cfg.Address,
-		Handler:           server.routes(),
+		Handler:           server.activityMiddleware(server.routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
@@ -376,8 +381,23 @@ func (server *Server) ListenAndServe() error {
 		server.logger.Info("listening", zap.String("network", "tcp"), zap.String("address", listener.Addr().String()))
 	} else {
 		server.logger.Info("using systemd listener", zap.String("address", listener.Addr().String()))
+		server.idle.Start()
 	}
 	return server.Serve(listener)
+}
+
+// Idle is closed when a socket-activated gateway has been idle long enough to
+// shut down. Direct listeners never start the idle tracker.
+func (server *Server) Idle() <-chan struct{} {
+	return server.idle.Done()
+}
+
+func (server *Server) activityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		release := server.idle.Block()
+		defer release()
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func (server *Server) Serve(listener net.Listener) error {
@@ -392,6 +412,7 @@ func (server *Server) Serve(listener net.Listener) error {
 }
 
 func (server *Server) Shutdown(ctx context.Context) error {
+	server.idle.Stop()
 	server.cancel()
 	shutdownErr := server.http.Shutdown(ctx)
 	<-server.pruneDone

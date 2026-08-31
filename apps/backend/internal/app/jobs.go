@@ -36,9 +36,45 @@ type diagnosticJobManager struct {
 	execute func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error)
 
 	mu       sync.Mutex
+	notifyMu sync.Mutex
 	closed   bool
 	inflight map[string]context.CancelFunc
+	pending  int
+	busyHook func(bool)
 	wg       sync.WaitGroup
+}
+
+func (manager *diagnosticJobManager) SetBusyHook(hook func(bool)) {
+	manager.mu.Lock()
+	manager.busyHook = hook
+	manager.mu.Unlock()
+	manager.notifyBusy()
+}
+
+func (manager *diagnosticJobManager) addPending(delta int) {
+	manager.mu.Lock()
+	wasBusy := manager.pending > 0
+	manager.pending += delta
+	if manager.pending < 0 {
+		manager.pending = 0
+	}
+	busy := manager.pending > 0
+	manager.mu.Unlock()
+	if wasBusy != busy {
+		manager.notifyBusy()
+	}
+}
+
+func (manager *diagnosticJobManager) notifyBusy() {
+	manager.notifyMu.Lock()
+	defer manager.notifyMu.Unlock()
+	manager.mu.Lock()
+	hook := manager.busyHook
+	busy := manager.pending > 0
+	manager.mu.Unlock()
+	if hook != nil {
+		hook(busy)
+	}
 }
 
 func newDiagnosticJobManager(parent context.Context, store *preferences.Store, execute func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error)) *diagnosticJobManager {
@@ -82,10 +118,12 @@ func (manager *diagnosticJobManager) SubmitWithSetup(ctx context.Context, kind, 
 	if setup != nil {
 		setup(job.ID)
 	}
+	manager.addPending(1)
 	select {
 	case manager.queue <- job.ID:
 		return job, nil
 	default:
+		manager.addPending(-1)
 		_ = manager.store.FailJob(context.Background(), job.ID, "Not queued", ErrJobQueueFull)
 		return preferences.Job{}, ErrJobQueueFull
 	}
@@ -116,10 +154,12 @@ func (manager *diagnosticJobManager) SubmitParameterizedWithSetup(ctx context.Co
 	if setup != nil {
 		setup(job.ID)
 	}
+	manager.addPending(1)
 	select {
 	case manager.queue <- job.ID:
 		return job, nil
 	default:
+		manager.addPending(-1)
 		_ = manager.store.FailJob(context.Background(), job.ID, "Not queued", ErrJobQueueFull)
 		return preferences.Job{}, ErrJobQueueFull
 	}
@@ -151,6 +191,7 @@ func (manager *diagnosticJobManager) worker() {
 }
 
 func (manager *diagnosticJobManager) run(id string) {
+	defer manager.addPending(-1)
 	if manager.ctx.Err() != nil {
 		return
 	}

@@ -97,6 +97,44 @@ func TestDiagnosticJobCancellationStopsExecution(t *testing.T) {
 	}
 }
 
+func TestDiagnosticJobManagerReportsBusyState(t *testing.T) {
+	store, err := preferences.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	release := make(chan struct{})
+	manager := newDiagnosticJobManager(context.Background(), store, func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error) {
+		<-release
+		return json.RawMessage(`{}`), nil
+	})
+	defer manager.Close(context.Background())
+	states := make(chan bool, 4)
+	manager.SetBusyHook(func(busy bool) { states <- busy })
+	if _, err := manager.Submit(context.Background(), hostInventoryJob, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []bool{false, true} {
+		select {
+		case got := <-states:
+			if got != want {
+				t.Fatalf("busy=%t, want %t", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("missing busy=%t notification", want)
+		}
+	}
+	close(release)
+	select {
+	case busy := <-states:
+		if busy {
+			t.Fatal("manager remained busy after job completion")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing idle notification")
+	}
+}
+
 func TestProductionInventoryJobRequiresEphemeralAuthority(t *testing.T) {
 	server := &Server{
 		config:               config.Default(),
