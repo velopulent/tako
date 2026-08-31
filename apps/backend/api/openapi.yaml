@@ -1429,6 +1429,7 @@ paths:
   /processes:
     get:
       operationId: listProcesses
+      description: Read-only system-wide process inventory for any authenticated session. Process control is authorized separately; individual rows may report restricted optional fields.
       responses:
         '200':
           description: Process inventory with PID-start identity and per-process access status
@@ -1445,6 +1446,7 @@ paths:
   /processes/{pid}:
     get:
       operationId: getProcessDetails
+      description: Read-only system-wide process inspection for any authenticated session. PID plus Linux start ticks identify the process; optional procfs fields may be restricted.
       parameters:
         - in: path
           name: pid
@@ -1534,6 +1536,20 @@ components:
         reason: { type: string }
         missingDependency: { type: string }
         setupGuidance: { type: string }
+        scopes:
+          type: object
+          description: Per-execution-lane readiness and authority.
+          additionalProperties:
+            $ref: '#/components/schemas/CapabilityScope'
+    CapabilityScope:
+      type: object
+      required: [state, readable, mutable, authority]
+      properties:
+        state: { type: string, enum: [ready, degraded, unavailable, conflicted] }
+        readable: { type: boolean }
+        mutable: { type: boolean }
+        authority: { type: string, enum: [none, user-bridge, root-sessiond, gateway] }
+        reason: { type: string }
     UpdateStatus:
       type: object
       required: [available, backend, contract, packages, fingerprint, externalLock, message, recovery]
@@ -2183,11 +2199,18 @@ components:
     Problem:
       type: object
       required: [title, status, code]
+      description: API problem. Host-backed routes use stable authority codes for execution-lane failures.
       properties:
         title: { type: string }
         status: { type: integer }
-        code: { type: string }
+        code:
+          type: string
+          description: Module-specific code or one of the stable HostAuthorityErrorCode values.
         detail: { type: string }
+    HostAuthorityErrorCode:
+      type: string
+      description: Stable error codes returned when a host execution lane cannot complete an operation.
+      enum: [permission-denied, user-manager-unavailable, system-backend-unavailable, timeout, bounded-output, conflict]
     JournalPage:
       type: object
       required: [items]
