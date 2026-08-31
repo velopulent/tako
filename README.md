@@ -45,7 +45,7 @@ bun run graph
 
 `bun run build` builds `apps/dashboard` first, embeds its output in `apps/backend`, and writes the multicall executable to `bin/tako`.
 
-Logs are JSON on the service journal (`journalctl -u tako.service -u tako-sessiond.service -f`). Set `TAKO_LOG_LEVEL=debug` for more detail.
+Logs use human-readable console output in the service journal (`journalctl -u tako.service -u tako-sessiond.service -f`). Structured fields follow each message. Set `TAKO_LOG_LEVEL=debug` for more detail, including caller locations.
 
 ## Implemented
 
