@@ -2429,7 +2429,7 @@ func (server *Server) requireCSRF(next http.Handler) http.Handler {
 }
 
 func (server *Server) originAllowed(request *http.Request) bool {
-	origin := request.Header.Get("Origin")
+	origin := strings.TrimSuffix(request.Header.Get("Origin"), "/")
 	if origin == "" && server.config.Development {
 		return true
 	}
@@ -2437,8 +2437,15 @@ func (server *Server) originAllowed(request *http.Request) bool {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return false
 	}
+	if server.config.AllowedOrigins == nil {
+		scheme := "http"
+		if request.TLS != nil {
+			scheme = "https"
+		}
+		return strings.EqualFold(scheme+"://"+request.Host, origin)
+	}
 	for _, allowed := range server.config.AllowedOrigins {
-		if strings.EqualFold(strings.TrimSuffix(allowed, "/"), strings.TrimSuffix(origin, "/")) {
+		if strings.EqualFold(strings.TrimSuffix(allowed, "/"), origin) {
 			return true
 		}
 	}

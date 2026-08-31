@@ -2,7 +2,9 @@
 address = ":9090"
 data_dir = "/var/lib/tako"
 session_socket = "/run/tako/session.sock"
-allowed_origin = "https://localhost:9090, https://127.0.0.1:9090"
+# Omit to allow same-origin access at the current URL, including a server IP or hostname.
+# Set exact scheme/host/port values for alternate origins or a reverse proxy.
+# allowed_origin = "https://console.example.com"
 # certificate = "/etc/tako/tako.crt"
 # certificate_key = "/etc/tako/tako.key"
 

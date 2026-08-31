@@ -40,6 +40,19 @@ func TestDevelopmentDefaultsUseLoopback(t *testing.T) {
 	if cfg.Address != "127.0.0.1:9090" || !cfg.Development {
 		t.Fatalf("unsafe development defaults: %#v", cfg)
 	}
+	if len(cfg.AllowedOrigins) != 2 || cfg.AllowedOrigins[0] != "http://127.0.0.1:9090" || cfg.AllowedOrigins[1] != "http://localhost:9090" {
+		t.Fatalf("unsafe development origins: %q", cfg.AllowedOrigins)
+	}
+}
+
+func TestProductionDefaultsDeriveAllowedOrigin(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowedOrigins != nil {
+		t.Fatalf("production defaults should derive the origin, got %q", cfg.AllowedOrigins)
+	}
 }
 
 func TestAllowedOriginAcceptsCommaSeparatedList(t *testing.T) {

@@ -133,7 +133,7 @@ func TestLoginReportsSessionSetupFailure(t *testing.T) {
 	server.authenticator = sessionFailedAuthenticator{}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"krishna","password":"secret"}`))
 	request.RemoteAddr = "127.0.0.1:12345"
-	request.Header.Set("Origin", server.config.AllowedOrigins[0])
+	request.Header.Set("Origin", "http://example.com")
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusInternalServerError {
@@ -187,7 +187,7 @@ func TestLoginRejectsMixedConversationShape(t *testing.T) {
 	server.authenticator = &conversationalAuthenticator{}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"octopus","conversationId":"conversation-token","responses":[{"id":"otp","value":"123456"}]}`))
 	request.RemoteAddr = "127.0.0.1:12345"
-	request.Header.Set("Origin", server.config.AllowedOrigins[0])
+	request.Header.Set("Origin", "http://example.com")
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {

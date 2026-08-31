@@ -11,11 +11,13 @@ import (
 )
 
 type Config struct {
-	Address            string
-	DataDir            string
-	Certificate        string
-	CertificateKey     string
-	SessionSocket      string
+	Address        string
+	DataDir        string
+	Certificate    string
+	CertificateKey string
+	SessionSocket  string
+	// A nil list derives the allowed origin from each request's scheme and host.
+	// A non-nil list is an explicit origin allowlist.
 	AllowedOrigins     []string
 	Development        bool
 	MonitoringInterval time.Duration
@@ -28,7 +30,6 @@ func Default() Config {
 		Address:            ":9090",
 		DataDir:            "/var/lib/tako",
 		SessionSocket:      "/run/tako/session.sock",
-		AllowedOrigins:     []string{"https://localhost:9090"},
 		MonitoringInterval: time.Minute,
 		HistoryRetention:   24 * time.Hour,
 		AdminIdleTimeout:   5 * time.Minute,
