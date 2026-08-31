@@ -14,13 +14,31 @@ test -x "$binary"
 systemctl is-enabled "$gateway_unit" >/dev/null
 systemctl is-enabled "$gateway_socket_unit" >/dev/null
 systemctl is-enabled "$session_socket_unit" >/dev/null
-systemctl is-active "$gateway_unit" >/dev/null
 systemctl is-active "$gateway_socket_unit" >/dev/null
 systemctl is-active "$session_socket_unit" >/dev/null
+if systemctl is-active --quiet "$gateway_unit"; then
+    echo "$gateway_unit unexpectedly active before socket traffic" >&2
+    exit 1
+fi
+if systemctl is-active --quiet "$session_service_unit"; then
+    echo "$session_service_unit unexpectedly active before socket traffic" >&2
+    exit 1
+fi
+
+# HTTPS traffic activates only the gateway.
+status="$(curl --silent --show-error --insecure --output /dev/null --write-out '%{http_code}' "$base_url/api/v1/auth/session")"
+test "$status" = 401
+systemctl is-active "$gateway_unit" >/dev/null
+if systemctl is-active --quiet "$session_service_unit"; then
+    echo "$session_service_unit activated without privileged socket traffic" >&2
+    exit 1
+fi
+
+# A Unix-socket connection activates sessiond without attempting PAM.
+python3 -c 'import socket; client=socket.socket(socket.AF_UNIX); client.connect("/run/tako/session.sock"); client.close()'
+systemctl is-active "$session_service_unit" >/dev/null
 # Starting sessiond must not remove its socket-activation pathname. This catches
 # accidental RuntimeDirectory ownership of /run/tako by the service unit.
-systemctl start "$session_service_unit"
-systemctl is-active "$session_service_unit" >/dev/null
 test -S /run/tako/session.sock
 test "$(stat -c '%a %U %G' /run/tako)" = "750 root tako-session"
 test "$(stat -c '%a %U %G' /run/tako/session.sock)" = "660 root tako-session"
@@ -34,11 +52,6 @@ test "$gateway_user" = tako-gateway
 test "$gateway_group" = tako-session
 test "$session_user" = root
 
-# An unauthenticated request proves TLS/socket reachability without attempting
-# PAM. The production gateway must not expose a dashboard without a session.
-status="$(curl --silent --show-error --insecure --output /dev/null --write-out '%{http_code}' "$base_url/api/v1/auth/session")"
-test "$status" = 401
-
 if [[ -n "${TAKO_SMOKE_USER:-}" && -n "${TAKO_SMOKE_PASSWORD:-}" ]]; then
   if [[ "${TAKO_SMOKE_USER}" == "root" ]]; then
     echo "TAKO_SMOKE_USER must be a non-root UNIX account" >&2
@@ -50,5 +63,9 @@ if [[ -n "${TAKO_SMOKE_USER:-}" && -n "${TAKO_SMOKE_PASSWORD:-}" ]]; then
 else
   echo "PAM login smoke test skipped (set TAKO_SMOKE_USER and TAKO_SMOKE_PASSWORD in the disposable VM)"
 fi
+
+systemctl stop "$gateway_unit" "$session_service_unit"
+systemctl is-active "$gateway_socket_unit" >/dev/null
+systemctl is-active "$session_socket_unit" >/dev/null
 
 echo "Tako packaging smoke test passed"

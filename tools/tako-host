@@ -264,6 +264,7 @@ cmd_setup() {
 address = "127.0.0.1:9090"
 data_dir = "/var/lib/tako"
 session_socket = "/run/tako/session.sock"
+service_idle_timeout = "10m"
 allowed_origin = "https://localhost:9090, https://127.0.0.1:9090"
 
 [monitoring]
@@ -299,8 +300,8 @@ EOF
   systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf
   systemctl enable --now tako-sessiond.socket
   systemctl enable --now tako.socket
-  systemctl reset-failed tako.service 2>/dev/null || true
-  systemctl enable --now tako.service
+  systemctl disable tako.service 2>/dev/null || true
+  systemctl stop tako.service 2>/dev/null || true
 
   echo "https://127.0.0.1:9090"
 }
@@ -333,8 +334,8 @@ cmd_reload() {
     write_overlay_sync
     remove_legacy_sync_units
     systemctl daemon-reload
-    systemctl reset-failed tako.service 2>/dev/null || true
-    systemctl restart tako-sessiond.socket tako.socket tako.service
+    systemctl restart tako-sessiond.socket tako.socket
+    systemctl try-restart tako.service tako-sessiond.service
   else
     sudo "$ROOT/tools/tako-host" _restart
   fi
@@ -348,8 +349,8 @@ cmd_restart_as_root() {
   write_overlay_sync
   remove_legacy_sync_units
   systemctl daemon-reload
-  systemctl reset-failed tako.service 2>/dev/null || true
-  systemctl restart tako-sessiond.socket tako.socket tako.service
+  systemctl restart tako-sessiond.socket tako.socket
+  systemctl try-restart tako.service tako-sessiond.service
 }
 
 cmd_start() {
@@ -362,7 +363,7 @@ cmd_start() {
   fi
   if [[ "$(id -u)" -eq 0 ]]; then
     refresh_overlay
-    systemctl start tako-sessiond.socket tako.socket tako.service
+    systemctl start tako-sessiond.socket tako.socket
   else
     sudo "$ROOT/tools/tako-host" _start_root
   fi
@@ -375,8 +376,7 @@ cmd_start_root() {
     install_host_binary
   fi
   systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf 2>/dev/null || true
-  systemctl reset-failed tako.service 2>/dev/null || true
-  systemctl start tako-sessiond.socket tako.socket tako.service
+  systemctl start tako-sessiond.socket tako.socket
 }
 
 cmd_stop() {

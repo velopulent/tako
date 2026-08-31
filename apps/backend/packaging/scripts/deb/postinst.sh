@@ -11,7 +11,7 @@ else
 fi
 
 if [ "${1:-}" = configure ] && [ -z "${2:-}" ]; then
-    for unit in tako-sessiond.socket tako.socket tako.service; do
+    for unit in tako-sessiond.socket tako.socket; do
         deb-systemd-helper enable "$unit" >/dev/null 2>&1 || true
         deb-systemd-invoke start "$unit" >/dev/null 2>&1 || true
     done
@@ -19,6 +19,10 @@ else
     for unit in tako-sessiond.service tako-sessiond.socket tako.socket tako.service; do
         deb-systemd-invoke try-restart "$unit" >/dev/null 2>&1 || true
     done
+fi
+
+if [ "$(systemctl is-enabled tako.service 2>/dev/null || true)" != masked ]; then
+    deb-systemd-helper disable tako.service >/dev/null 2>&1 || true
 fi
 
 exit 0

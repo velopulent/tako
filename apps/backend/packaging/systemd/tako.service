@@ -27,7 +27,3 @@ StateDirectoryMode=0700
 ReadWritePaths=/var/lib/tako
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
-
-[Install]
-WantedBy=multi-user.target
-Also=tako.socket tako-sessiond.socket
