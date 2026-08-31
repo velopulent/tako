@@ -2,6 +2,7 @@
 address = ":9090"
 data_dir = "/var/lib/tako"
 session_socket = "/run/tako/session.sock"
+service_idle_timeout = "10m"
 # Omit to allow same-origin access at the current URL, including a server IP or hostname.
 # Set exact scheme/host/port values for alternate origins or a reverse proxy.
 # allowed_origin = "https://console.example.com"

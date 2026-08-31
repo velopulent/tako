@@ -23,6 +23,7 @@ type Config struct {
 	MonitoringInterval time.Duration
 	HistoryRetention   time.Duration
 	AdminIdleTimeout   time.Duration
+	ServiceIdleTimeout time.Duration
 }
 
 func Default() Config {
@@ -33,6 +34,7 @@ func Default() Config {
 		MonitoringInterval: time.Minute,
 		HistoryRetention:   24 * time.Hour,
 		AdminIdleTimeout:   5 * time.Minute,
+		ServiceIdleTimeout: 10 * time.Minute,
 	}
 }
 
@@ -86,6 +88,8 @@ func Load(path string, development bool) (Config, error) {
 			cfg.CertificateKey = value
 		case "server.session_socket":
 			cfg.SessionSocket = value
+		case "server.service_idle_timeout":
+			cfg.ServiceIdleTimeout, err = parseOptionalDuration(value, 30*time.Second, 24*time.Hour)
 		case "server.allowed_origin":
 			cfg.AllowedOrigins = splitOrigins(value)
 		case "monitoring.default_interval":
@@ -122,4 +126,11 @@ func parseDuration(value string, minimum, maximum time.Duration) (time.Duration,
 		return 0, errors.New("duration outside allowed range: " + value)
 	}
 	return result, nil
+}
+
+func parseOptionalDuration(value string, minimum, maximum time.Duration) (time.Duration, error) {
+	if value == "0" {
+		return 0, nil
+	}
+	return parseDuration(value, minimum, maximum)
 }

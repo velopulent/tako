@@ -32,6 +32,46 @@ func TestMonitoringAndAdminDurations(t *testing.T) {
 	}
 }
 
+func TestServiceIdleTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[server]\nservice_idle_timeout = \"2m\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServiceIdleTimeout != 2*time.Minute {
+		t.Fatalf("service idle timeout=%s", cfg.ServiceIdleTimeout)
+	}
+}
+
+func TestServiceIdleTimeoutCanBeDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[server]\nservice_idle_timeout = \"0\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServiceIdleTimeout != 0 {
+		t.Fatalf("service idle timeout=%s", cfg.ServiceIdleTimeout)
+	}
+}
+
+func TestRejectsUnsafeServiceIdleTimeout(t *testing.T) {
+	for _, value := range []string{"1s", "not-a-duration"} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte("[server]\nservice_idle_timeout = \""+value+"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path, false); err == nil {
+			t.Fatalf("unsafe service idle timeout %q accepted", value)
+		}
+	}
+}
+
 func TestDevelopmentDefaultsUseLoopback(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"), true)
 	if err != nil {
@@ -52,6 +92,9 @@ func TestProductionDefaultsDeriveAllowedOrigin(t *testing.T) {
 	}
 	if cfg.AllowedOrigins != nil {
 		t.Fatalf("production defaults should derive the origin, got %q", cfg.AllowedOrigins)
+	}
+	if cfg.ServiceIdleTimeout != 10*time.Minute {
+		t.Fatalf("service idle timeout=%s", cfg.ServiceIdleTimeout)
 	}
 }
 
