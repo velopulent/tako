@@ -23,20 +23,29 @@ const (
 	StateConflicted  CapabilityState = "conflicted"
 )
 
+type CapabilityScope struct {
+	State     CapabilityState `json:"state"`
+	Readable  bool            `json:"readable"`
+	Mutable   bool            `json:"mutable"`
+	Authority string          `json:"authority"`
+	Reason    string          `json:"reason,omitempty"`
+}
+
 type Capability struct {
-	ID                string          `json:"id"`
-	State             CapabilityState `json:"state"`
-	Backend           string          `json:"backend,omitempty"`
-	Version           string          `json:"version,omitempty"`
-	Readable          bool            `json:"readable"`
-	Mutable           bool            `json:"mutable"`
-	Rollback          bool            `json:"rollback"`
-	ReadAuthority     string          `json:"readAuthority"`
-	MutationAuthority string          `json:"mutationAuthority"`
-	Contract          string          `json:"contract"`
-	Reason            string          `json:"reason,omitempty"`
-	MissingDependency string          `json:"missingDependency,omitempty"`
-	SetupGuidance     string          `json:"setupGuidance,omitempty"`
+	ID                string                     `json:"id"`
+	State             CapabilityState            `json:"state"`
+	Backend           string                     `json:"backend,omitempty"`
+	Version           string                     `json:"version,omitempty"`
+	Readable          bool                       `json:"readable"`
+	Mutable           bool                       `json:"mutable"`
+	Rollback          bool                       `json:"rollback"`
+	ReadAuthority     string                     `json:"readAuthority"`
+	MutationAuthority string                     `json:"mutationAuthority"`
+	Contract          string                     `json:"contract"`
+	Reason            string                     `json:"reason,omitempty"`
+	MissingDependency string                     `json:"missingDependency,omitempty"`
+	SetupGuidance     string                     `json:"setupGuidance,omitempty"`
+	Scopes            map[string]CapabilityScope `json:"scopes,omitempty"`
 }
 
 type runtimeProbe interface {

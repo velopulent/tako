@@ -17,9 +17,9 @@ var (
 // gateway and the privileged session boundary. It deliberately contains no
 // executable command or shell representation.
 type ServiceOperation struct {
-	Scope  string
-	Unit   string
-	Action string
+	Scope  string `json:"scope"`
+	Unit   string `json:"unit"`
+	Action string `json:"action"`
 }
 
 type ServiceImpactRelation struct {
