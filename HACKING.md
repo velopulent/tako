@@ -102,8 +102,7 @@ anything that talks to sessiond.
 ## Packaging and VMs
 
 Production layout, PAM variants, and the disposable-VM smoke seam live in
-[`apps/backend/packaging/README.md`](apps/backend/packaging/README.md). Distro
-coverage expectations are in [`docs/vm-release-matrix.md`](docs/vm-release-matrix.md).
+[`apps/backend/packaging/README.md`](apps/backend/packaging/README.md).
 
 ## Common workspace commands
 

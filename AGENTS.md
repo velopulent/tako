@@ -6,7 +6,7 @@ Tako is a linux administration application
 
 This codebase is an Nx monorepo managed with Bun. Applications live under `apps/`. `apps/backend/cmd/tako/` contains the single Go executable entry point and its `serve`, `sessiond`, and `bridge` modes. Backend packages live under `apps/backend/internal/`; keep platform-specific logic in small module-owned adapters rather than generic repository layers. The API contract is in `apps/backend/api/openapi.yaml`.
 
-Frontend source lives in `apps/dashboard/src/`. Reusable shadcn components belong in `apps/dashboard/src/components/ui/`, application components in `apps/dashboard/src/components/`, and route views in `apps/dashboard/src/routes/`. Vite writes production assets to `apps/backend/internal/dashboard/dist/` for `go:embed`. Architecture decisions and terminology are documented in `docs/`; deployment files are in `apps/backend/packaging/`.
+Frontend source lives in `apps/dashboard/src/`. Reusable shadcn components belong in `apps/dashboard/src/components/ui/`, application components in `apps/dashboard/src/components/`, and route views in `apps/dashboard/src/routes/`. Vite writes production assets to `apps/backend/internal/dashboard/dist/` for `go:embed`. Deployment files are in `apps/backend/packaging/`.
 
 ## Build, Test, and Development Commands
 
@@ -32,7 +32,7 @@ Place tests beside implementation. Cover parsers, bounded streams, session expir
 
 ## Commit & Pull Request Guidelines
 
-Git history is unavailable in this checkout. Use concise imperative subjects, optionally Conventional Commit prefixes such as `feat:`, `fix:`, or `docs:`. Keep commits scoped. Pull requests should explain behavior and security impact, list verification commands, link relevant issues/ADRs, and include screenshots for visible UI changes.
+Use concise imperative subjects, use Conventional Commit prefixes such as `feat:`, `fix:`, or `docs:`. Keep commits scoped. Pull requests should explain behavior and security impact, list verification commands, link relevant issues, and include screenshots for visible UI changes.
 
 ## Security & Configuration
 
