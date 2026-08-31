@@ -35,7 +35,7 @@ func run() int {
 	}
 	defer func() { _ = logger.Sync() }()
 	zap.ReplaceGlobals(logger)
-	logger.Info("process starting", zap.Int("pid", os.Getpid()))
+	logger.Info("process starting")
 
 	err = nil
 	switch os.Args[1] {

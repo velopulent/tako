@@ -16,9 +16,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/velopulent/tako/internal/logging"
 	"github.com/velopulent/tako/internal/platform"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 type frame struct {
@@ -30,12 +30,10 @@ type frame struct {
 
 // Run serves framed bridge RPC until input closes or an I/O error occurs.
 func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
-	encoder := zap.NewProductionEncoderConfig()
-	encoder.EncodeTime = zapcore.RFC3339NanoTimeEncoder
-	logger := zap.New(zapcore.NewCore(zapcore.NewJSONEncoder(encoder), zapcore.AddSync(errorOutput), zapcore.InfoLevel), zap.AddCaller()).With(
-		zap.String("service", "tako"),
-		zap.String("mode", "bridge"),
-	)
+	logger, err := logging.NewWithOutput("bridge", errorOutput)
+	if err != nil {
+		return err
+	}
 	defer func() { _ = logger.Sync() }()
 	logger.Info("bridge started")
 	reader := bufio.NewReader(input)
