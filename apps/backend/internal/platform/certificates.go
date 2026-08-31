@@ -38,6 +38,21 @@ func InspectCertificate(path string) (CertificateStatus, error) {
 	if err != nil {
 		return status, err
 	}
+	return InspectCertificatePayload(path, payload)
+}
+
+// InspectCertificatePayload parses certificate bytes obtained by an authority
+// process. Keeping parsing here lets the gateway inspect certificates it owns
+// while external certificate paths are read by sessiond.
+func InspectCertificatePayload(path string, payload []byte) (CertificateStatus, error) {
+	status := CertificateStatus{Configured: path != "", Path: path}
+	if path == "" {
+		status.Warning = "HTTPS certificate is not configured."
+		return status, nil
+	}
+	if len(payload) > 1<<20 {
+		return status, errors.New("certificate exceeds bounded size")
+	}
 	block, _ := pem.Decode(payload)
 	if block == nil || block.Type != "CERTIFICATE" {
 		return status, errors.New("certificate PEM is invalid")
