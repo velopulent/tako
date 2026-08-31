@@ -110,6 +110,6 @@ func serve(args []string) error {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   tako serve [--config path] [--dev]  unprivileged HTTPS gateway
-  tako sessiond [--socket path]       privileged PAM/session boundary
+  tako sessiond [--socket path] [--config path] privileged PAM/session boundary
   tako bridge                          per-user framed RPC bridge`)
 }

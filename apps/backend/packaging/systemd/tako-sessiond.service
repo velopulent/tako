@@ -2,7 +2,7 @@
 Description=Tako PAM session service
 
 [Service]
-ExecStart=/usr/bin/tako sessiond --socket /run/tako/session.sock
+ExecStart=/usr/bin/tako sessiond --socket /run/tako/session.sock --config /etc/tako/config.toml
 User=root
 Group=tako-session
 Restart=on-failure
@@ -10,9 +10,9 @@ RestartSec=2s
 PrivateTmp=true
 # Sessiond setuid-execs `tako bridge` as the authenticated user. That child
 # inherits this unit's sandbox, so the unit must look like a login helper
-# (cockpit-session), not like the network gateway. NoNewPrivileges,
-# ProtectSystem=strict, ProtectControlGroups, and RestrictAddressFamilies
-# block non-root bridge spawn or leave /home read-only.
+# (cockpit-session), not like the network gateway. It deliberately keeps
+# /home visible and does not use NoNewPrivileges: PAM and the user bridge need
+# the root helper to retain the authority to establish the authenticated UID.
 ProtectSystem=true
 ProtectHome=false
 ProtectKernelTunables=true

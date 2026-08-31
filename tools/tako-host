@@ -235,7 +235,7 @@ ExecStart=$HOST_BIN serve --config $CONFIG_FILE
 Environment=TAKO_DASHBOARD_DIR=$OVERLAY"
 
   write_dropin tako-sessiond.service "ExecStart=
-ExecStart=$HOST_BIN sessiond --socket /run/tako/session.sock"
+ExecStart=$HOST_BIN sessiond --socket /run/tako/session.sock --config $CONFIG_FILE"
 }
 
 cmd_setup() {
