@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/msteinert/pam/v2"
+	"github.com/velopulent/tako/internal/host"
+	"github.com/velopulent/tako/internal/metrics"
 	"github.com/velopulent/tako/internal/platform"
 )
 
@@ -141,6 +143,30 @@ type Request struct {
 	Firewall            *platform.FirewallOperation           `json:"firewall,omitempty"`
 	Security            *platform.SecurityOperation           `json:"security,omitempty"`
 	SupportReport       *platform.SupportReportOperation      `json:"supportReport,omitempty"`
+	ServiceAction       *platform.ServiceOperation            `json:"serviceAction,omitempty"`
+	ServiceRead         *ServiceReadOperation                 `json:"serviceRead,omitempty"`
+	HostInfoRead        *HostInfoReadOperation                `json:"hostInfoRead,omitempty"`
+	HostConfigRead      *HostConfigReadOperation              `json:"hostConfigRead,omitempty"`
+	CertificateRead     *CertificateReadOperation             `json:"certificateRead,omitempty"`
+	PowerRead           *PowerReadOperation                   `json:"powerRead,omitempty"`
+	ProcessRead         *ProcessReadOperation                 `json:"processRead,omitempty"`
+	IdentityRead        *IdentityReadOperation                `json:"identityRead,omitempty"`
+	StorageRead         *StorageReadOperation                 `json:"storageRead,omitempty"`
+	NetworkRead         *NetworkReadOperation                 `json:"networkRead,omitempty"`
+	UpdateRead          *UpdateReadOperation                  `json:"updateRead,omitempty"`
+	UpdateRefresh       *UpdateRefreshOperation               `json:"updateRefresh,omitempty"`
+	UpdateHistoryRead   *UpdateHistoryReadOperation           `json:"updateHistoryRead,omitempty"`
+	UpdateLiveRead      *UpdateLiveReadOperation              `json:"updateLiveRead,omitempty"`
+	UpdateCancel        *UpdateCancelOperation                `json:"updateCancel,omitempty"`
+	AutoUpdatesRead     *AutoUpdatesReadOperation             `json:"autoUpdatesRead,omitempty"`
+	KpatchRead          *KpatchReadOperation                  `json:"kpatchRead,omitempty"`
+	CapabilitiesRead    *CapabilitiesReadOperation            `json:"capabilitiesRead,omitempty"`
+	LoginHistoryRead    *LoginHistoryReadOperation            `json:"loginHistoryRead,omitempty"`
+	SignalPreview       *platform.SignalOperation             `json:"signalPreview,omitempty"`
+	SignalApply         *platform.SignalOperation             `json:"signalApply,omitempty"`
+	LocalGroup          *platform.LocalGroupOperation         `json:"localGroup,omitempty"`
+	MetricsHistory      *MetricsHistoryOperation              `json:"metricsHistory,omitempty"`
+	MetricsFollow       *MetricsFollowOperation               `json:"metricsFollow,omitempty"`
 }
 
 // PasswordChangeOperation is deliberately wire-only. Secret fields are sent
@@ -1090,6 +1116,30 @@ type Response struct {
 	FirewallState          *platform.FirewallState             `json:"firewallState,omitempty"`
 	SecurityStatus         *platform.SecurityStatus            `json:"securityStatus,omitempty"`
 	SupportReport          *platform.SupportReport             `json:"supportReport,omitempty"`
+	Units                  []platform.Unit                     `json:"units,omitempty"`
+	UnitDetail             *platform.UnitDetail                `json:"unitDetail,omitempty"`
+	UnitConfiguration      *platform.UnitConfiguration         `json:"unitConfiguration,omitempty"`
+	HostInfo               *host.Info                          `json:"hostInfo,omitempty"`
+	HostConfiguration      *platform.HostConfiguration         `json:"hostConfiguration,omitempty"`
+	CertificateStatus      *platform.CertificateStatus         `json:"certificateStatus,omitempty"`
+	PowerStatus            *platform.PowerStatus               `json:"powerStatus,omitempty"`
+	Processes              []platform.Process                  `json:"processes,omitempty"`
+	ProcessDetails         *platform.ProcessDetails            `json:"processDetails,omitempty"`
+	SignalPreview          *platform.SignalPreview             `json:"signalPreview,omitempty"`
+	IdentityInventory      *platform.IdentityInventory         `json:"identityInventory,omitempty"`
+	Filesystems            []platform.Filesystem               `json:"filesystems,omitempty"`
+	NetworkSnapshot        *platform.NetworkSnapshot           `json:"networkSnapshot,omitempty"`
+	UpdateStatus           *platform.UpdateStatus              `json:"updateStatus,omitempty"`
+	UpdateHistory          []platform.UpdateHistoryEntry       `json:"updateHistory,omitempty"`
+	UpdateObservation      *UpdateObservation                  `json:"updateObservation,omitempty"`
+	UpdateCanceled         *bool                               `json:"updateCanceled,omitempty"`
+	KpatchStatus           *platform.KpatchStatus              `json:"kpatchStatus,omitempty"`
+	Capabilities           []platform.Capability               `json:"capabilities,omitempty"`
+	LoginHistoryPage       *platform.LoginHistoryPage          `json:"loginHistoryPage,omitempty"`
+	LocalGroupPreview      *platform.LocalGroupPreview         `json:"localGroupPreview,omitempty"`
+	LocalGroupState        *platform.LocalGroupState           `json:"localGroupState,omitempty"`
+	MetricSamples          []metrics.Sample                    `json:"metricSamples,omitempty"`
+	MetricSample           *metrics.Sample                     `json:"metricSample,omitempty"`
 }
 
 type Authenticator interface {
