@@ -1,8 +1,8 @@
 [Unit]
 Description=Tako web gateway
-After=network-online.target tako-sessiond.socket
+After=network-online.target tako.socket tako-sessiond.socket
 Wants=network-online.target
-Requires=tako-sessiond.socket
+Requires=tako.socket tako-sessiond.socket
 
 [Service]
 DynamicUser=yes
@@ -30,3 +30,4 @@ SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
+Also=tako.socket tako-sessiond.socket

@@ -2,7 +2,7 @@
 
 The package installs one `/usr/bin/tako` multicall executable and keeps the trust domains separate:
 
-- `tako.service` is the unprivileged HTTPS gateway. It uses systemd `DynamicUser=yes` (`User=tako-gateway`) with primary group `tako-session`, and writes only to `/var/lib/tako` via `StateDirectory`.
+- `tako.service` is the unprivileged HTTPS gateway and requires `tako.socket` for socket activation. It uses systemd `DynamicUser=yes` (`User=tako-gateway`) with primary group `tako-session`, and writes only to `/var/lib/tako` via `StateDirectory`.
 - `sysusers.d/tako.conf` creates the persistent `tako-session` group used for session-socket ACLs. There is no static `tako` login or system user.
 - `tako-sessiond.socket` listens on `/run/tako/session.sock` as `root:tako-session` mode `0660`; `tako-sessiond.service` is the root-owned PAM/session boundary.
 - `tmpfiles.d/tako.conf` creates `/run/tako` as `root:tako-session` with mode `0750` before socket activation.
@@ -13,6 +13,18 @@ Hosts must resolve systemd dynamic users. `nsswitch.conf` `passwd` (and typicall
 
 Install the distribution-specific PAM file as `/etc/pam.d/tako`: use `pam/tako.debian` on Debian/Ubuntu and `pam/tako.redhat` on Fedora/RHEL-compatible systems. The generic `pam/tako` file is only a minimal development fixture; package builds should transform it to the host's standard stack.
 Password changes and administrative resets use the host's standard `passwd` PAM service. They do not invoke a password helper with secrets in argv, stdin, or the environment.
+
+## GoReleaser packages
+
+Local packaging requires installed Bun dependencies, Go 1.26+, GoReleaser 2.x, and Linux amd64 PAM development headers and compiler support. CGO is required for PAM, so arm64 cross-builds remain deferred until an AArch64 PAM toolchain is available.
+
+Run `bun run package` from repository root to build local snapshot packages in `dist/`. GoReleaser first builds dashboard assets, then builds `tako` with CGO for Linux amd64 and emits one `.deb`, one `.rpm`, and `checksums.txt`. Snapshot packages do not publish releases. Tagged release builds take version from the Git tag. No signing, archive, or GitHub workflow is configured.
+
+Generated packages install full production runtime files: executable, four systemd units, sysusers and tmpfiles definitions, Polkit policy, the example TOML configuration under `/usr/share/doc/tako/`, and a distribution-specific PAM stack at `/etc/pam.d/tako`. Debian uses `pam/tako.debian`; RPM uses `pam/tako.redhat`. PAM files are package-managed as `config|noreplace`. Packages do not install a live `/etc/tako/config.toml`, sudoers example, smoke test, or operational README.
+
+Package installation requires systemd, PAM, D-Bus, Polkit, and PackageKit. Debian packages additionally require `packagekit-tools` for `pkcon` and `init-system-helpers` for Debian systemd maintainer helpers. NetworkManager, UDisks2, Netplan, UFW/firewalld, SELinux, AppArmor, and other host-specific integrations remain optional; application fallback behavior is unchanged. Package scripts create Tako users and runtime directories, reload systemd, and manage only Tako units. They never start or enable external D-Bus, Polkit, or PackageKit services. Fresh installs enable and start `tako.socket`, `tako-sessiond.socket`, and `tako.service`; upgrades restart only active Tako units and preserve disabled or masked state.
+
+Removal stops and disables Tako units, reloads systemd, and leaves configuration, state, the `tako-session` group, and administrator drop-ins in place.
 
 Install `polkit/org.velopulent.tako.policy` when deploying manually outside generated packages. The optional `sudoers.d/tako.example` documents the exact `NOPASSWD` probe; copy and edit it only for a dedicated local operator group. Do not grant the gateway service account unrestricted sudo.
 
@@ -25,5 +37,4 @@ The disposable-VM smoke seam is `packaging/smoke-test.sh`. It checks binary pres
 The release image matrix and privileged-backend assertions are documented in
 [`docs/vm-release-matrix.md`](../../../docs/vm-release-matrix.md). A packaging
 run must record optional-backend degradation explicitly rather than treating a
-missing SELinux, AppArmor, UFW, firewalld, Netplan, or PackageKit integration as
-ready.
+missing SELinux, AppArmor, UFW, firewalld, or Netplan integration as ready.

@@ -1,0 +1,104 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+project_name: tako
+
+before:
+  hooks:
+    - bun nx build dashboard
+
+builds:
+  - id: tako
+    dir: apps/backend
+    main: ./cmd/tako
+    binary: tako
+    targets:
+      - linux_amd64_v1
+    env:
+      - CGO_ENABLED=1
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: linux
+        formats:
+          - none
+signs: []
+sboms: []
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+nfpms:
+  - id: tako
+    ids:
+      - tako
+    package_name: tako
+    formats:
+      - deb
+      - rpm
+    file_name_template: "{{ .ConventionalFileName }}"
+    bindir: /usr/bin
+    vendor: Velopulent
+    homepage: https://tako.velopulent.com
+    maintainer: Tako maintainers
+    description: Linux administration dashboard
+    license: AGPL-3.0-only
+    section: admin
+    priority: optional
+    contents:
+      - src: apps/backend/packaging/systemd/tako.service
+        dst: /usr/lib/systemd/system/tako.service
+      - src: apps/backend/packaging/systemd/tako.socket
+        dst: /usr/lib/systemd/system/tako.socket
+      - src: apps/backend/packaging/systemd/tako-sessiond.service
+        dst: /usr/lib/systemd/system/tako-sessiond.service
+      - src: apps/backend/packaging/systemd/tako-sessiond.socket
+        dst: /usr/lib/systemd/system/tako-sessiond.socket
+      - src: apps/backend/packaging/sysusers.d/tako.conf
+        dst: /usr/lib/sysusers.d/tako.conf
+      - src: apps/backend/packaging/tmpfiles.d/tako.conf
+        dst: /usr/lib/tmpfiles.d/tako.conf
+      - src: apps/backend/packaging/polkit/org.velopulent.tako.policy
+        dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy
+      - src: apps/backend/config.example.toml
+        dst: /usr/share/doc/tako/config.example.toml
+      - src: apps/backend/packaging/pam/tako.debian
+        dst: /etc/pam.d/tako
+        type: config|noreplace
+        packager: deb
+      - src: apps/backend/packaging/pam/tako.redhat
+        dst: /etc/pam.d/tako
+        type: config|noreplace
+        packager: rpm
+    overrides:
+      deb:
+        dependencies:
+          - systemd
+          - libpam0g
+          - dbus
+          - polkitd
+          - packagekit
+          - packagekit-tools
+          - init-system-helpers
+        scripts:
+          postinstall: apps/backend/packaging/scripts/deb/postinst.sh
+          preremove: apps/backend/packaging/scripts/deb/prerm.sh
+          postremove: apps/backend/packaging/scripts/deb/postrm.sh
+      rpm:
+        dependencies:
+          - systemd
+          - pam
+          - dbus
+          - polkit
+          - PackageKit
+        scripts:
+          postinstall: apps/backend/packaging/scripts/rpm/post.sh
+          preremove: apps/backend/packaging/scripts/rpm/preun.sh
+          postremove: apps/backend/packaging/scripts/rpm/postun.sh

@@ -10,6 +10,7 @@
     "dev": "./tools/tako-host watch",
     "dev:ui": "nx run-many -t dev --projects=backend,dashboard --parallel=2",
     "build": "nx build backend",
+    "package": "goreleaser release --snapshot --clean",
     "test": "nx run-many -t test,typecheck",
     "lint": "nx run-many -t lint",
     "format": "nx run-many -t format",

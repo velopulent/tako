@@ -5,14 +5,17 @@ set -euo pipefail
 # optional password and does not modify host configuration.
 binary="${TAKO_BINARY:-/usr/bin/tako}"
 gateway_unit="${TAKO_GATEWAY_UNIT:-tako.service}"
+gateway_socket_unit="${TAKO_GATEWAY_SOCKET_UNIT:-tako.socket}"
 session_socket_unit="${TAKO_SESSION_SOCKET_UNIT:-tako-sessiond.socket}"
 session_service_unit="${TAKO_SESSION_SERVICE_UNIT:-tako-sessiond.service}"
 base_url="${TAKO_BASE_URL:-https://127.0.0.1:9090}"
 
 test -x "$binary"
 systemctl is-enabled "$gateway_unit" >/dev/null
+systemctl is-enabled "$gateway_socket_unit" >/dev/null
 systemctl is-enabled "$session_socket_unit" >/dev/null
 systemctl is-active "$gateway_unit" >/dev/null
+systemctl is-active "$gateway_socket_unit" >/dev/null
 systemctl is-active "$session_socket_unit" >/dev/null
 # Starting sessiond must not remove its socket-activation pathname. This catches
 # accidental RuntimeDirectory ownership of /run/tako by the service unit.
