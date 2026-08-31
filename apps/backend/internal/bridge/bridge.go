@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -52,6 +51,14 @@ func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
 			return err
 		}
 		response := frame{ID: message.ID, Error: "unsupported-method"}
+		if payload, handled, err := handleHostRead(message.Method, message.Payload); handled {
+			if err == nil {
+				response.Error = ""
+				response.Payload, _ = json.Marshal(payload)
+			} else {
+				response.Error = hostReadErrorCode(err)
+			}
+		}
 		if message.Method == "ping" {
 			response.Error = ""
 			response.Payload = json.RawMessage(`{"ok":true}`)
@@ -151,7 +158,7 @@ func applyTimer(payload json.RawMessage) (platform.TimerState, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); err != nil {
+	if err := runUserSystemctl(ctx, "daemon-reload"); err != nil {
 		if ctx.Err() != nil {
 			return platform.TimerState{}, context.DeadlineExceeded
 		}
@@ -194,13 +201,13 @@ func applyOverride(payload json.RawMessage) (platform.OverrideState, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); err != nil {
+	if err := runUserSystemctl(ctx, "daemon-reload"); err != nil {
 		if ctx.Err() != nil {
 			return platform.OverrideState{}, context.DeadlineExceeded
 		}
 		return platform.OverrideState{}, err
 	}
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "show", operation.Unit, "--property=LoadState", "--value").Run(); err != nil {
+	if err := runUserSystemctl(ctx, "show", operation.Unit, "--property=LoadState", "--value"); err != nil {
 		if ctx.Err() != nil {
 			return platform.OverrideState{}, context.DeadlineExceeded
 		}

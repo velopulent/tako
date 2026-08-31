@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,6 +33,44 @@ func TestFrameRejectsOversizePayload(t *testing.T) {
 	buffer := bytes.NewBuffer([]byte{0, 0x10, 0, 1})
 	if _, err := readFrame(buffer); err == nil {
 		t.Fatal("oversized frame accepted")
+	}
+}
+
+func TestTypedHostReadRejectsUnknownAndTrailingFields(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	if err := writeFrame(bufio.NewWriter(input), frame{ID: "host-1", Method: "services.read", Payload: json.RawMessage(`{"scope":"system","unknown":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	output := bytes.NewBuffer(nil)
+	if err := Run(input, output, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	response, err := readFrame(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "invalid-service-operation" {
+		t.Fatalf("unknown host field returned %q", response.Error)
+	}
+
+	var operation struct {
+		Scope string `json:"scope"`
+	}
+	if err := decodeHostPayload(json.RawMessage(`{"scope":"system"}{}`), &operation); err == nil {
+		t.Fatal("trailing host payload accepted")
+	}
+}
+
+func TestUserBridgeDoesNotOwnProcessInventory(t *testing.T) {
+	if isHostReadMethod("processes.list") || isHostReadMethod("processes.detail") {
+		t.Fatal("process inventory must be collected by sessiond, not the user bridge")
+	}
+}
+
+func TestHostReadErrorCodeClassifiesUserBusPermissionFailure(t *testing.T) {
+	err := errors.New("dial unix /run/user/63438/bus: connect: permission denied")
+	if code := hostReadErrorCode(err); code != "user-manager-unavailable" {
+		t.Fatalf("user bus permission failure code = %q, want user-manager-unavailable", code)
 	}
 }
 
