@@ -1394,6 +1394,10 @@ func mapPkconSeverity(tokens string) string {
 		return "security"
 	case strings.Contains(lower, "bug"):
 		return "bugfix"
+	case strings.Contains(lower, "normal"):
+		// pkcon/Debian report ordinary upgrades as "Normal"; they are
+		// neither security nor enhancement advisories.
+		return "bugfix"
 	case strings.Contains(lower, "enhancement"):
 		return "enhancement"
 	case strings.Contains(lower, "available"):

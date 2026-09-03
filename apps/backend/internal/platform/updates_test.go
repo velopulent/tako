@@ -34,6 +34,22 @@ func TestUpdateParsersStayBoundedAndExposeVersions(t *testing.T) {
 	}
 }
 
+func TestPackageKitParserDecodesDebianNormalStatus(t *testing.T) {
+	// Exact shape reported from Debian trixie: status word, nevra.arch token
+	// with tilde revisions, repo in parentheses, free-text summary.
+	debian := parsePackageKitUpdates("Normal          docker-buildx-plugin-0.37.0-1~debian.13~trixie.amd64 (docker-trixie-stable)     Docker Buildx cli plugin.\n")
+	if len(debian) != 1 {
+		t.Fatalf("unexpected Debian PackageKit inventory: %#v", debian)
+	}
+	item := debian[0]
+	if item.Name != "docker-buildx-plugin" || item.Architecture != "amd64" || item.CandidateVersion != "0.37.0-1~debian.13~trixie" {
+		t.Fatalf("Debian package token was not decoded: %#v", item)
+	}
+	if item.Severity == "security" || item.Severity == "" {
+		t.Fatalf("Debian normal severity misclassified: %#v", item)
+	}
+}
+
 func TestUpdatesPreferPackageKitAndRemainReadOnly(t *testing.T) {
 	var calls []string
 	status := updatesWithDependencies(context.Background(), updateDependencies{
