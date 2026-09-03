@@ -90,30 +90,6 @@ paths:
       responses:
         '200':
           description: text/event-stream of metric events
-  /preferences/monitoring:
-    get:
-      operationId: getMonitoringPreference
-      responses:
-        '200':
-          description: Server-side default monitoring interval and optimistic-lock revision
-    put:
-      operationId: updateMonitoringPreference
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [defaultInterval, expectedRevision]
-              properties:
-                defaultInterval: { type: string, enum: [off, 1s, 5s, 15s, 30s, 1m, 5m] }
-                expectedRevision: { type: integer, minimum: 0 }
-      responses:
-        '200':
-          description: Updated preference and its new optimistic-lock revision
-        '400': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
-        '403': { $ref: '#/components/responses/Problem' }
   /logs:
     get:
       operationId: listLogs
@@ -233,64 +209,6 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '413': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /log-views:
-    get:
-      operationId: listSavedLogViews
-      parameters:
-        - in: query
-          name: limit
-          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
-      responses:
-        '200':
-          description: Saved journal views owned by the authenticated user
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    maxItems: 100
-                    items: { $ref: '#/components/schemas/SavedLogView' }
-    post:
-      operationId: createSavedLogView
-      requestBody:
-        required: true
-        content:
-          application/json: { schema: { $ref: '#/components/schemas/SavedLogViewRequest' } }
-      responses:
-        '201': { description: Saved journal view created, content: { application/json: { schema: { $ref: '#/components/schemas/SavedLogView' } } } }
-        '400': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
-  /log-views/{id}:
-    parameters:
-      - in: path
-        name: id
-        required: true
-        schema: { type: string, maxLength: 128 }
-    put:
-      operationId: updateSavedLogView
-      requestBody:
-        required: true
-        content:
-          application/json: { schema: { $ref: '#/components/schemas/SavedLogViewUpdateRequest' } }
-      responses:
-        '200': { description: Saved journal view updated, content: { application/json: { schema: { $ref: '#/components/schemas/SavedLogView' } } } }
-        '400': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
-    delete:
-      operationId: deleteSavedLogView
-      parameters:
-        - in: query
-          name: expectedRevision
-          required: true
-          schema: { type: integer, minimum: 1 }
-      responses:
-        '204': { description: Saved journal view deleted }
-        '400': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
   /accounts/users:
     get:
       operationId: listUsers
@@ -316,7 +234,7 @@ paths:
         schema: { type: string, minLength: 1, maxLength: 256 }
     get:
       operationId: listAccountLoginHistory
-      description: Bounded login and session events read directly from journald. Deleted or remote NSS identities remain queryable for administrators and are never copied into SQLite.
+      description: Bounded login and session events read directly from journald. Deleted or remote NSS identities remain queryable for administrators and are never stored server-side.
       parameters:
         - in: query
           name: limit
@@ -584,7 +502,7 @@ paths:
             schema: { $ref: '#/components/schemas/UpdateOperation' }
       responses:
         '202':
-          description: Durable update job accepted
+          description: In-memory update job accepted
           content:
             application/json:
               schema:
@@ -924,27 +842,6 @@ paths:
       operationId: dropAdministrativeAccess
       responses:
         '204': { description: Administrative access dropped }
-  /operations:
-    get:
-      operationId: listOperationReceipts
-      parameters:
-        - in: query
-          name: limit
-          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
-      responses:
-        '200':
-          description: Sanitized operation receipts
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items: { $ref: '#/components/schemas/OperationReceipt' }
-        '400': { $ref: '#/components/responses/Problem' }
-        '500': { $ref: '#/components/responses/Problem' }
   /jobs:
     get:
       operationId: listDiagnosticJobs
@@ -954,7 +851,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
       responses:
         '200':
-          description: Durable diagnostic jobs
+          description: In-memory diagnostic jobs, lost on restart
           content:
             application/json:
               schema:
@@ -999,7 +896,7 @@ paths:
       operationId: getDiagnosticJob
       responses:
         '200':
-          description: Durable diagnostic job state; software-update jobs also carry a live PackageKit observation
+          description: In-memory diagnostic job state; software-update jobs also carry a live PackageKit observation
           content:
             application/json:
               schema:
@@ -1290,7 +1187,7 @@ paths:
               properties:
                 confirmation: { type: string, enum: [CONFIRM SUPPORT REPORT] }
       responses:
-        '202': { description: Bounded report metadata; report contents are not persisted in the gateway database }
+        '202': { description: Bounded report metadata; report contents are not persisted server-side }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
@@ -1954,18 +1851,6 @@ components:
       properties:
         administrative: { type: boolean, const: true }
         until: { type: string, format: date-time }
-    OperationReceipt:
-      type: object
-      required: [id, actor, target, startedAt, completedAt, result, administrative]
-      properties:
-        id: { type: string }
-        actor: { type: string }
-        target: { type: string }
-        startedAt: { type: string, format: date-time }
-        completedAt: { type: string, format: date-time }
-        result: { type: string, enum: [succeeded, failed] }
-        error: { type: string }
-        administrative: { type: boolean }
     DiagnosticJob:
       type: object
       required: [id, kind, actor, state, progress, message, createdAt, cancelRequested, dangerous]
@@ -2258,41 +2143,6 @@ components:
           maxItems: 100
           items: { $ref: '#/components/schemas/LoginHistoryEntry' }
         nextCursor: { type: string, maxLength: 8192 }
-    SavedLogFilter:
-      type: object
-      additionalProperties: false
-      properties:
-        boot: { type: string, maxLength: 64 }
-        since: { type: string, format: date-time }
-        until: { type: string, format: date-time }
-        priority: { type: string, pattern: '^[0-7](\.\.[0-7])?$' }
-        unit: { type: string, maxLength: 256 }
-        executable: { type: string, maxLength: 4096 }
-        text: { type: string, maxLength: 512 }
-        details: { type: boolean, default: false }
-    SavedLogViewRequest:
-      type: object
-      required: [name, filter]
-      additionalProperties: false
-      properties:
-        name: { type: string, minLength: 1, maxLength: 128 }
-        filter: { $ref: '#/components/schemas/SavedLogFilter' }
-        expectedRevision: { type: integer, minimum: 1 }
-    SavedLogViewUpdateRequest:
-      allOf:
-        - $ref: '#/components/schemas/SavedLogViewRequest'
-        - type: object
-          required: [expectedRevision]
-    SavedLogView:
-      type: object
-      required: [id, name, filter, revision, createdAt, updatedAt]
-      properties:
-        id: { type: string, maxLength: 128 }
-        name: { type: string, maxLength: 128 }
-        filter: { $ref: '#/components/schemas/SavedLogFilter' }
-        revision: { type: integer, minimum: 1 }
-        createdAt: { type: string, format: date-time }
-        updatedAt: { type: string, format: date-time }
     ProcessInfo:
       type: object
       required: [pid, ppid, started, uid, user, program, command, state, threads, cpuTime, memory, virtualMemory, diskRead, diskWrite]

@@ -139,17 +139,6 @@ export type Capability = {
   setupGuidance?: string
 }
 
-export type OperationReceipt = {
-  id: string
-  actor: string
-  target: string
-  startedAt: string
-  completedAt: string
-  result: string
-  error?: string
-  administrative: boolean
-}
-
 export type DiagnosticJobState =
   "pending" | "running" | "succeeded" | "failed" | "canceled" | "interrupted"
 
@@ -705,7 +694,6 @@ export type SavedLogView = {
   id: string
   name: string
   filter: SavedLogFilter
-  revision: number
   createdAt: string
   updatedAt: string
 }
@@ -848,7 +836,6 @@ export type KpatchOperation = {
 export type TerminalStatus = { available: boolean; message: string }
 export type MonitoringPreference = {
   defaultInterval: RefreshInterval
-  revision: number
 }
 
 export type TimerAction =
