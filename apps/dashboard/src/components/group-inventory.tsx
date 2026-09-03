@@ -1,27 +1,19 @@
-import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
-
-import {
-  api,
-  type GroupInfo,
-  type SessionResponse,
-  type UserInfo,
-} from "@/lib/api"
+import * as React from "react"
 import { AdminRoleManager } from "@/components/admin-role-manager"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
 import { GroupMembershipManager } from "@/components/group-membership-manager"
 import { LocalGroupManager } from "@/components/local-group-manager"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { DataTable } from "@/components/data-table"
 import {
   Empty,
   EmptyDescription,
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
   Sheet,
   SheetContent,
@@ -29,8 +21,15 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  api,
+  type GroupInfo,
+  type SessionResponse,
+  type UserInfo,
+} from "@/lib/api"
 
-const columns: ColumnDef<GroupInfo>[] = [
+const columns: ColumnDef<DataTableFeatures, GroupInfo>[] = [
   { accessorKey: "name", header: "Group" },
   { accessorKey: "gid", header: "GID", meta: { align: "end" }, size: 88 },
   {
@@ -154,12 +153,15 @@ export function GroupInventory({
           if (!open) setSelected(undefined)
         }}
       >
-        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetContent
+          side="right"
+          className="w-full overflow-y-auto sm:max-w-xl"
+        >
           <SheetHeader>
             <SheetTitle>Manage {selected?.name ?? ""} membership</SheetTitle>
             <SheetDescription>
-              Changes use the local group database only. Remote NSS groups remain
-              read-only.
+              Changes use the local group database only. Remote NSS groups
+              remain read-only.
             </SheetDescription>
           </SheetHeader>
           <div className="px-4 pb-4">
@@ -183,7 +185,10 @@ export function GroupInventory({
           if (!open) setCreating(false)
         }}
       >
-        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetContent
+          side="right"
+          className="w-full overflow-y-auto sm:max-w-xl"
+        >
           <SheetHeader>
             <SheetTitle>Create local group</SheetTitle>
             <SheetDescription>

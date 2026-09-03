@@ -1,14 +1,13 @@
-import * as React from "react"
-import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowDownToLineIcon, EyeIcon, PauseIcon, PlayIcon } from "lucide-react"
+import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import type { ColumnDef } from "@tanstack/react-table"
-
-import { api, type JournalPage, type LogEntry } from "@/lib/api"
+import { ArrowDownToLineIcon, EyeIcon, PauseIcon, PlayIcon } from "lucide-react"
+import * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
+import { SavedLogViews } from "@/components/saved-log-views"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
-import { DataTable } from "@/components/data-table"
 import {
   Empty,
   EmptyDescription,
@@ -33,7 +32,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
-import { SavedLogViews } from "@/components/saved-log-views"
+import { api, type JournalPage, type LogEntry } from "@/lib/api"
 
 const journalPriorityItems = [
   { value: "all", label: "All priorities" },
@@ -42,7 +41,7 @@ const journalPriorityItems = [
   { value: "5..7", label: "Notice–Debug" },
 ]
 
-const columns: ColumnDef<LogEntry>[] = [
+const columns: ColumnDef<DataTableFeatures, LogEntry>[] = [
   {
     accessorKey: "timestamp",
     header: "Time",
@@ -131,15 +130,18 @@ export function JournalBrowser() {
   const unit = draft.unit
   const executable = draft.executable
   const text = draft.text
-  const setBoot = (value: string) => setDraft((current) => ({ ...current, boot: value }))
+  const setBoot = (value: string) =>
+    setDraft((current) => ({ ...current, boot: value }))
   const setSince = (value: string) =>
     setDraft((current) => ({ ...current, since: value }))
   const setUntil = (value: string) =>
     setDraft((current) => ({ ...current, until: value }))
-  const setUnit = (value: string) => setDraft((current) => ({ ...current, unit: value }))
+  const setUnit = (value: string) =>
+    setDraft((current) => ({ ...current, unit: value }))
   const setExecutable = (value: string) =>
     setDraft((current) => ({ ...current, executable: value }))
-  const setText = (value: string) => setDraft((current) => ({ ...current, text: value }))
+  const setText = (value: string) =>
+    setDraft((current) => ({ ...current, text: value }))
   const [details, setDetails] = React.useState(false)
   const [cursor, setCursor] = React.useState("")
   const [following, setFollowing] = React.useState(true)
@@ -172,6 +174,7 @@ export function JournalBrowser() {
   })
   const streamParams = makeParams(filterValues).toString()
   const exportParams = makeParams({ ...filterValues, limit: 500 }).toString()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setLatest is a render-local helper (ref write + setState); listing it would re-arm the debounce timer on every render
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
       if (
@@ -351,7 +354,8 @@ export function JournalBrowser() {
               value={search.priority || "all"}
               onValueChange={(value) => {
                 patch({
-                  priority: value === "all" || !value ? undefined : String(value),
+                  priority:
+                    value === "all" || !value ? undefined : String(value),
                 })
                 setCursor("")
                 setLive([])

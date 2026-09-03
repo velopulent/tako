@@ -1,17 +1,14 @@
-import * as React from "react"
-import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import type { ColumnDef } from "@tanstack/react-table"
-import { createFileRoute } from "@tanstack/react-router"
-
 import {
-  api,
-  type FileSystemInfo,
-  type MetricSample,
-} from "@/lib/api"
-import { Badge } from "@/components/ui/badge"
-import { DataTable } from "@/components/data-table"
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+} from "@tanstack/react-router"
+import type { ColumnDef } from "@tanstack/react-table"
+import * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
 import { StorageMetrics } from "@/components/directional-metrics"
+import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -19,8 +16,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { api, type FileSystemInfo, type MetricSample } from "@/lib/api"
+import { bytes, Page, State, usePageInterval } from "@/lib/page"
 import { qSearch } from "@/lib/search"
-import { Page, State, usePageInterval, bytes } from "@/lib/page"
 
 const storageScopes = ["all", "local", "network"] as const
 type StorageScope = (typeof storageScopes)[number]
@@ -71,15 +69,12 @@ function StoragePage() {
   const items =
     scope === "all"
       ? filesystems
-      : filesystems.filter(
-          (item) => item.network === (scope === "network")
-        )
-  const columns: ColumnDef<FileSystemInfo>[] = [
+      : filesystems.filter((item) => item.network === (scope === "network"))
+  const columns: ColumnDef<DataTableFeatures, FileSystemInfo>[] = [
     {
       id: "mount",
       header: "Mount",
-      accessorFn: (row) =>
-        row.targets.map((target) => target.target).join(" "),
+      accessorFn: (row) => row.targets.map((target) => target.target).join(" "),
       cell: ({ row }) => <MountTargets filesystem={row.original} />,
     },
     { accessorKey: "device", header: "Device" },
@@ -136,7 +131,10 @@ function StoragePage() {
         pending={metrics.isPending}
         error={metrics.isError}
       />
-      <Tabs value={scope} onValueChange={(next) => setScope(next as StorageScope)}>
+      <Tabs
+        value={scope}
+        onValueChange={(next) => setScope(next as StorageScope)}
+      >
         <TabsList>
           {storageScopes.map((value) => (
             <TabsTrigger key={value} value={value}>

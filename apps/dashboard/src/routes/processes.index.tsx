@@ -1,10 +1,12 @@
-import * as React from "react"
-import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
+import {
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+} from "@tanstack/react-router"
 import type { ColumnDef } from "@tanstack/react-table"
-import { createFileRoute } from "@tanstack/react-router"
-
-import { api, type ProcessInfo } from "@/lib/api"
+import * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
 import { Badge } from "@/components/ui/badge"
 import {
   Card,
@@ -13,11 +15,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { DataTable } from "@/components/data-table"
+import { api, type ProcessInfo } from "@/lib/api"
+import { bytes, Page, State, usePageInterval } from "@/lib/page"
 import { qSearch } from "@/lib/search"
-import { Page, State, usePageInterval, bytes } from "@/lib/page"
 
-const processColumns: ColumnDef<ProcessInfo>[] = [
+const processColumns: ColumnDef<DataTableFeatures, ProcessInfo>[] = [
   { accessorKey: "pid", header: "PID", meta: { align: "end" }, size: 88 },
   { accessorKey: "program", header: "Program" },
   { accessorKey: "user", header: "User" },
@@ -26,7 +28,12 @@ const processColumns: ColumnDef<ProcessInfo>[] = [
     header: "State",
     cell: ({ row }) => <Badge variant="outline">{row.original.state}</Badge>,
   },
-  { accessorKey: "threads", header: "Threads", meta: { align: "end" }, size: 96 },
+  {
+    accessorKey: "threads",
+    header: "Threads",
+    meta: { align: "end" },
+    size: 96,
+  },
   {
     accessorKey: "cpuPercent",
     header: "CPU",
@@ -143,8 +150,8 @@ function ProcessesTable({
         <CardHeader>
           <CardTitle>Processes</CardTitle>
           <CardDescription>
-            {items.length} processes · per-process network requires optional eBPF
-            collector
+            {items.length} processes · per-process network requires optional
+            eBPF collector
           </CardDescription>
         </CardHeader>
         <CardContent>

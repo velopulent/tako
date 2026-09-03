@@ -1,14 +1,14 @@
-import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import type { ColumnDef } from "@tanstack/react-table"
-import { createFileRoute } from "@tanstack/react-router"
-
 import {
-  api,
-  type InterfaceInfo,
-  type LogEntry,
-  type MetricSample,
-} from "@/lib/api"
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+} from "@tanstack/react-router"
+import type { ColumnDef } from "@tanstack/react-table"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
+import { NetworkMetrics } from "@/components/directional-metrics"
+import { FirewallControls } from "@/components/firewall-controls"
+import { NetworkControls } from "@/components/network-controls"
 import { Badge } from "@/components/ui/badge"
 import {
   Card,
@@ -17,12 +17,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { DataTable } from "@/components/data-table"
-import { NetworkMetrics } from "@/components/directional-metrics"
-import { NetworkControls } from "@/components/network-controls"
-import { FirewallControls } from "@/components/firewall-controls"
+import {
+  api,
+  type InterfaceInfo,
+  type LogEntry,
+  type MetricSample,
+} from "@/lib/api"
+import { bytes, Page, State, usePageInterval } from "@/lib/page"
 import { qSearch } from "@/lib/search"
-import { Page, State, usePageInterval, bytes } from "@/lib/page"
 
 function NetworkPage() {
   const interval = usePageInterval("network")
@@ -48,7 +50,7 @@ function NetworkPage() {
     refetchInterval: interval.milliseconds,
   })
   const items = query.data?.items ?? []
-  const columns: ColumnDef<InterfaceInfo>[] = [
+  const columns: ColumnDef<DataTableFeatures, InterfaceInfo>[] = [
     { accessorKey: "name", header: "Device" },
     {
       accessorKey: "up",
@@ -85,7 +87,7 @@ function NetworkPage() {
       .toLowerCase()
       .match(/networkmanager|systemd-networkd|network|link is|carrier/)
   )
-  const logColumns: ColumnDef<LogEntry>[] = [
+  const logColumns: ColumnDef<DataTableFeatures, LogEntry>[] = [
     {
       accessorKey: "timestamp",
       header: "Time",

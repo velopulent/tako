@@ -1,6 +1,9 @@
-import * as React from "react"
-import { createFileRoute, getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
+import {
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+} from "@tanstack/react-router"
 import type { ColumnDef } from "@tanstack/react-table"
 import {
   ActivityIcon,
@@ -10,15 +13,11 @@ import {
   MemoryStickIcon,
   NetworkIcon,
 } from "lucide-react"
-
-import {
-  api,
-  type DashboardResponse,
-  type LogEntry,
-  type MetricSample,
-  type ProcessInfo,
-  type ServiceInfo,
-} from "@/lib/api"
+import type * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
+import { HostInventory } from "@/components/host-inventory"
+import { MetricsCharts } from "@/components/metrics-chart"
+import { RefreshSelect } from "@/components/refresh-select"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -28,14 +27,18 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { DataTable } from "@/components/data-table"
-import { MetricsCharts } from "@/components/metrics-chart"
-import { HostInventory } from "@/components/host-inventory"
-import { RefreshSelect } from "@/components/refresh-select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import { usePreference } from "@/hooks/use-preference"
-import { refreshIntervals, type RefreshInterval } from "@/lib/monitoring"
+import {
+  api,
+  type DashboardResponse,
+  type LogEntry,
+  type MetricSample,
+  type ProcessInfo,
+  type ServiceInfo,
+} from "@/lib/api"
+import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
 import { qSearch } from "@/lib/search"
 
 const bytes = (value: number) => {
@@ -120,7 +123,7 @@ function DashboardPage() {
     logs.data?.items.filter((item) => Number(item.priority) <= 3).slice(0, 8) ??
     []
   const top = (processes.data?.items ?? []).slice(0, 10)
-  const processColumns: ColumnDef<ProcessInfo>[] = [
+  const processColumns: ColumnDef<DataTableFeatures, ProcessInfo>[] = [
     { accessorKey: "pid", header: "PID", meta: { align: "end" }, size: 88 },
     { accessorKey: "program", header: "Program" },
     { accessorKey: "user", header: "User" },
@@ -232,9 +235,9 @@ function DashboardPage() {
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             {critical.length ? (
-              critical.map((entry, index) => (
+              critical.map((entry) => (
                 <div
-                  key={`${entry.timestamp}-${index}`}
+                  key={`${entry.timestamp}-${entry.unit}-${entry.message}`}
                   className="flex gap-3 border-b pb-3 last:border-0"
                 >
                   <ActivityIcon />

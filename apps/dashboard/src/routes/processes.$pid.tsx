@@ -1,7 +1,5 @@
-import * as React from "react"
-import { Link, createFileRoute, getRouteApi } from "@tanstack/react-router"
-import { processDetailSearch } from "@/lib/search"
 import { useQuery } from "@tanstack/react-query"
+import { createFileRoute, getRouteApi, Link } from "@tanstack/react-router"
 import type { ColumnDef } from "@tanstack/react-table"
 import {
   ActivityIcon,
@@ -17,11 +15,10 @@ import {
   TerminalIcon,
   UserIcon,
 } from "lucide-react"
-import {
-  api,
-  type ProcessDetails as ProcessDetailsData,
-  type ProcessSocket,
-} from "@/lib/api"
+import type * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
+import { ResourceHistoryCharts } from "@/components/process-resource-charts"
+import { ProcessSignal } from "@/components/process-signal"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -40,7 +37,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { DataTable } from "@/components/data-table"
 import {
   Empty,
   EmptyDescription,
@@ -49,8 +45,12 @@ import {
 } from "@/components/ui/empty"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ProcessSignal } from "@/components/process-signal"
-import { ResourceHistoryCharts } from "@/components/process-resource-charts"
+import {
+  api,
+  type ProcessDetails as ProcessDetailsData,
+  type ProcessSocket,
+} from "@/lib/api"
+import { processDetailSearch } from "@/lib/search"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -110,7 +110,7 @@ function DetailSkeleton() {
   )
 }
 
-const socketColumns: ColumnDef<ProcessSocket>[] = [
+const socketColumns: ColumnDef<DataTableFeatures, ProcessSocket>[] = [
   {
     accessorKey: "protocol",
     header: "Protocol",
@@ -326,7 +326,11 @@ export function ProcessDetailPage() {
               </div>
             </div>
             <div className="flex shrink-0 gap-2">
-              <Button variant="outline" size="sm" render={<Link to="/processes" />}>
+              <Button
+                variant="outline"
+                size="sm"
+                render={<Link to="/processes" />}
+              >
                 <ArrowLeftIcon data-icon="inline-start" />
                 Back
               </Button>
@@ -363,11 +367,9 @@ export function ProcessDetailPage() {
           icon={HardDriveIcon}
           label="Disk I/O"
           value={
-            proc.ioDenied ? (
-              "—"
-            ) : (
-              `R ${bytes(proc.diskRead)} · W ${bytes(proc.diskWrite)}`
-            )
+            proc.ioDenied
+              ? "—"
+              : `R ${bytes(proc.diskRead)} · W ${bytes(proc.diskWrite)}`
           }
           hint={
             proc.ioDenied
@@ -399,7 +401,10 @@ export function ProcessDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <BracesIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+                <BracesIcon
+                  className="size-4 text-muted-foreground"
+                  aria-hidden="true"
+                />
                 Identity &amp; command
               </CardTitle>
               <CardDescription>
@@ -414,12 +419,16 @@ export function ProcessDetailPage() {
                 <dd className="break-all font-mono text-xs">{proc.command}</dd>
                 <dt className="font-medium text-muted-foreground">User</dt>
                 <dd className="truncate">{proc.user}</dd>
-                <dt className="font-medium text-muted-foreground">PID / PPID</dt>
+                <dt className="font-medium text-muted-foreground">
+                  PID / PPID
+                </dt>
                 <dd className="font-mono">
                   {proc.pid} / {proc.ppid}
                 </dd>
                 <dt className="font-medium text-muted-foreground">Started</dt>
-                <dd className="font-mono text-xs sm:text-sm break-all">{proc.started}</dd>
+                <dd className="font-mono text-xs sm:text-sm break-all">
+                  {proc.started}
+                </dd>
                 <dt className="font-medium text-muted-foreground">State</dt>
                 <dd>
                   <Badge variant="outline">{proc.state || "—"}</Badge>
@@ -427,7 +436,9 @@ export function ProcessDetailPage() {
                 {proc.reason ? (
                   <>
                     <dt className="font-medium text-muted-foreground">Note</dt>
-                    <dd className="text-muted-foreground break-words">{proc.reason}</dd>
+                    <dd className="text-muted-foreground break-words">
+                      {proc.reason}
+                    </dd>
                   </>
                 ) : null}
               </dl>
@@ -467,8 +478,13 @@ export function ProcessDetailPage() {
                     search={{ started: String(details.parent.started) }}
                     className="inline-flex max-w-full flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
                   >
-                    <span className="font-medium truncate">{details.parent.program}</span>
-                    <Badge variant="outline" className="font-mono text-xs shrink-0">
+                    <span className="font-medium truncate">
+                      {details.parent.program}
+                    </span>
+                    <Badge
+                      variant="outline"
+                      className="font-mono text-xs shrink-0"
+                    >
                       PID {details.parent.pid}
                     </Badge>
                     <span className="text-xs text-muted-foreground truncate">
@@ -476,7 +492,9 @@ export function ProcessDetailPage() {
                     </span>
                   </Link>
                 ) : (
-                  <p className="text-sm text-muted-foreground">No parent (init or reaped).</p>
+                  <p className="text-sm text-muted-foreground">
+                    No parent (init or reaped).
+                  </p>
                 )}
               </div>
               <Separator />
@@ -494,8 +512,13 @@ export function ProcessDetailPage() {
                           search={{ started: String(child.started) }}
                           className="flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm hover:bg-muted sm:flex-row sm:flex-wrap sm:items-center sm:gap-2"
                         >
-                          <span className="font-medium truncate">{child.program}</span>
-                          <Badge variant="outline" className="font-mono text-xs w-fit">
+                          <span className="font-medium truncate">
+                            {child.program}
+                          </span>
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-xs w-fit"
+                          >
                             PID {child.pid}
                           </Badge>
                           <span className="text-xs text-muted-foreground">
@@ -547,7 +570,9 @@ export function ProcessDetailPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Open files ({(details.openFiles ?? []).length})</CardTitle>
+              <CardTitle>
+                Open files ({(details.openFiles ?? []).length})
+              </CardTitle>
               <CardDescription>Readable descriptors.</CardDescription>
             </CardHeader>
             <CardContent>
@@ -555,6 +580,7 @@ export function ProcessDetailPage() {
                 <ul className="max-h-64 space-y-1 overflow-auto font-mono text-xs">
                   {(details.openFiles ?? []).map((file, index) => (
                     <li
+                      // biome-ignore lint/suspicious/noArrayIndexKey: the same path can appear multiple times (one row per file descriptor), so the index disambiguates duplicates
                       key={`${file}:${index}`}
                       className="truncate rounded px-1 py-0.5 hover:bg-muted"
                       title={file}
@@ -568,7 +594,8 @@ export function ProcessDetailPage() {
                   <EmptyHeader>
                     <EmptyTitle>No readable open files</EmptyTitle>
                     <EmptyDescription>
-                      Permission restrictions or a short-lived process may hide this data.
+                      Permission restrictions or a short-lived process may hide
+                      this data.
                     </EmptyDescription>
                   </EmptyHeader>
                 </Empty>
@@ -590,10 +617,12 @@ export function ProcessDetailPage() {
                   searchPlaceholder="Search sockets"
                 />
               ) : (
-                <p className="text-sm text-muted-foreground">No readable sockets.</p>
+                <p className="text-sm text-muted-foreground">
+                  No readable sockets.
+                </p>
               )}
             </CardContent>
-            </Card>
+          </Card>
         </div>
       </div>
     </main>

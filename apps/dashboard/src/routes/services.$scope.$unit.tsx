@@ -1,20 +1,17 @@
-import * as React from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  Link,
   createFileRoute,
   getRouteApi,
+  Link,
   useNavigate,
   useParams,
 } from "@tanstack/react-router"
-import { qSearch } from "@/lib/search"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-
-import {
-  api,
-  type LogEntry,
-  type ServiceDetail,
-  type SessionResponse,
-} from "@/lib/api"
+import type { ColumnDef } from "@tanstack/react-table"
+import * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
+import { ServiceActions } from "@/components/service-actions"
+import { ServiceConfiguration } from "@/components/service-configuration"
+import { ServiceOverride } from "@/components/service-override"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -24,13 +21,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { DataTable } from "@/components/data-table"
-import { ServiceConfiguration } from "@/components/service-configuration"
-import { ServiceOverride } from "@/components/service-override"
-import { ServiceActions } from "@/components/service-actions"
-import type { ServiceActionName } from "@/lib/service-actions"
 import { Skeleton } from "@/components/ui/skeleton"
-import type { ColumnDef } from "@tanstack/react-table"
+import {
+  api,
+  type LogEntry,
+  type ServiceDetail,
+  type SessionResponse,
+} from "@/lib/api"
+import { qSearch } from "@/lib/search"
+import type { ServiceActionName } from "@/lib/service-actions"
 
 const bytes = (value: number) =>
   value
@@ -103,7 +102,7 @@ export function ServiceDetailPage() {
     ["Before", item.before],
     ["After", item.after],
   ]
-  const logColumns: ColumnDef<LogEntry>[] = [
+  const logColumns: ColumnDef<DataTableFeatures, LogEntry>[] = [
     {
       accessorKey: "timestamp",
       header: "Time",

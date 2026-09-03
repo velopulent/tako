@@ -1,16 +1,23 @@
-import * as React from "react"
-import { useVirtualizer } from "@tanstack/react-virtual"
 import {
-  flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getSortedRowModel,
-  useReactTable,
   type ColumnDef,
+  type ColumnVisibilityState,
+  columnFilteringFeature,
+  columnSizingFeature,
+  columnVisibilityFeature,
+  createFilteredRowModel,
+  createSortedRowModel,
+  filterFns,
+  flexRender,
+  globalFilteringFeature,
   type Header,
+  type RowData,
+  rowSortingFeature,
   type SortingState,
-  type VisibilityState,
+  sortFns,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table"
+import { useVirtualizer } from "@tanstack/react-virtual"
 import {
   ChevronDownIcon,
   ChevronsUpDownIcon,
@@ -18,6 +25,7 @@ import {
   Columns3Icon,
   SearchIcon,
 } from "lucide-react"
+import * as React from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -44,7 +52,26 @@ import {
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 
-function columnSize(header: Header<unknown, unknown>) {
+const dataTableFeatures = tableFeatures({
+  rowSortingFeature,
+  columnFilteringFeature,
+  globalFilteringFeature,
+  columnVisibilityFeature,
+  columnSizingFeature,
+  filteredRowModel: createFilteredRowModel(),
+  sortedRowModel: createSortedRowModel(),
+  filterFns,
+  sortFns,
+})
+
+type DataTableFeatures = typeof dataTableFeatures
+
+export type { DataTableFeatures }
+
+function columnSize(
+  // biome-ignore lint/suspicious/noExplicitAny: TanStack Table v9 Header requires concrete generics; helper is type-erased by design
+  header: Header<DataTableFeatures, any, any>
+) {
   return header.getSize()
 }
 
@@ -52,7 +79,7 @@ function headerLabel(header: string | undefined, id: string): string {
   return header ?? id
 }
 
-export function DataTable<T>({
+export function DataTable<T extends RowData>({
   data,
   columns,
   searchPlaceholder = "Search",
@@ -65,11 +92,11 @@ export function DataTable<T>({
   onSearchChange,
 }: {
   data: T[]
-  columns: ColumnDef<T>[]
+  columns: ColumnDef<DataTableFeatures, T>[]
   searchPlaceholder?: string
   height?: string
-  initialVisibility?: VisibilityState
-  onVisibilityChange?: (value: VisibilityState) => void
+  initialVisibility?: ColumnVisibilityState
+  onVisibilityChange?: (value: ColumnVisibilityState) => void
   onRowClick?: (row: T) => void
   toolbar?: React.ReactNode
   search?: string
@@ -79,13 +106,12 @@ export function DataTable<T>({
   const [uncontrolledFilter, setUncontrolledFilter] = React.useState("")
   const filter = search ?? uncontrolledFilter
   const setFilter = onSearchChange ?? setUncontrolledFilter
-  const [visibility, setVisibility] = React.useState<VisibilityState>(
+  const [visibility, setVisibility] = React.useState<ColumnVisibilityState>(
     initialVisibility ?? {}
   )
   const viewport = React.useRef<HTMLDivElement>(null)
-  // TanStack Table intentionally returns stateful callbacks; React Compiler skips this component.
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
+  const table = useTable({
+    features: dataTableFeatures,
     data,
     columns,
     defaultColumn: { size: 160, minSize: 72, maxSize: 640 },
@@ -96,15 +122,12 @@ export function DataTable<T>({
       setFilter(String(next ?? ""))
     },
     onColumnVisibilityChange: (updater) => {
-      setVisibility((current) => {
+      setVisibility((current: ColumnVisibilityState) => {
         const next = typeof updater === "function" ? updater(current) : updater
         onVisibilityChange?.(next)
         return next
       })
     },
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
   })
   const rows = table.getRowModel().rows
   const virtualizer = useVirtualizer({
@@ -188,7 +211,10 @@ export function DataTable<T>({
                         align === "end" && "text-right"
                       )}
                       style={{
-                        width: columnSize(header as Header<unknown, unknown>),
+                        width: columnSize(
+                          // biome-ignore lint/suspicious/noExplicitAny: type-erased header passed to the generic columnSize helper
+                          header as Header<DataTableFeatures, any, any>
+                        ),
                         flex: `${header.getSize()} 0 auto`,
                       }}
                     >
@@ -263,7 +289,8 @@ export function DataTable<T>({
                         className={cn(
                           "flex min-w-0 items-center overflow-hidden",
                           wrap ? "whitespace-normal" : "whitespace-nowrap",
-                          align === "end" && "justify-end text-right tabular-nums"
+                          align === "end" &&
+                            "justify-end text-right tabular-nums"
                         )}
                         style={{
                           width: cell.column.getSize(),

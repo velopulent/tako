@@ -8,8 +8,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-
-import type { MetricSample } from "@/lib/api"
 import {
   Card,
   CardContent,
@@ -18,10 +16,10 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import {
+  type ChartConfig,
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
-  type ChartConfig,
 } from "@/components/ui/chart"
 import {
   Select,
@@ -31,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import type { MetricSample } from "@/lib/api"
 import type { RefreshInterval } from "@/lib/monitoring"
 
 const configs = {
@@ -58,10 +57,7 @@ type ChartSample = MetricSample & {
   networkTxRate: number
 }
 
-function elapsedSeconds(
-  samples: MetricSample[],
-  index: number
-): number {
+function elapsedSeconds(samples: MetricSample[], index: number): number {
   const previous = samples[index - 1]
   return previous
     ? Math.max(
@@ -77,7 +73,10 @@ function elapsedSeconds(
 // consecutive deltas. Disk rates prefer the per-device map when present: a
 // disk's first sighting contributes nothing, so hot-plugging a drive never
 // fabricates a spike from its lifetime counter.
-function diskRates(samples: MetricSample[], index: number): {
+function diskRates(
+  samples: MetricSample[],
+  index: number
+): {
   read: number
   write: number
 } {
@@ -187,13 +186,11 @@ export function MetricsCharts({
   interval = "1m",
   compact = false,
   scope = "all",
-  range,
 }: {
   initialSamples: MetricSample[]
   interval?: RefreshInterval
   compact?: boolean
   scope?: "all" | "storage" | "network"
-  range?: string
 }) {
   const [live, setLive] = React.useState<MetricSample[]>([])
   const [diskDevice, setDiskDevice] = React.useState("all")
@@ -209,7 +206,7 @@ export function MetricsCharts({
       ])
     )
     return () => source.close()
-  }, [interval, range])
+  }, [interval])
   const samples = React.useMemo(
     () => transform(mergeSamples(initialSamples, live)),
     [initialSamples, live]

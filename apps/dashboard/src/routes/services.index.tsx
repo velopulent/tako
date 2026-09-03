@@ -1,11 +1,12 @@
-import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
+import {
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+} from "@tanstack/react-router"
 import type { ColumnDef } from "@tanstack/react-table"
-import { createFileRoute } from "@tanstack/react-router"
-
-import { api, type ServiceInfo } from "@/lib/api"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
 import { Badge } from "@/components/ui/badge"
-import { DataTable } from "@/components/data-table"
 import {
   Select,
   SelectContent,
@@ -15,14 +16,15 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { api, type ServiceInfo } from "@/lib/api"
+import { Page, State, usePageInterval } from "@/lib/page"
 import {
-  servicesSearch,
   serviceActiveStates,
   serviceFileStates,
   serviceScopes,
+  servicesSearch,
   serviceTypes,
 } from "@/lib/search"
-import { Page, State, usePageInterval } from "@/lib/page"
 
 function FilterSelect({
   label,
@@ -81,7 +83,7 @@ function ServicesPage() {
       api<{ items: ServiceInfo[] }>(`/services?scope=${scope}&type=${type}`),
     refetchInterval: interval.milliseconds,
   })
-  const columns: ColumnDef<ServiceInfo>[] = [
+  const columns: ColumnDef<DataTableFeatures, ServiceInfo>[] = [
     { accessorKey: "name", header: "Unit" },
     { accessorKey: "description", header: "Description" },
     {

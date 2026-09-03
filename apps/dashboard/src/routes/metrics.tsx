@@ -1,10 +1,13 @@
-import * as React from "react"
-import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
+import {
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+} from "@tanstack/react-router"
 import type { ColumnDef } from "@tanstack/react-table"
-import { createFileRoute } from "@tanstack/react-router"
-
-import { api, type MetricSample, type ProcessInfo } from "@/lib/api"
+import * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
+import { MetricsCharts } from "@/components/metrics-chart"
 import { Badge } from "@/components/ui/badge"
 import {
   Card,
@@ -13,13 +16,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { DataTable } from "@/components/data-table"
-import { MetricsCharts } from "@/components/metrics-chart"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { metricsSearch, type MetricRange, metricRanges } from "@/lib/search"
-import { Page, State, usePageInterval, bytes } from "@/lib/page"
+import { api, type MetricSample, type ProcessInfo } from "@/lib/api"
+import { bytes, Page, State, usePageInterval } from "@/lib/page"
+import { type MetricRange, metricRanges, metricsSearch } from "@/lib/search"
 
-const processColumns: ColumnDef<ProcessInfo>[] = [
+const processColumns: ColumnDef<DataTableFeatures, ProcessInfo>[] = [
   { accessorKey: "pid", header: "PID", meta: { align: "end" }, size: 88 },
   { accessorKey: "program", header: "Program" },
   { accessorKey: "user", header: "User" },
@@ -28,7 +30,12 @@ const processColumns: ColumnDef<ProcessInfo>[] = [
     header: "State",
     cell: ({ row }) => <Badge variant="outline">{row.original.state}</Badge>,
   },
-  { accessorKey: "threads", header: "Threads", meta: { align: "end" }, size: 96 },
+  {
+    accessorKey: "threads",
+    header: "Threads",
+    meta: { align: "end" },
+    size: 96,
+  },
   {
     accessorKey: "cpuPercent",
     header: "CPU",
@@ -145,8 +152,8 @@ function ProcessesTable({
         <CardHeader>
           <CardTitle>Processes</CardTitle>
           <CardDescription>
-            {items.length} processes · per-process network requires optional eBPF
-            collector
+            {items.length} processes · per-process network requires optional
+            eBPF collector
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -184,7 +191,9 @@ function MetricsPage() {
   const query = useQuery({
     queryKey: ["metrics", search.range ?? "1h"],
     queryFn: () =>
-      api<{ samples: MetricSample[] }>(`/metrics?range=${search.range ?? "1h"}`),
+      api<{ samples: MetricSample[] }>(
+        `/metrics?range=${search.range ?? "1h"}`
+      ),
   })
   return (
     <Page
@@ -213,7 +222,6 @@ function MetricsPage() {
       </Tabs>
       <MetricsCharts
         key={`${search.range ?? "1h"}:${interval.value}`}
-        range={search.range ?? "1h"}
         initialSamples={query.data?.samples ?? []}
         interval={interval.value}
       />

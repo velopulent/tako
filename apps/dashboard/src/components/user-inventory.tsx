@@ -1,21 +1,17 @@
-import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
-
-import { api, type SessionResponse, type UserInfo } from "@/lib/api"
-import { UserAccountManager } from "@/components/user-account-manager"
+import * as React from "react"
 import { AccountLoginHistory } from "@/components/account-login-history"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { DataTable } from "@/components/data-table"
 import {
   Empty,
   EmptyDescription,
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
   Sheet,
   SheetContent,
@@ -23,9 +19,12 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { UserAccountManager } from "@/components/user-account-manager"
+import { api, type SessionResponse, type UserInfo } from "@/lib/api"
 
-const columns: ColumnDef<UserInfo>[] = [
+const columns: ColumnDef<DataTableFeatures, UserInfo>[] = [
   { accessorKey: "username", header: "User" },
   { accessorKey: "uid", header: "UID", meta: { align: "end" }, size: 88 },
   { accessorKey: "name", header: "Name" },
@@ -144,10 +143,15 @@ export function UserInventory({
           }
         }}
       >
-        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetContent
+          side="right"
+          className="w-full overflow-y-auto sm:max-w-xl"
+        >
           <SheetHeader>
             <SheetTitle>
-              {creating ? "Create local account" : `Manage ${selected?.username ?? ""}`}
+              {creating
+                ? "Create local account"
+                : `Manage ${selected?.username ?? ""}`}
             </SheetTitle>
             <SheetDescription>
               Shadow-utils changes are previewed, fingerprint-checked, and
