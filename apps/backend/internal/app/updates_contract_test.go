@@ -20,8 +20,8 @@ func TestUpdateHandlersEmitEmptyArraysNotNull(t *testing.T) {
 	defer server.cancel()
 	// Intentionally return zero values with nil slices, as fakes and future
 	// producer paths can. Handlers must still emit [] for required arrays.
-	server.readUpdatesFn = func(context.Context) platform.UpdateStatus {
-		return platform.UpdateStatus{Available: true, Backend: "test", Contract: "test"}
+	server.readUpdatesFn = func(context.Context) (platform.UpdateStatus, error) {
+		return platform.UpdateStatus{Available: true, Backend: "test", Contract: "test"}, nil
 	}
 	server.previewUpdatesFn = func(_ context.Context, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
 		return platform.UpdatePreview{Operation: operation}, nil

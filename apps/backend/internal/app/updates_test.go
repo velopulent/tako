@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,7 +22,7 @@ func TestUpdatesRouteUsesControlledReadOnlyInventorySeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	server.readUpdatesFn = func(context.Context) platform.UpdateStatus {
+	server.readUpdatesFn = func(context.Context) (platform.UpdateStatus, error) {
 		return platform.UpdateStatus{
 			Available:    true,
 			Backend:      "apt-get",
@@ -37,7 +38,7 @@ func TestUpdatesRouteUsesControlledReadOnlyInventorySeam(t *testing.T) {
 				Architecture:     "amd64",
 			}},
 			Message: "1 installed-software update available.",
-		}
+		}, nil
 	}
 	created, err := server.sessions.Create(auth.Identity{Username: "operator", BridgeToken: "bridge-token"})
 	if err != nil {
@@ -73,7 +74,7 @@ func TestUpdatePreviewAndJobKeepAdminTokenOutOfDurableParameters(t *testing.T) {
 		Packages:    []platform.UpdatePackage{{Name: "openssl", CandidateVersion: "3.0.14"}},
 		Message:     "1 installed-software update available.",
 	}
-	server.readUpdatesFn = func(context.Context) platform.UpdateStatus { return status }
+	server.readUpdatesFn = func(context.Context) (platform.UpdateStatus, error) { return status, nil }
 	server.previewUpdatesFn = func(_ context.Context, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
 		return platform.UpdatePreview{Operation: operation, Current: status, Selected: status.Packages, Changes: []string{"update 1 package"}, Warnings: []string{}, Fingerprint: fingerprint, Allowed: true, RequiresConfirmation: true}, nil
 	}
@@ -120,5 +121,30 @@ func TestUpdatePreviewAndJobKeepAdminTokenOutOfDurableParameters(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("update worker did not run")
+	}
+}
+
+func TestUpdatesRouteSurfacesBackendFailureInsteadOfEmpty(t *testing.T) {
+	server, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.cancel()
+	server.readUpdatesFn = func(context.Context) (platform.UpdateStatus, error) {
+		return platform.UpdateStatus{}, errors.New("system-backend-unavailable")
+	}
+	created, err := server.sessions.Create(auth.Identity{Username: "operator", BridgeToken: "bridge-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/updates", nil)
+	request.AddCookie(&http.Cookie{Name: session.CookieName, Value: created.ID})
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("updates failure returned %d, want 503: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "updates-unavailable") {
+		t.Fatalf("updates failure hides backend error: %s", recorder.Body.String())
 	}
 }

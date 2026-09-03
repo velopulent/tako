@@ -66,7 +66,7 @@ type Server struct {
 	readUnitDetails        func(context.Context, string, string) (platform.UnitDetail, error)
 	readUnitConfiguration  func(context.Context, string, string) (platform.UnitConfiguration, error)
 	serviceActionFn        func(context.Context, platform.ServiceOperation) error
-	readUpdatesFn          func(context.Context) platform.UpdateStatus
+	readUpdatesFn          func(context.Context) (platform.UpdateStatus, error)
 	previewUpdatesFn       func(context.Context, platform.UpdateOperation) (platform.UpdatePreview, error)
 	applyUpdatesFn         func(context.Context, auth.UpdateRequest) (platform.UpdateResult, error)
 	autoUpdatesFn          func(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error)
@@ -166,9 +166,8 @@ func New(cfg config.Config) (*Server, error) {
 		serviceActionFn: func(ctx context.Context, operation platform.ServiceOperation) error {
 			return server.hostBroker().ServiceAction(ctx, credentialsForScope(ctx, operation.Scope), operation)
 		},
-		readUpdatesFn: func(ctx context.Context) platform.UpdateStatus {
-			status, _ := server.hostBroker().ReadUpdateStatus(ctx, credentialsFromContext(ctx))
-			return status
+		readUpdatesFn: func(ctx context.Context) (platform.UpdateStatus, error) {
+			return server.hostBroker().ReadUpdateStatus(ctx, credentialsFromContext(ctx))
 		},
 		previewUpdatesFn: func(ctx context.Context, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
 			return server.hostBroker().PreviewUpdates(ctx, credentialsFromContext(ctx), operation)
@@ -2360,7 +2359,13 @@ func (server *Server) updates(writer http.ResponseWriter, request *http.Request)
 		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "The update inventory service is unavailable")
 		return
 	}
-	status := server.readUpdatesFn(request.Context())
+	status, err := server.readUpdatesFn(request.Context())
+	if err != nil {
+		// Never disguise a backend failure as "up to date": the dashboard
+		// renders non-2xx as an explicit inventory error.
+		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "The update inventory service is unavailable")
+		return
+	}
 	if status.Fingerprint == "" {
 		status.Fingerprint = platform.UpdateFingerprint(status)
 	}
