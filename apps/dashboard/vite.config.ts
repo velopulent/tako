@@ -19,6 +19,11 @@ export default defineConfig({
   ],
   server: {
     host: "127.0.0.1",
+    port: 5173,
+    strictPort: true,
+    // No `ws` override: the Vite client derives protocol/host/port from the
+    // page URL, so HMR works both via `vite dev` (:5173) and via the gateway
+    // proxy (https://127.0.0.1:9090 → TAKO_VITE_URL) with wss through TLS.
     proxy: {
       "/api": {
         target: "http://127.0.0.1:9090",

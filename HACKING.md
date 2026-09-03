@@ -40,9 +40,12 @@ bun run dev
 ```
 
 That builds `bin/tako`, starts the systemd stack, and runs
-`vite build --watch`. Open **https://127.0.0.1:9090** and log in with your
-normal UNIX username and password. Refresh the browser after Vite finishes a
-rebuild (no separate Vite origin on :5173).
+`vite dev`. Open **https://127.0.0.1:9090** and log in with your
+normal UNIX username and password. The gateway reverse-proxies non-API
+traffic to Vite (`TAKO_VITE_URL`), so the browser stays on the gateway
+origin (TLS, cookies, CSRF) while Vite provides HMR — no manual refresh,
+no separate `:5173` origin. If Vite is down, the gateway falls back to the
+built overlay/embed assets.
 
 After Go or unit changes:
 

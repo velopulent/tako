@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -2450,7 +2451,7 @@ func (server *Server) originAllowed(request *http.Request) bool {
 
 func (server *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		writer.Header().Set("Content-Security-Policy", contentSecurityPolicy(request.URL.Path))
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "DENY")
@@ -2460,6 +2461,25 @@ func (server *Server) securityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+const (
+	prodContentSecurityPolicy = "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+	// Vite dev injects an inline module preamble (@vitejs/plugin-react) and
+	// serves HMR over the gateway origin, so the dev proxy needs inline/eval
+	// scripts. Only used when TAKO_VITE_URL points at a loopback Vite server;
+	// production (env unset) always keeps the strict policy above.
+	devContentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+)
+
+// contentSecurityPolicy relaxes script rules for proxied Vite dev traffic so
+// HMR preamble scripts run. API responses and production keep the strict
+// policy even when the dev proxy is configured.
+func contentSecurityPolicy(path string) string {
+	if viteDevTarget() != nil && !strings.HasPrefix(path, "/api/") {
+		return devContentSecurityPolicy
+	}
+	return prodContentSecurityPolicy
 }
 
 func (server *Server) ensureCertificate() (string, string, error) {
@@ -2518,6 +2538,43 @@ func (server *Server) ensureCertificate() (string, string, error) {
 }
 
 func spaHandler() http.Handler {
+	if target := viteDevTarget(); target != nil {
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		fallback := spaFileHandler()
+		proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
+			zap.L().Warn("vite dev server unavailable; serving built assets", zap.Error(err))
+			fallback.ServeHTTP(writer, request)
+		}
+		return proxy
+	}
+	return spaFileHandler()
+}
+
+// viteDevTarget returns the Vite dev server URL when TAKO_VITE_URL is set to a
+// loopback address. Unset in production and packaging, so the gateway serves
+// the embedded/overlay dashboard. When set (host-dev `watch`), the gateway
+// reverse-proxies all non-API traffic to Vite, keeping the browser on the
+// gateway origin (TLS, cookies, CSRF, WSS terminal) while Vite provides HMR.
+func viteDevTarget() *url.URL {
+	raw := strings.TrimSpace(os.Getenv("TAKO_VITE_URL"))
+	if raw == "" {
+		return nil
+	}
+	target, err := url.Parse(raw)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") {
+		return nil
+	}
+	host := target.Hostname()
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return nil
+	}
+	if target.Port() == "" {
+		return nil
+	}
+	return target
+}
+
+func spaFileHandler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		files := dashboard.Files()
 		fileServer := http.FileServer(http.FS(files))
