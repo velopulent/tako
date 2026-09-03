@@ -23,7 +23,6 @@ func TestHostConfigurationPreviewAndStaleWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	current := platform.NewHostConfiguration("old-host", "UTC", true)
 	server.readHostConfiguration = func(context.Context) (platform.HostConfiguration, error) { return current, nil }
 	cookie, csrf := loginForTest(t, server.routes())
@@ -70,8 +69,8 @@ func TestHostConfigurationUpdateUsesPrivilegedSocketAndRecordsReceipt(t *testing
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.config.SessionSocket = path
+	server.broker = socketHostBroker{path: path}
 	current := platform.NewHostConfiguration("old-host", "UTC", true)
 	updated := platform.NewHostConfiguration("new-host", "Asia/Kolkata", false)
 	var readCurrent atomic.Bool
@@ -105,9 +104,5 @@ func TestHostConfigurationUpdateUsesPrivilegedSocketAndRecordsReceipt(t *testing
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"hostname":"new-host"`)) {
 		t.Fatalf("host update returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	items, err := server.preferences.OperationReceipts(context.Background(), 10)
-	if err != nil || len(items) != 1 || items[0].Target != "host/config" || items[0].Result != "succeeded" {
-		t.Fatalf("host update receipt missing: %#v, %v", items, err)
 	}
 }

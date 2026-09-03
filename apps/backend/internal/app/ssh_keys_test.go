@@ -20,7 +20,6 @@ func TestSSHKeyRoutesUseAuthorityStalePreviewAndSafeReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var previewed, applied platform.SSHKeyOperation
 	server.previewSSHKeysFn = func(_ context.Context, request auth.SSHKeyRequest) (platform.SSHKeyPreview, error) {
 		previewed = request.Operation
@@ -56,13 +55,6 @@ func TestSSHKeyRoutesUseAuthorityStalePreviewAndSafeReceipts(t *testing.T) {
 	server.routes().ServeHTTP(recorder, apply)
 	if recorder.Code != http.StatusOK || applied.Preview || applied.ExpectedFingerprint == "" {
 		t.Fatalf("key apply returned %d body=%s operation=%#v", recorder.Code, recorder.Body.String(), applied)
-	}
-	receipts, err := server.preferences.OperationReceipts(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(receipts) != 1 || receipts[0].Target != "user/operator/ssh-keys/add" || strings.Contains(receipts[0].Target+receipts[0].Error, "public-comment") {
-		t.Fatalf("unsafe SSH key receipt: %#v", receipts)
 	}
 
 	other := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/users/ssh-keys?username=target", nil)

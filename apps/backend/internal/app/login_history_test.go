@@ -19,7 +19,6 @@ func TestLoginHistoryRouteUsesBoundedJournalQueryAndIdentityMetadata(t *testing.
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var received platform.LoginHistoryQuery
 	server.queryLoginHistory = func(_ context.Context, query platform.LoginHistoryQuery) (platform.LoginHistoryPage, error) {
 		received = query
@@ -54,7 +53,6 @@ func TestLoginHistoryRouteProtectsOtherIdentitiesAndAllowsDeletedAdminTarget(t *
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.queryLoginHistory = func(_ context.Context, query platform.LoginHistoryQuery) (platform.LoginHistoryPage, error) {
 		return platform.LoginHistoryPage{Identity: platform.LoginHistoryIdentity{Username: query.Username, Source: "deleted-unknown"}, Items: []platform.LoginHistoryEntry{}}, nil
 	}

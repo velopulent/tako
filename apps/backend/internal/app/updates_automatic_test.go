@@ -33,7 +33,6 @@ func TestUpdateLiveAndHistoryEndpointsReturnBoundedReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	cookie, _ := adminSessionFor(t, server, "operator")
 
 	liveRequest := httptest.NewRequest(http.MethodGet, "/api/v1/updates/live", nil)
@@ -69,7 +68,6 @@ func TestAutomaticUpdatesStatusUsesSeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.autoUpdatesStatusFn = func(context.Context) platform.AutoUpdatesConfig {
 		return platform.AutoUpdatesConfig{Available: true, Supported: true, Installed: true, Enabled: true, Type: "security", Day: "mon", Time: "6:00", Provider: "dnf4-automatic"}
 	}
@@ -99,7 +97,6 @@ func TestApplyAutomaticUpdatesRequiresAdministrativeAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "operator", BridgeToken: "bridge"})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +117,6 @@ func TestApplyAutomaticUpdatesRoutesOperationWithAdminToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	calls := make(chan auth.AutoUpdatesRequest, 1)
 	server.autoUpdatesFn = func(_ context.Context, request auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
 		calls <- request
@@ -163,7 +159,6 @@ func TestCancelRunningUpdateRequiresAdministrativeAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "operator", BridgeToken: "bridge"})
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +199,6 @@ func TestApplyKpatchSettingsRequiresAdministrativeAccessAndRoutesOperation(t *te
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "operator", BridgeToken: "bridge", AdminToken: "secret-admin"})
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +254,6 @@ func TestSyncUpdateNotificationsOpenAndResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	status := platform.UpdateStatus{Available: true, Backend: "dnf", Packages: []platform.UpdatePackage{
 		{Name: "openssl", Severity: "security"},
 		{Name: "vim", Severity: "bugfix"},

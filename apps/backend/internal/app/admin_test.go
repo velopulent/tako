@@ -45,7 +45,6 @@ func TestAdministrativeAccessUsesRootPolicyGrantAndClearsOnDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	authenticator := &administrativeTestAuthenticator{}
 	server.authenticator = authenticator
 	cookie, csrf := loginForTest(t, server.routes())
@@ -89,7 +88,6 @@ func TestAdministrativeAccessPassesBoundedPAMResponsesToPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	authenticator := &administrativeTestAuthenticator{}
 	server.authenticator = authenticator
 	cookie, csrf := loginForTest(t, server.routes())
@@ -115,7 +113,6 @@ func TestAdministrativeAccessRejectsMalformedAndDeniedRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	authenticator := &administrativeTestAuthenticator{denied: true}
 	server.authenticator = authenticator
 	cookie, csrf := loginForTest(t, server.routes())

@@ -22,7 +22,6 @@ func TestPowerEndpointRejectsUnauthorizedAndStaleRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	status := platform.PowerStatus{Available: true, Reboot: platform.PowerActionStatus{State: "available", Available: true}, Shutdown: platform.PowerActionStatus{State: "available", Available: true}, Fingerprint: strings.Repeat("a", 64)}
 	server.readPowerStatusFn = func(context.Context) (platform.PowerStatus, error) { return status, nil }
 	cookie, csrf := loginForTest(t, server.routes())
@@ -61,7 +60,6 @@ func TestPowerEndpointUsesTypedConfirmationAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.config.SessionSocket = path
 	status := platform.PowerStatus{Available: true, Reboot: platform.PowerActionStatus{State: "available", Available: true}, Shutdown: platform.PowerActionStatus{State: "available", Available: true}, Fingerprint: strings.Repeat("a", 64)}
 	server.readPowerStatusFn = func(context.Context) (platform.PowerStatus, error) { return status, nil }
@@ -95,9 +93,5 @@ func TestPowerEndpointUsesTypedConfirmationAndReceipt(t *testing.T) {
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("power request returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	items, err := server.preferences.OperationReceipts(context.Background(), 10)
-	if err != nil || len(items) != 1 || items[0].Target != "host/reboot" || items[0].Result != "succeeded" {
-		t.Fatalf("power receipt missing: %#v, %v", items, err)
 	}
 }

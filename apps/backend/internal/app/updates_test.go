@@ -12,7 +12,6 @@ import (
 
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/platform"
-	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
 )
 
@@ -22,7 +21,6 @@ func TestUpdatesRouteUsesControlledReadOnlyInventorySeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.readUpdatesFn = func(context.Context) platform.UpdateStatus {
 		return platform.UpdateStatus{
 			Available:    true,
@@ -68,7 +66,6 @@ func TestUpdatePreviewAndJobKeepAdminTokenOutOfDurableParameters(t *testing.T) {
 	}
 	defer server.cancel()
 	defer server.jobs.Close(context.Background())
-	defer server.preferences.Close()
 	fingerprint := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	status := platform.UpdateStatus{
 		Available: true, Backend: "apt-get", Version: "apt 3.0", Contract: "bounded-command-read-only",
@@ -108,7 +105,7 @@ func TestUpdatePreviewAndJobKeepAdminTokenOutOfDurableParameters(t *testing.T) {
 		t.Fatalf("apply returned %d: %s", applyRecorder.Code, applyRecorder.Body.String())
 	}
 	var accepted struct {
-		Job preferences.Job `json:"job"`
+		Job Job `json:"job"`
 	}
 	if err := json.Unmarshal(applyRecorder.Body.Bytes(), &accepted); err != nil {
 		t.Fatal(err)

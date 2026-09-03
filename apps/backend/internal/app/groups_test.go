@@ -20,7 +20,6 @@ func TestGroupRoutesPreviewApplyAndRejectUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var groupPreviewed platform.GroupMembershipOperation
 	var roleApplied platform.AdministrativeRoleOperation
 	server.previewGroupFn = func(_ context.Context, request auth.GroupMembershipRequest) (platform.GroupMembershipPreview, error) {

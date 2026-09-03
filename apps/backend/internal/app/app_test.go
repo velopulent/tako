@@ -18,7 +18,6 @@ import (
 	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/platform"
-	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
 )
 
@@ -78,7 +77,6 @@ func TestLoginRelaysMultiplePAMRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	authenticator := &conversationalAuthenticator{}
 	server.authenticator = authenticator
 	handler := server.routes()
@@ -129,7 +127,6 @@ func TestLoginReportsSessionSetupFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.config.Development = false
 	server.authenticator = sessionFailedAuthenticator{}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"krishna","password":"secret"}`))
@@ -165,7 +162,6 @@ func TestLoginConversationCanBeCanceled(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	authenticator := &conversationalAuthenticator{}
 	server.authenticator = authenticator
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"conversationId":"conversation-token","cancel":true}`))
@@ -183,7 +179,6 @@ func TestLoginRejectsMixedConversationShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.config.Development = false
 	server.authenticator = &conversationalAuthenticator{}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"octopus","conversationId":"conversation-token","responses":[{"id":"otp","value":"123456"}]}`))
@@ -248,7 +243,6 @@ func TestCapabilitiesExposeRuntimeContractsAndGuidance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.detectCapabilities = func(context.Context) []platform.Capability {
 		return []platform.Capability{
 			{ID: "services", State: platform.StateReady, Backend: "systemd", Version: "systemd 257", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "dbus"},
@@ -295,45 +289,12 @@ func TestCapabilitiesExposeRuntimeContractsAndGuidance(t *testing.T) {
 	}
 }
 
-func TestOperationReceiptsEndpointReturnsSanitizedHistory(t *testing.T) {
-	server, err := New(testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.cancel()
-	defer server.preferences.Close()
-	if _, err := server.preferences.RecordOperation(context.Background(), preferences.OperationReceipt{
-		Actor:          "octopus",
-		Target:         "system/sshd.service/restart",
-		Result:         "succeeded",
-		Administrative: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	cookie, _ := loginForTest(t, server.routes())
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/operations?limit=1", nil)
-	request.AddCookie(cookie)
-	recorder := httptest.NewRecorder()
-	server.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte("sshd.service")) {
-		t.Fatalf("operation history returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	request = httptest.NewRequest(http.MethodGet, "/api/v1/operations?limit=0", nil)
-	request.AddCookie(cookie)
-	recorder = httptest.NewRecorder()
-	server.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("invalid operation limit returned %d", recorder.Code)
-	}
-}
-
 func TestServiceRoutesRejectUnsafeTargetsAndMissingAuthority(t *testing.T) {
 	server, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	cookie, csrf := loginForTest(t, server.routes())
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/services/global/demo.service", nil)
@@ -374,7 +335,6 @@ func TestServicePreviewAndConfigurationUseControlledReadSeams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.readUnitDetails = func(context.Context, string, string) (platform.UnitDetail, error) {
 		return platform.UnitDetail{
 			Unit:     platform.Unit{Name: "demo.service", Scope: "user", ActiveState: "active", SubState: "running"},
@@ -415,7 +375,6 @@ func TestTimerRoutesUseStructuredOperationsAndConflictResponses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "octopus", BridgeToken: "bridge-token"})
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +426,6 @@ func TestSystemTimerRouteRequiresAdministrativeAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "octopus", BridgeToken: "bridge-token"})
 	if err != nil {
 		t.Fatal(err)
@@ -488,7 +446,6 @@ func TestServiceOverrideRoutesNormalizePreviewAndRejectStaleWrites(t *testing.T)
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "octopus", BridgeToken: "bridge-token"})
 	if err != nil {
 		t.Fatal(err)
@@ -530,7 +487,6 @@ func TestLogsRouteParsesBoundedFiltersAndOpaqueCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var received platform.JournalQuery
 	server.queryLogs = func(_ context.Context, query platform.JournalQuery) (platform.JournalPage, error) {
 		received = query
@@ -562,7 +518,6 @@ func TestLogExportAppliesExactFiltersAndStaysBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var received platform.JournalQuery
 	server.queryLogs = func(_ context.Context, query platform.JournalQuery) (platform.JournalPage, error) {
 		received = query
@@ -594,7 +549,6 @@ func TestLogStreamAppliesFiltersAndEmitsStructuredEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var received platform.JournalQuery
 	server.followLogs = func(_ context.Context, query platform.JournalQuery, emit func(platform.LogEntry) error) error {
 		received = query
@@ -613,67 +567,12 @@ func TestLogStreamAppliesFiltersAndEmitsStructuredEntries(t *testing.T) {
 	}
 }
 
-func TestSavedLogViewRoutesPersistAndRejectStaleWrites(t *testing.T) {
-	server, err := New(testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.cancel()
-	defer server.preferences.Close()
-	handler := server.routes()
-	cookie, csrf := loginForTest(t, handler)
-	create := httptest.NewRequest(http.MethodPost, "/api/v1/log-views", strings.NewReader(`{"name":"Incident","filter":{"unit":"worker.service","details":true}}`))
-	create.AddCookie(cookie)
-	create.Header.Set("X-CSRF-Token", csrf)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, create)
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("create saved view returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	var created preferences.SavedLogView
-	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
-		t.Fatal(err)
-	}
-	list := httptest.NewRequest(http.MethodGet, "/api/v1/log-views", nil)
-	list.AddCookie(cookie)
-	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, list)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Incident") {
-		t.Fatalf("list saved views returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	update := httptest.NewRequest(http.MethodPut, "/api/v1/log-views/"+created.ID, strings.NewReader(`{"name":"Incident updated","filter":{"text":"failed"},"expectedRevision":1}`))
-	update.AddCookie(cookie)
-	update.Header.Set("X-CSRF-Token", csrf)
-	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, update)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Incident updated") {
-		t.Fatalf("update saved view returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	stale := httptest.NewRequest(http.MethodPut, "/api/v1/log-views/"+created.ID, strings.NewReader(`{"name":"stale","filter":{},"expectedRevision":1}`))
-	stale.AddCookie(cookie)
-	stale.Header.Set("X-CSRF-Token", csrf)
-	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, stale)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("stale saved view returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	remove := httptest.NewRequest(http.MethodDelete, "/api/v1/log-views/"+created.ID+"?expectedRevision=2", nil)
-	remove.AddCookie(cookie)
-	remove.Header.Set("X-CSRF-Token", csrf)
-	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, remove)
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("delete saved view returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-}
-
 func TestProcessDetailRouteUsesStartIdentityAndDegradesAccess(t *testing.T) {
 	server, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.readProcessDetails = func(_ context.Context, pid int, started uint64) (platform.ProcessDetails, error) {
 		if pid != 42 || started != 99 {
 			t.Fatalf("unexpected process identity pid=%d started=%d", pid, started)
@@ -696,7 +595,6 @@ func TestProcessListRouteDoesNotRequireAdministrativeAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.readProcessesFn = func(context.Context) ([]platform.Process, error) {
 		return []platform.Process{{PID: 1, UID: 0, User: "root", Program: "init", Command: "init", State: "S"}}, nil
 	}
@@ -716,7 +614,6 @@ func TestProcessSignalRouteUsesCSRFAndAuthenticatedBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "operator", UID: 1000, BridgeToken: "bridge-token"})
 	if err != nil {
 		t.Fatal(err)
@@ -855,124 +752,6 @@ func TestGatewayCertificatePathRejectsExternalSymlink(t *testing.T) {
 	}
 }
 
-func TestMonitoringPreferenceSurvivesServerRestart(t *testing.T) {
-	cfg := config.Default()
-	cfg.Development = true
-	cfg.DataDir = t.TempDir()
-
-	first, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, csrf := loginForTest(t, first.routes())
-	request := httptest.NewRequest(http.MethodPut, "/api/v1/preferences/monitoring", bytes.NewBufferString(`{"defaultInterval":"30s","expectedRevision":0}`))
-	request.AddCookie(cookie)
-	request.Header.Set("X-CSRF-Token", csrf)
-	recorder := httptest.NewRecorder()
-	first.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("update returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	first.cancel()
-	if err := first.preferences.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	second, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.cancel()
-	defer second.preferences.Close()
-	cookie, _ = loginForTest(t, second.routes())
-	request = httptest.NewRequest(http.MethodGet, "/api/v1/preferences/monitoring", nil)
-	request.AddCookie(cookie)
-	recorder = httptest.NewRecorder()
-	second.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("read returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	var preference struct {
-		DefaultInterval string `json:"defaultInterval"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &preference); err != nil {
-		t.Fatal(err)
-	}
-	if preference.DefaultInterval != "30s" {
-		t.Fatalf("preference did not survive restart: %#v", preference)
-	}
-}
-
-func TestMonitoringPreferenceRejectsStaleAndMalformedWrites(t *testing.T) {
-	server, err := New(testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.cancel()
-	defer server.preferences.Close()
-	handler := server.routes()
-	cookie, csrf := loginForTest(t, handler)
-
-	tests := []struct {
-		name   string
-		body   string
-		status int
-	}{
-		{name: "first write", body: `{"defaultInterval":"30s","expectedRevision":0}`, status: http.StatusOK},
-		{name: "stale write", body: `{"defaultInterval":"5s","expectedRevision":0}`, status: http.StatusConflict},
-		{name: "trailing object", body: `{"defaultInterval":"5s","expectedRevision":1}{}`, status: http.StatusBadRequest},
-		{name: "unknown secret field", body: `{"defaultInterval":"5s","expectedRevision":1,"password":"do-not-store"}`, status: http.StatusBadRequest},
-		{name: "invalid interval", body: `{"defaultInterval":"2s","expectedRevision":1}`, status: http.StatusBadRequest},
-		{name: "negative revision", body: `{"defaultInterval":"5s","expectedRevision":-1}`, status: http.StatusBadRequest},
-		{name: "oversized", body: `{"defaultInterval":"5s","expectedRevision":1,"padding":"` + string(bytes.Repeat([]byte("x"), 5<<10)) + `"}`, status: http.StatusRequestEntityTooLarge},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPut, "/api/v1/preferences/monitoring", bytes.NewBufferString(test.body))
-			request.AddCookie(cookie)
-			request.Header.Set("X-CSRF-Token", csrf)
-			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, request)
-			if recorder.Code != test.status {
-				t.Fatalf("expected %d, got %d: %s", test.status, recorder.Code, recorder.Body.String())
-			}
-		})
-	}
-
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/preferences/monitoring", nil)
-	request.AddCookie(cookie)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"defaultInterval":"30s"`)) {
-		t.Fatalf("rejected writes changed preference: %d %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestMonitoringPreferenceUsesConfiguredDefault(t *testing.T) {
-	server, err := New(testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.cancel()
-	cookie, _ := loginForTest(t, server.routes())
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/preferences/monitoring", nil)
-	request.AddCookie(cookie)
-	recorder := httptest.NewRecorder()
-	server.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("read returned %d: %s", recorder.Code, recorder.Body.String())
-	}
-	var preference struct {
-		DefaultInterval string `json:"defaultInterval"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &preference); err != nil {
-		t.Fatal(err)
-	}
-	if preference.DefaultInterval != "1m" {
-		t.Fatalf("configured default is not API interval: %#v", preference)
-	}
-}
-
 func loginForTest(t *testing.T, handler http.Handler) (*http.Cookie, string) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"username":"","password":""}`))
@@ -1001,6 +780,5 @@ func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Development = true
-	cfg.DataDir = t.TempDir()
 	return cfg
 }

@@ -13,45 +13,40 @@ import (
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/platform"
-	"github.com/velopulent/tako/internal/preferences"
 )
 
-func waitForJob(t *testing.T, store *preferences.Store, id string, want func(preferences.Job) bool) preferences.Job {
+func waitForJob(t *testing.T, manager *diagnosticJobManager, id string, want func(Job) bool) Job {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		job, err := store.GetJob(context.Background(), id)
+		job, err := manager.GetJob(id)
 		if err == nil && want(job) {
 			return job
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	job, err := store.GetJob(context.Background(), id)
+	job, err := manager.GetJob(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Fatalf("job did not reach expected state: %#v", job)
-	return preferences.Job{}
+	return Job{}
 }
 
 func TestDiagnosticJobManagerPersistsProgressAndResult(t *testing.T) {
-	store, err := preferences.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	manager := newDiagnosticJobManager(context.Background(), store, func(_ context.Context, _ preferences.Job, update func(int, string) error) (json.RawMessage, error) {
+	manager := newDiagnosticJobManager(context.Background(), func(_ context.Context, _ Job, update func(int, string) error) (json.RawMessage, error) {
 		if err := update(45, "Collecting"); err != nil {
 			return nil, err
 		}
 		return json.RawMessage(`{"host":{"hostname":"test"}}`), nil
 	})
+	defer manager.Close(context.Background())
 	job, err := manager.Submit(context.Background(), hostInventoryJob, "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
-	completed := waitForJob(t, store, job.ID, func(item preferences.Job) bool {
-		return item.State == preferences.JobSucceeded
+	completed := waitForJob(t, manager, job.ID, func(item Job) bool {
+		return item.State == JobSucceeded
 	})
 	if completed.Progress != 100 || string(completed.Result) != `{"host":{"hostname":"test"}}` {
 		t.Fatalf("job result was not persisted: %#v", completed)
@@ -62,17 +57,13 @@ func TestDiagnosticJobManagerPersistsProgressAndResult(t *testing.T) {
 }
 
 func TestDiagnosticJobCancellationStopsExecution(t *testing.T) {
-	store, err := preferences.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
 	started := make(chan struct{})
-	manager := newDiagnosticJobManager(context.Background(), store, func(ctx context.Context, _ preferences.Job, _ func(int, string) error) (json.RawMessage, error) {
+	manager := newDiagnosticJobManager(context.Background(), func(ctx context.Context, _ Job, _ func(int, string) error) (json.RawMessage, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
+	defer manager.Close(context.Background())
 	job, err := manager.Submit(context.Background(), hostInventoryJob, "operator")
 	if err != nil {
 		t.Fatal(err)
@@ -86,11 +77,11 @@ func TestDiagnosticJobCancellationStopsExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if canceled.State != preferences.JobCanceled {
+	if canceled.State != JobCanceled {
 		t.Fatalf("cancel response was %#v", canceled)
 	}
-	waitForJob(t, store, job.ID, func(item preferences.Job) bool {
-		return item.State == preferences.JobCanceled
+	waitForJob(t, manager, job.ID, func(item Job) bool {
+		return item.State == JobCanceled
 	})
 	if err := manager.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -98,13 +89,8 @@ func TestDiagnosticJobCancellationStopsExecution(t *testing.T) {
 }
 
 func TestDiagnosticJobManagerReportsBusyState(t *testing.T) {
-	store, err := preferences.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
 	release := make(chan struct{})
-	manager := newDiagnosticJobManager(context.Background(), store, func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error) {
+	manager := newDiagnosticJobManager(context.Background(), func(context.Context, Job, func(int, string) error) (json.RawMessage, error) {
 		<-release
 		return json.RawMessage(`{}`), nil
 	})
@@ -140,7 +126,7 @@ func TestProductionInventoryJobRequiresEphemeralAuthority(t *testing.T) {
 		config:               config.Default(),
 		inventoryCredentials: make(map[string]auth.HostReadCredentials),
 	}
-	_, err := server.runDiagnosticJob(context.Background(), preferences.Job{ID: "recovered", Kind: hostInventoryJob}, func(int, string) error { return nil })
+	_, err := server.runDiagnosticJob(context.Background(), Job{ID: "recovered", Kind: hostInventoryJob}, func(int, string) error { return nil })
 	if !errors.Is(err, auth.ErrServiceUnavailable) {
 		t.Fatalf("inventory without live host grant returned %v, want service unavailable", err)
 	}
@@ -154,7 +140,6 @@ func TestDiagnosticJobsHTTPWorkflow(t *testing.T) {
 	defer func() {
 		server.cancel()
 		_ = server.jobs.Close(context.Background())
-		_ = server.preferences.Close()
 	}()
 	server.detectCapabilities = func(context.Context) []platform.Capability { return nil }
 	cookie, csrf := loginForTest(t, server.routes())
@@ -168,12 +153,12 @@ func TestDiagnosticJobsHTTPWorkflow(t *testing.T) {
 		t.Fatalf("job start returned %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var startResponse struct {
-		Job preferences.Job `json:"job"`
+		Job Job `json:"job"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &startResponse); err != nil {
 		t.Fatal(err)
 	}
-	if startResponse.Job.ID == "" || startResponse.Job.State != preferences.JobPending {
+	if startResponse.Job.ID == "" || startResponse.Job.State != JobPending {
 		t.Fatalf("invalid start response: %#v", startResponse)
 	}
 
@@ -205,7 +190,6 @@ func TestDiagnosticJobsHTTPCanBeCanceled(t *testing.T) {
 	defer func() {
 		server.cancel()
 		_ = server.jobs.Close(context.Background())
-		_ = server.preferences.Close()
 	}()
 	server.detectCapabilities = func(ctx context.Context) []platform.Capability {
 		<-ctx.Done()
@@ -221,13 +205,13 @@ func TestDiagnosticJobsHTTPCanBeCanceled(t *testing.T) {
 		t.Fatalf("job start returned %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response struct {
-		Job preferences.Job `json:"job"`
+		Job Job `json:"job"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	waitForJob(t, server.preferences, response.Job.ID, func(job preferences.Job) bool {
-		return job.State == preferences.JobRunning
+	waitForJob(t, server.jobs, response.Job.ID, func(job Job) bool {
+		return job.State == JobRunning
 	})
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/jobs/"+response.Job.ID+"/cancel", nil)

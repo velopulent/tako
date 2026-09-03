@@ -20,7 +20,6 @@ func TestLocalAccountRoutesPreviewApplyAndRequireAdmin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var previewed, applied platform.LocalAccountOperation
 	server.previewAccountFn = func(_ context.Context, request auth.LocalAccountRequest) (platform.LocalAccountPreview, error) {
 		previewed = request.Operation

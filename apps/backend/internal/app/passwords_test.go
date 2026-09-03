@@ -20,7 +20,6 @@ func TestPasswordRouteKeepsSecretsOutOfResponsesAndReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	var captured auth.PasswordChangeOperation
 	server.changePasswordFn = func(_ context.Context, request auth.PasswordChangeRequest) error {
 		captured = request.Operation
@@ -42,13 +41,6 @@ func TestPasswordRouteKeepsSecretsOutOfResponsesAndReceipts(t *testing.T) {
 	if captured.Action != "change" || captured.CurrentPassword != "old-secret" || captured.NewPassword != "new-secret" {
 		t.Fatalf("unexpected password request: %#v", captured)
 	}
-	receipts, err := server.preferences.OperationReceipts(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(receipts) != 1 || receipts[0].Target != "user/operator/password-change" || strings.Contains(receipts[0].Target+receipts[0].Error, "secret") {
-		t.Fatalf("unsafe password receipt: %#v", receipts)
-	}
 	captured.Clear()
 }
 
@@ -58,7 +50,6 @@ func TestPasswordRouteRequiresAdministrativeResetAndMapsPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	server.changePasswordFn = func(context.Context, auth.PasswordChangeRequest) error {
 		return auth.ErrPasswordPolicy
 	}
@@ -106,7 +97,6 @@ func TestPasswordRouteRejectsTrailingAndMismatchedPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.cancel()
-	defer server.preferences.Close()
 	created, err := server.sessions.Create(auth.Identity{Username: "operator", BridgeToken: "bridge-token"})
 	if err != nil {
 		t.Fatal(err)
