@@ -1,13 +1,7 @@
 import * as React from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { PencilIcon, PlusIcon, SaveIcon, Trash2Icon } from "lucide-react"
 
-import {
-  api,
-  type SavedLogFilter,
-  type SavedLogView,
-  type SessionResponse,
-} from "@/lib/api"
+import type { SavedLogFilter } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,9 +13,36 @@ import {
 } from "@/components/ui/empty"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Skeleton } from "@/components/ui/skeleton"
 
-const viewsKey = ["log-views"] as const
+type LocalView = {
+  id: string
+  name: string
+  filter: SavedLogFilter
+  createdAt: string
+  updatedAt: string
+}
+
+const storageKey = "tako-log-views:v1"
+
+function readViews(): LocalView[] {
+  try {
+    const raw = localStorage.getItem(storageKey)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as LocalView[]
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((view) => view && view.id && view.name)
+  } catch {
+    return []
+  }
+}
+
+function writeViews(views: LocalView[]) {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(views))
+  } catch {
+    // ignore
+  }
+}
 
 export function SavedLogViews({
   filter,
@@ -30,57 +51,68 @@ export function SavedLogViews({
   filter: SavedLogFilter
   onApply: (filter: SavedLogFilter) => void
 }) {
-  const client = useQueryClient()
-  const session = useQuery({
-    queryKey: ["session"],
-    queryFn: () => api<SessionResponse>("/auth/session"),
-  })
-  const views = useQuery({
-    queryKey: viewsKey,
-    queryFn: () => api<{ items: SavedLogView[] }>("/log-views"),
-  })
+  const [views, setViews] = React.useState<LocalView[]>(readViews)
   const [name, setName] = React.useState("")
   const [editing, setEditing] = React.useState<string | null>(null)
   const [editingName, setEditingName] = React.useState("")
-  const headers = { "X-CSRF-Token": session.data?.csrfToken ?? "" }
-  const refresh = () => client.invalidateQueries({ queryKey: viewsKey })
-  const create = useMutation({
-    mutationFn: () =>
-      api<SavedLogView>("/log-views", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ name, filter }),
-      }),
-    onSuccess: () => {
-      setName("")
-      refresh()
-    },
-  })
-  const update = useMutation({
-    mutationFn: (view: SavedLogView) =>
-      api<SavedLogView>(`/log-views/${encodeURIComponent(view.id)}`, {
-        method: "PUT",
-        headers,
-        body: JSON.stringify({
-          name: editing === view.id ? editingName : view.name,
-          filter: editing === view.id ? view.filter : filter,
-          expectedRevision: view.revision,
-        }),
-      }),
-    onSuccess: () => {
-      setEditing(null)
-      refresh()
-    },
-  })
-  const remove = useMutation({
-    mutationFn: (view: SavedLogView) =>
-      api<void>(
-        `/log-views/${encodeURIComponent(view.id)}?expectedRevision=${view.revision}`,
-        { method: "DELETE", headers }
-      ),
-    onSuccess: refresh,
-  })
-  const error = create.error ?? update.error ?? remove.error ?? views.error
+  const [error, setError] = React.useState<string | null>(null)
+
+  const persist = (next: LocalView[]) => {
+    setViews(next)
+    writeViews(next)
+  }
+
+  const create = () => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    if (views.some((view) => view.name.toLowerCase() === trimmed.toLowerCase())) {
+      setError("A view with this name already exists in this browser.")
+      return
+    }
+    setError(null)
+    const now = new Date().toISOString()
+    persist([
+      ...views,
+      {
+        id: crypto.randomUUID(),
+        name: trimmed,
+        filter,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ])
+    setName("")
+  }
+
+  const rename = (view: LocalView) => {
+    const trimmed = editingName.trim()
+    if (!trimmed) return
+    setError(null)
+    persist(
+      views.map((item) =>
+        item.id === view.id
+          ? { ...item, name: trimmed, updatedAt: new Date().toISOString() }
+          : item
+      )
+    )
+    setEditing(null)
+  }
+
+  const updateFilters = (view: LocalView) => {
+    setError(null)
+    persist(
+      views.map((item) =>
+        item.id === view.id
+          ? { ...item, filter, updatedAt: new Date().toISOString() }
+          : item
+      )
+    )
+  }
+
+  const remove = (view: LocalView) => {
+    setError(null)
+    persist(views.filter((item) => item.id !== view.id))
+  }
 
   return (
     <Card>
@@ -91,7 +123,7 @@ export function SavedLogViews({
         <FieldGroup className="flex flex-row flex-wrap items-end gap-2">
           <Field className="min-w-56 flex-1">
             <FieldLabel htmlFor="saved-log-view-name">
-              Save current filters
+              Save current filters in this browser
             </FieldLabel>
             <Input
               id="saved-log-view-name"
@@ -101,10 +133,7 @@ export function SavedLogViews({
               placeholder="Incident triage"
             />
           </Field>
-          <Button
-            disabled={!name.trim() || create.isPending || !session.data}
-            onClick={() => create.mutate()}
-          >
+          <Button disabled={!name.trim()} onClick={create}>
             <PlusIcon data-icon="inline-start" />
             Save view
           </Button>
@@ -112,24 +141,23 @@ export function SavedLogViews({
         {error && (
           <Alert variant="destructive">
             <AlertTitle>Saved view action failed</AlertTitle>
-            <AlertDescription>{error.message}</AlertDescription>
+            <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        {views.isPending && <Skeleton className="h-20" />}
-        {!views.isPending && !views.isError && !views.data?.items.length && (
+        {!views.length && (
           <Empty>
             <EmptyHeader>
               <EmptyTitle>No saved views</EmptyTitle>
               <EmptyDescription>
-                Save the current filters for reuse.
+                Save the current filters for reuse in this browser.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
         )}
         <div className="grid gap-2">
-          {views.data?.items.map((view) => (
+          {views.map((view) => (
             <div
-              key={view.id || view.name}
+              key={view.id}
               className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
             >
               {editing === view.id ? (
@@ -155,8 +183,8 @@ export function SavedLogViews({
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!editingName.trim() || update.isPending}
-                    onClick={() => update.mutate(view)}
+                    disabled={!editingName.trim()}
+                    onClick={() => rename(view)}
                   >
                     <SaveIcon data-icon="inline-start" />
                     Save name
@@ -177,16 +205,14 @@ export function SavedLogViews({
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={update.isPending}
-                  onClick={() => update.mutate(view)}
+                  onClick={() => updateFilters(view)}
                 >
                   Update filters
                 </Button>
                 <Button
                   variant="destructive"
                   size="sm"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate(view)}
+                  onClick={() => remove(view)}
                 >
                   <Trash2Icon data-icon="inline-start" />
                   Delete

@@ -72,7 +72,6 @@ describe("JournalBrowser", () => {
     Element.prototype.getAnimations = () => [] as Animation[]
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.includes("/log-views")) return jsonResponse({ items: [] })
       if (url.includes("cursor=")) {
         return jsonResponse({
           items: [
