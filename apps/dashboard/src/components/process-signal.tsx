@@ -1,14 +1,6 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { SendIcon, TriangleAlertIcon } from "lucide-react"
-
-import {
-  api,
-  type ProcessInfo,
-  type SessionResponse,
-  type SignalPreview,
-  type SignalResult,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   AlertDialog,
@@ -32,6 +24,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  api,
+  type ProcessInfo,
+  type SessionResponse,
+  type SignalPreview,
+  type SignalResult,
+} from "@/lib/api"
 
 const signalOptions = [
   "TERM",
@@ -184,11 +183,13 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
         )}
 
         {apply.data && (
-          <Alert variant={apply.data.failures?.length ? "destructive" : undefined}>
+          <Alert
+            variant={apply.data.failures?.length ? "destructive" : undefined}
+          >
             <AlertTitle>Signal request completed</AlertTitle>
             <AlertDescription>
-              Signaled {apply.data.signaled.length} of {apply.data.targets.length}{" "}
-              selected processes.
+              Signaled {apply.data.signaled.length} of{" "}
+              {apply.data.targets.length} selected processes.
               {apply.data.failures?.length
                 ? ` ${apply.data.failures.length} failed.`
                 : ""}
@@ -202,7 +203,10 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               {isDangerous ? (
-                <TriangleAlertIcon className="size-4 text-destructive" aria-hidden="true" />
+                <TriangleAlertIcon
+                  className="size-4 text-destructive"
+                  aria-hidden="true"
+                />
               ) : null}
               Confirm signal {signal}
             </AlertDialogTitle>
@@ -223,7 +227,9 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
             {preview.isError && (
               <Alert variant="destructive">
                 <AlertTitle>Preview failed</AlertTitle>
-                <AlertDescription>{(preview.error as Error).message}</AlertDescription>
+                <AlertDescription>
+                  {(preview.error as Error).message}
+                </AlertDescription>
               </Alert>
             )}
 
@@ -246,10 +252,11 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
                         key={`${target.pid}:${target.started}`}
                         className="flex flex-wrap items-center gap-2 rounded-md bg-background px-2.5 py-1.5 text-xs shadow-sm"
                       >
-                        <span className="font-medium">
-                          {target.program}
-                        </span>
-                        <Badge variant="outline" className="font-mono text-[11px]">
+                        <span className="font-medium">{target.program}</span>
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[11px]"
+                        >
                           PID {target.pid}
                         </Badge>
                         <span className="text-muted-foreground">
@@ -261,7 +268,10 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
                 </div>
                 {isDangerous && (
                   <p className="text-xs text-destructive">
-                    This action cannot be undone. {signal === "KILL" ? "KILL cannot be caught or ignored." : "Tree mode affects child processes."}
+                    This action cannot be undone.{" "}
+                    {signal === "KILL"
+                      ? "KILL cannot be caught or ignored."
+                      : "Tree mode affects child processes."}
                   </p>
                 )}
               </div>
@@ -269,14 +279,20 @@ export function ProcessSignal({ process }: { process: ProcessInfo }) {
           </div>
 
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={apply.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={apply.isPending}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               disabled={!currentPreview || preview.isPending || apply.isPending}
               onClick={(event) => {
                 event.preventDefault()
                 handleConfirm()
               }}
-              className={isDangerous ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : undefined}
+              className={
+                isDangerous
+                  ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  : undefined
+              }
             >
               {apply.isPending ? "Sending…" : `Confirm and send ${signal}`}
             </AlertDialogAction>

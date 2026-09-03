@@ -9,11 +9,7 @@ export function AdvisoryMarkdown({ text }: { text: string }) {
       <ReactMarkdown
         components={{
           a: ({ href, children }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer nofollow"
-            >
+            <a href={href} target="_blank" rel="noopener noreferrer nofollow">
               {children}
             </a>
           ),

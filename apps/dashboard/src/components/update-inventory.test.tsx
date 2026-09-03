@@ -65,7 +65,15 @@ describe("UpdateInventory", () => {
         }
         if (url.endsWith("/updates/automatic")) {
           return Promise.resolve(
-            jsonResponse({ available: false, supported: false, installed: false, enabled: false, type: "all", day: "", time: "" })
+            jsonResponse({
+              available: false,
+              supported: false,
+              installed: false,
+              enabled: false,
+              type: "all",
+              day: "",
+              time: "",
+            })
           )
         }
         if (url.endsWith("/updates/kpatch")) {
@@ -191,7 +199,9 @@ describe("UpdateInventory", () => {
     await user.click(screen.getByRole("button", { name: /Install selected/ }))
     expect(await screen.findByText("Confirm updates")).toBeTruthy()
     expect(await screen.findByText("update 1 package")).toBeTruthy()
-    await user.click(screen.getByRole("button", { name: "Confirm and install" }))
+    await user.click(
+      screen.getByRole("button", { name: "Confirm and install" })
+    )
     await vi.waitFor(() => {
       const call = fetchMock.mock.calls.find(
         ([input, init]) =>

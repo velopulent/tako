@@ -92,12 +92,14 @@ describe("LoginPage", () => {
   it("does not treat a session setup failure as wrong credentials", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        jsonResponse(
-          { code: "session-failed", detail: "Could not create session" },
-          500
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(
+            { code: "session-failed", detail: "Could not create session" },
+            500
+          )
         )
-      )
     )
     const user = userEvent.setup()
     render(<LoginPage onAuthenticated={vi.fn()} />)

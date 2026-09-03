@@ -1,13 +1,5 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-
-import {
-  api,
-  type NetworkOperation,
-  type NetworkResponse,
-  type NetworkState,
-  type SessionResponse,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,6 +16,13 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  api,
+  type NetworkOperation,
+  type NetworkResponse,
+  type NetworkState,
+  type SessionResponse,
+} from "@/lib/api"
 
 export function NetworkControls() {
   const queryClient = useQueryClient()

@@ -1,12 +1,5 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-
-import {
-  api,
-  type FirewallSnapshot,
-  type FirewallState,
-  type SessionResponse,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -24,6 +17,12 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  api,
+  type FirewallSnapshot,
+  type FirewallState,
+  type SessionResponse,
+} from "@/lib/api"
 
 export function FirewallControls() {
   const client = useQueryClient()

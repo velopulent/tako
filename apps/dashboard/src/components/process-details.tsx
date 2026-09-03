@@ -1,10 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-
-import {
-  api,
-  type ProcessDetails as ProcessDetailsData,
-  type ProcessInfo,
-} from "@/lib/api"
+import { ProcessSignal } from "@/components/process-signal"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,7 +17,11 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ProcessSignal } from "@/components/process-signal"
+import {
+  api,
+  type ProcessDetails as ProcessDetailsData,
+  type ProcessInfo,
+} from "@/lib/api"
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB"]
@@ -156,12 +155,15 @@ export function ProcessDetails({
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Open files ({(details.openFiles ?? []).length})</CardTitle>
+                <CardTitle>
+                  Open files ({(details.openFiles ?? []).length})
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 {(details.openFiles ?? []).length ? (
                   <ul className="max-h-48 space-y-1 overflow-auto font-mono text-xs">
                     {(details.openFiles ?? []).map((file, index) => (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: the same path can appear multiple times (one row per file descriptor), so the index disambiguates duplicates
                       <li key={`${file}:${index}`}>{file}</li>
                     ))}
                   </ul>
@@ -180,15 +182,17 @@ export function ProcessDetails({
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Sockets ({(details.sockets ?? []).length})</CardTitle>
+                <CardTitle>
+                  Sockets ({(details.sockets ?? []).length})
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 {(details.sockets ?? []).length ? (
                   <div className="space-y-1 text-xs">
-                    {(details.sockets ?? []).map((socket, index) => (
+                    {(details.sockets ?? []).map((socket) => (
                       <div
                         className="flex flex-wrap gap-2"
-                        key={`${socket.protocol}:${socket.local}:${index}`}
+                        key={`${socket.protocol}:${socket.local}:${socket.remote ?? ""}:${socket.state ?? ""}`}
                       >
                         <Badge variant="outline">{socket.protocol}</Badge>
                         <span className="font-mono">{socket.local}</span>

@@ -16,8 +16,8 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, type ServiceImpact } from "@/lib/api"
 import {
-  serviceActionNames,
   type ServiceActionName,
+  serviceActionNames,
 } from "@/lib/service-actions"
 
 type ServiceActionsProps = {

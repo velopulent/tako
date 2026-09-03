@@ -1,7 +1,5 @@
-import * as React from "react"
 import { PencilIcon, PlusIcon, SaveIcon, Trash2Icon } from "lucide-react"
-
-import type { SavedLogFilter } from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,6 +11,7 @@ import {
 } from "@/components/ui/empty"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import type { SavedLogFilter } from "@/lib/api"
 
 type LocalView = {
   id: string
@@ -30,7 +29,7 @@ function readViews(): LocalView[] {
     if (!raw) return []
     const parsed = JSON.parse(raw) as LocalView[]
     if (!Array.isArray(parsed)) return []
-    return parsed.filter((view) => view && view.id && view.name)
+    return parsed.filter((view) => view?.id && view?.name)
   } catch {
     return []
   }
@@ -65,7 +64,9 @@ export function SavedLogViews({
   const create = () => {
     const trimmed = name.trim()
     if (!trimmed) return
-    if (views.some((view) => view.name.toLowerCase() === trimmed.toLowerCase())) {
+    if (
+      views.some((view) => view.name.toLowerCase() === trimmed.toLowerCase())
+    ) {
       setError("A view with this name already exists in this browser.")
       return
     }

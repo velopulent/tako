@@ -44,7 +44,9 @@ describe("SettingsPage", () => {
 
     renderSettings()
 
-    expect((await screen.findByRole("combobox")).textContent).toContain("30 seconds")
+    expect((await screen.findByRole("combobox")).textContent).toContain(
+      "30 seconds"
+    )
   })
 
   it("saves a keyboard-selected interval locally", async () => {

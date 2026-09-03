@@ -1,7 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-
-import { api, type IncidentTimeline, type SessionResponse } from "@/lib/api"
+import { createFileRoute } from "@tanstack/react-router"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -13,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { api, type IncidentTimeline, type SessionResponse } from "@/lib/api"
 
 export function IncidentsPage() {
   const client = useQueryClient()

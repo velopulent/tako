@@ -1,5 +1,3 @@
-import type { MetricSample } from "@/lib/api"
-import type { RefreshInterval } from "@/lib/monitoring"
 import { MetricsCharts } from "@/components/metrics-chart"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -9,6 +7,8 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
+import type { MetricSample } from "@/lib/api"
+import type { RefreshInterval } from "@/lib/monitoring"
 
 type Direction = "storage" | "network"
 

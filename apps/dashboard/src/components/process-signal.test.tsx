@@ -89,10 +89,14 @@ describe("ProcessSignal", () => {
         <ProcessSignal process={process} />
       </QueryClientProvider>
     )
-    expect(await screen.findByRole("button", { name: /Send TERM/ })).toBeTruthy()
+    expect(
+      await screen.findByRole("button", { name: /Send TERM/ })
+    ).toBeTruthy()
     await user.click(screen.getByRole("button", { name: /Send TERM/ }))
     expect(await screen.findByText(/will affect 1 process/)).toBeTruthy()
-    await user.click(screen.getByRole("button", { name: /Confirm and send TERM/ }))
+    await user.click(
+      screen.getByRole("button", { name: /Confirm and send TERM/ })
+    )
     await vi.waitFor(() =>
       expect(
         fetchMock.mock.calls.some(

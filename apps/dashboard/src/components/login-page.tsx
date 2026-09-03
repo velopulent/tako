@@ -1,17 +1,10 @@
-import * as React from "react"
 import {
   LoaderCircleIcon,
   LockKeyholeIcon,
   ShieldCheckIcon,
   UserIcon,
 } from "lucide-react"
-
-import {
-  APIError,
-  api,
-  type LoginChallenge,
-  type SessionResponse,
-} from "@/lib/api"
+import * as React from "react"
 import { LoginPromptFields } from "@/components/login-prompt-fields"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -34,6 +27,12 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group"
+import {
+  APIError,
+  api,
+  type LoginChallenge,
+  type SessionResponse,
+} from "@/lib/api"
 
 export function LoginPage({
   onAuthenticated,

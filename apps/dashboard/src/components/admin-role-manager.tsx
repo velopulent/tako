@@ -1,14 +1,5 @@
-import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-
-import {
-  api,
-  APIError,
-  type AdministrativeRoleOperation,
-  type AdministrativeRolePreview,
-  type AdministrativeRoleState,
-  type UserInfo,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -29,6 +20,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  type AdministrativeRoleOperation,
+  type AdministrativeRolePreview,
+  type AdministrativeRoleState,
+  APIError,
+  api,
+  type UserInfo,
+} from "@/lib/api"
 
 function roleError(error: unknown) {
   if (
@@ -58,7 +57,7 @@ export function AdminRoleManager({
   const [fingerprint, setFingerprint] = React.useState("")
   const [confirmation, setConfirmation] = React.useState("")
   const localUsers = users.filter((user) => user.local)
-  const expectedConfirmation = action.toUpperCase() + " ADMIN " + username
+  const expectedConfirmation = `${action.toUpperCase()} ADMIN ${username}`
   const operation: AdministrativeRoleOperation = {
     action,
     username,
@@ -199,9 +198,9 @@ export function AdminRoleManager({
             </AlertTitle>
             <AlertDescription>
               {preview.data.reason ??
-                "Changes: " + preview.data.changes.join(", ") + "."}
+                `Changes: ${preview.data.changes.join(", ")}.`}
               {preview.data.warnings.length
-                ? " " + preview.data.warnings.join(" ")
+                ? ` ${preview.data.warnings.join(" ")}`
                 : ""}
             </AlertDescription>
           </Alert>

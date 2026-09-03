@@ -1,4 +1,8 @@
-import { createFileRoute, getRouteApi, useNavigate } from "@tanstack/react-router"
+import {
+  createFileRoute,
+  getRouteApi,
+  useNavigate,
+} from "@tanstack/react-router"
 
 import { GroupInventory } from "@/components/group-inventory"
 import { qSearch } from "@/lib/search"

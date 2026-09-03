@@ -1,5 +1,5 @@
-import * as React from "react"
-
+import type * as React from "react"
+import { RefreshSelect } from "@/components/refresh-select"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Empty,
@@ -7,11 +7,10 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty"
-import { RefreshSelect } from "@/components/refresh-select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useMonitoringPreference } from "@/hooks/use-monitoring-preference"
 import { usePreference } from "@/hooks/use-preference"
-import { refreshIntervals, type RefreshInterval } from "@/lib/monitoring"
+import { type RefreshInterval, refreshIntervals } from "@/lib/monitoring"
 
 export const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]
@@ -25,7 +24,9 @@ export const bytes = (value: number) => {
 }
 
 const intervalMs = (value: RefreshInterval): number | false => {
-  const result = refreshIntervals.find((item) => item.value === value)?.milliseconds
+  const result = refreshIntervals.find(
+    (item) => item.value === value
+  )?.milliseconds
   return typeof result === "number" ? result : false
 }
 

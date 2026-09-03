@@ -1,9 +1,8 @@
 import { DownloadIcon } from "lucide-react"
-
-import type { FileEntry } from "@/lib/api"
+import { TextEditor } from "@/components/text-editor"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { TextEditor } from "@/components/text-editor"
+import type { FileEntry } from "@/lib/api"
 
 export function MediaPreview({
   entry,
@@ -12,7 +11,7 @@ export function MediaPreview({
   entry: FileEntry | null
   csrfToken: string
 }) {
-  if (!entry || entry.kind !== "file") return null
+  if (entry?.kind !== "file") return null
   const token = entry.previewToken
     ? `&token=${encodeURIComponent(entry.previewToken)}`
     : ""
@@ -41,6 +40,7 @@ export function MediaPreview({
           />
         )}
         {mime.startsWith("video/") && (
+          // biome-ignore lint/a11y/useMediaCaption: previews arbitrary host files with no caption tracks available
           <video
             src={source}
             controls
@@ -49,6 +49,7 @@ export function MediaPreview({
           />
         )}
         {mime.startsWith("audio/") && (
+          // biome-ignore lint/a11y/useMediaCaption: previews arbitrary host files with no caption tracks available
           <audio src={source} controls preload="metadata" className="w-full" />
         )}
         {mime === "application/pdf" && (

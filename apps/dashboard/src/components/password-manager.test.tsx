@@ -165,7 +165,9 @@ describe("PasswordManager", () => {
     await user.click(screen.getByRole("button", { name: "Reset password" }))
     await vi.waitFor(() => {
       expect(
-        requests.some(([input]) => String(input).endsWith("/accounts/users/password"))
+        requests.some(([input]) =>
+          String(input).endsWith("/accounts/users/password")
+        )
       ).toBe(true)
     })
     const request = requests.find(([input]) =>

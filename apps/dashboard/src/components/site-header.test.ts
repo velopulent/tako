@@ -1,6 +1,6 @@
-import * as React from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
+import * as React from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SiteHeader } from "@/components/site-header"
@@ -48,7 +48,9 @@ describe("pageTitle", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     }))
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
     render(
       React.createElement(
         QueryClientProvider,

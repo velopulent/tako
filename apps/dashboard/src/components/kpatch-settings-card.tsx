@@ -1,5 +1,5 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import * as React from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -80,7 +80,10 @@ export function KpatchSettingsCard({
       <div className="flex items-center justify-between">
         <div className="min-w-0">
           <p className="text-sm font-medium">Kernel live patching</p>
-          <p className="truncate text-xs text-muted-foreground" id="kpatch-state">
+          <p
+            className="truncate text-xs text-muted-foreground"
+            id="kpatch-state"
+          >
             {stateLabel(settings)}
             {settings.kernel ? ` (${settings.kernel})` : ""}
           </p>
@@ -100,24 +103,23 @@ export function KpatchSettingsCard({
         </Button>
       </div>
 
-      {(status.loaded?.length ?? 0) > 0 ? (
-        status.loaded.map((patch) => (
-          <p key={patch} className="text-xs text-muted-foreground">
-            Kernel live patch {patch} is active
-          </p>
-        ))
-      ) : (
-        (status.installed?.length ?? 0) > 0 &&
-        status.installed.map((patch) => (
-          <p key={patch} className="text-xs text-muted-foreground">
-            Kernel live patch {patch} is installed
-          </p>
-        ))
-      )}
+      {(status.loaded?.length ?? 0) > 0
+        ? status.loaded.map((patch) => (
+            <p key={patch} className="text-xs text-muted-foreground">
+              Kernel live patch {patch} is active
+            </p>
+          ))
+        : (status.installed?.length ?? 0) > 0 &&
+          status.installed.map((patch) => (
+            <p key={patch} className="text-xs text-muted-foreground">
+              Kernel live patch {patch} is installed
+            </p>
+          ))}
 
       {settings.missing.length > 0 && (
         <p className="pt-2 text-xs text-muted-foreground">
-          Install {settings.missing.join(" and ")} to configure kernel live patching.
+          Install {settings.missing.join(" and ")} to configure kernel live
+          patching.
         </p>
       )}
       {settings.unavailable.length > 0 && (
@@ -157,42 +159,58 @@ export function KpatchSettingsCard({
                   variant="outline"
                   value={[currentOnly ? "current" : "future"]}
                   onValueChange={(values: string[]) =>
-                    setCurrentOnly((values[values.length - 1] ?? "future") === "current")
+                    setCurrentOnly(
+                      (values[values.length - 1] ?? "future") === "current"
+                    )
                   }
                 >
-                  <ToggleGroupItem value="future">Current and future kernels</ToggleGroupItem>
+                  <ToggleGroupItem value="future">
+                    Current and future kernels
+                  </ToggleGroupItem>
                   <ToggleGroupItem value="current">
-                    Current kernel only{settings.kernel ? ` (${settings.kernel})` : ""}
+                    Current kernel only
+                    {settings.kernel ? ` (${settings.kernel})` : ""}
                   </ToggleGroupItem>
                 </ToggleGroup>
               </Field>
             )}
-            {!settings.patchInstalled && apply && currentOnly && !settings.patchUnavailable && (
-              <Alert>
-                <AlertTitle className="text-sm">
-                  The patch package for this kernel will be installed.
-                </AlertTitle>
-                <AlertDescription className="text-xs">
-                  {settings.patchName}
-                </AlertDescription>
-              </Alert>
-            )}
+            {!settings.patchInstalled &&
+              apply &&
+              currentOnly &&
+              !settings.patchUnavailable && (
+                <Alert>
+                  <AlertTitle className="text-sm">
+                    The patch package for this kernel will be installed.
+                  </AlertTitle>
+                  <AlertDescription className="text-xs">
+                    {settings.patchName}
+                  </AlertDescription>
+                </Alert>
+              )}
             {apply && (
               <Alert>
                 <AlertTitle className="text-sm">
                   This host will not need a reboot for kernel security fixes.
                 </AlertTitle>
                 <AlertDescription className="text-xs">
-                  Reboot when convenient to move to kernels without live patches.
+                  Reboot when convenient to move to kernels without live
+                  patches.
                 </AlertDescription>
               </Alert>
             )}
           </FieldGroup>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={save.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => setDialogOpen(false)}
+              disabled={save.isPending}
+            >
               Cancel
             </Button>
-            <Button onClick={() => save.mutate({ apply, currentOnly })} disabled={save.isPending || !administrative}>
+            <Button
+              onClick={() => save.mutate({ apply, currentOnly })}
+              disabled={save.isPending || !administrative}
+            >
               {save.isPending ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>

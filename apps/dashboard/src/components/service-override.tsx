@@ -1,12 +1,5 @@
-import * as React from "react"
 import { useMutation } from "@tanstack/react-query"
-
-import {
-  api,
-  APIError,
-  type ServiceOverrideOperation,
-  type ServiceOverrideState,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,6 +25,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  APIError,
+  api,
+  type ServiceOverrideOperation,
+  type ServiceOverrideState,
+} from "@/lib/api"
 
 const restartItems = [
   { value: "no", label: "No automatic restart" },

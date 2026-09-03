@@ -1,4 +1,3 @@
-import type { HostInfo } from "@/lib/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -8,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import type { HostInfo } from "@/lib/api"
 
 const bytes = (value = 0) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"]

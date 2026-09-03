@@ -1,6 +1,6 @@
+import { ShieldAlertIcon } from "lucide-react"
 import * as React from "react"
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
-import { ShieldAlertIcon } from "lucide-react"
 
 import {
   Card,
@@ -10,10 +10,10 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import {
+  type ChartConfig,
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
-  type ChartConfig,
 } from "@/components/ui/chart"
 import {
   Empty,
@@ -116,16 +116,39 @@ export function ResourceHistoryCharts({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ChartContainer config={cpuMemoryConfig} className="h-48 w-full sm:h-56">
-            <AreaChart data={data} accessibilityLayer margin={{ left: 8, right: 8 }}>
+          <ChartContainer
+            config={cpuMemoryConfig}
+            className="h-48 w-full sm:h-56"
+          >
+            <AreaChart
+              data={data}
+              accessibilityLayer
+              margin={{ left: 8, right: 8 }}
+            >
               <defs>
                 <linearGradient id="fillMemory" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--color-memory)" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="var(--color-memory)" stopOpacity={0.08} />
+                  <stop
+                    offset="5%"
+                    stopColor="var(--color-memory)"
+                    stopOpacity={0.8}
+                  />
+                  <stop
+                    offset="95%"
+                    stopColor="var(--color-memory)"
+                    stopOpacity={0.08}
+                  />
                 </linearGradient>
                 <linearGradient id="fillCpu" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--color-cpuRate)" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="var(--color-cpuRate)" stopOpacity={0.08} />
+                  <stop
+                    offset="5%"
+                    stopColor="var(--color-cpuRate)"
+                    stopOpacity={0.8}
+                  />
+                  <stop
+                    offset="95%"
+                    stopColor="var(--color-cpuRate)"
+                    stopOpacity={0.08}
+                  />
                 </linearGradient>
               </defs>
               <CartesianGrid vertical={false} />
@@ -163,13 +186,20 @@ export function ResourceHistoryCharts({
                   <ChartTooltipContent
                     labelFormatter={(_, payload) =>
                       payload?.[0]
-                        ? new Date(payload[0].payload.timestamp).toLocaleString()
+                        ? new Date(
+                            payload[0].payload.timestamp
+                          ).toLocaleString()
                         : ""
                     }
                     formatter={(value, name) => (
                       <>
                         <span className="text-muted-foreground">
-                          {(cpuMemoryConfig as Record<string, { label?: string }>)[String(name)]?.label ?? String(name)}
+                          {(
+                            cpuMemoryConfig as Record<
+                              string,
+                              { label?: string }
+                            >
+                          )[String(name)]?.label ?? String(name)}
                         </span>
                         <span className="ml-auto font-mono">
                           {String(name) === "memory"
@@ -232,15 +262,41 @@ export function ResourceHistoryCharts({
             </Empty>
           ) : (
             <ChartContainer config={diskConfig} className="h-48 w-full sm:h-56">
-              <AreaChart data={data} accessibilityLayer margin={{ left: 8, right: 8 }}>
+              <AreaChart
+                data={data}
+                accessibilityLayer
+                margin={{ left: 8, right: 8 }}
+              >
                 <defs>
                   <linearGradient id="fillDiskRead" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-diskReadRate)" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="var(--color-diskReadRate)" stopOpacity={0.08} />
+                    <stop
+                      offset="5%"
+                      stopColor="var(--color-diskReadRate)"
+                      stopOpacity={0.8}
+                    />
+                    <stop
+                      offset="95%"
+                      stopColor="var(--color-diskReadRate)"
+                      stopOpacity={0.08}
+                    />
                   </linearGradient>
-                  <linearGradient id="fillDiskWrite" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-diskWriteRate)" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="var(--color-diskWriteRate)" stopOpacity={0.08} />
+                  <linearGradient
+                    id="fillDiskWrite"
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop
+                      offset="5%"
+                      stopColor="var(--color-diskWriteRate)"
+                      stopOpacity={0.8}
+                    />
+                    <stop
+                      offset="95%"
+                      stopColor="var(--color-diskWriteRate)"
+                      stopOpacity={0.08}
+                    />
                   </linearGradient>
                 </defs>
                 <CartesianGrid vertical={false} />
@@ -269,13 +325,17 @@ export function ResourceHistoryCharts({
                     <ChartTooltipContent
                       labelFormatter={(_, payload) =>
                         payload?.[0]
-                          ? new Date(payload[0].payload.timestamp).toLocaleString()
+                          ? new Date(
+                              payload[0].payload.timestamp
+                            ).toLocaleString()
                           : ""
                       }
                       formatter={(value, name) => (
                         <>
                           <span className="text-muted-foreground">
-                            {(diskConfig as Record<string, { label?: string }>)[String(name)]?.label ?? String(name)}
+                            {(diskConfig as Record<string, { label?: string }>)[
+                              String(name)
+                            ]?.label ?? String(name)}
                           </span>
                           <span className="ml-auto font-mono">
                             {bytesPerSecond(Number(value))}

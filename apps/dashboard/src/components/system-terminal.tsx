@@ -1,6 +1,6 @@
-import * as React from "react"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
+import * as React from "react"
 import "@xterm/xterm/css/xterm.css"
 
 export function SystemTerminal() {
@@ -78,6 +78,7 @@ export function SystemTerminal() {
       <div
         ref={container}
         className="h-[65vh] min-h-80 p-3"
+        role="application"
         aria-label="Interactive terminal"
       />
     </div>

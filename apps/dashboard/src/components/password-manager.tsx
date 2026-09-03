@@ -1,13 +1,5 @@
-import * as React from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
-
-import {
-  api,
-  APIError,
-  type PasswordChangeOperation,
-  type SessionResponse,
-  type UserInfo,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -34,6 +26,13 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  APIError,
+  api,
+  type PasswordChangeOperation,
+  type SessionResponse,
+  type UserInfo,
+} from "@/lib/api"
 
 function passwordError(error: unknown) {
   if (error instanceof APIError) {

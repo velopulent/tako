@@ -1,6 +1,5 @@
-import * as React from "react"
-import { useLocation } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useLocation } from "@tanstack/react-router"
 import {
   KeyRoundIcon,
   LockKeyholeIcon,
@@ -8,10 +7,9 @@ import {
   MoonIcon,
   SunIcon,
 } from "lucide-react"
-
-import type { User } from "@/lib/api"
-import { api } from "@/lib/api"
-import { pageTitle } from "@/lib/page-title"
+import * as React from "react"
+import { useTheme } from "@/components/theme-provider"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,7 +22,12 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Alert, AlertDescription } from "@/components/ui/alert"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   InputGroup,
   InputGroupAddon,
@@ -32,13 +35,9 @@ import {
 } from "@/components/ui/input-group"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { useTheme } from "@/components/theme-provider"
+import type { User } from "@/lib/api"
+import { api } from "@/lib/api"
+import { pageTitle } from "@/lib/page-title"
 
 export function SiteHeader({
   user,

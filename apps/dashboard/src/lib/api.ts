@@ -140,7 +140,12 @@ export type Capability = {
 }
 
 export type DiagnosticJobState =
-  "pending" | "running" | "succeeded" | "failed" | "canceled" | "interrupted"
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "canceled"
+  | "interrupted"
 
 export type DiagnosticJob = {
   id: string
@@ -839,7 +844,12 @@ export type MonitoringPreference = {
 }
 
 export type TimerAction =
-  "preview" | "create" | "update" | "delete" | "enable" | "disable"
+  | "preview"
+  | "create"
+  | "update"
+  | "delete"
+  | "enable"
+  | "disable"
 
 export type TimerOperation = {
   action: TimerAction

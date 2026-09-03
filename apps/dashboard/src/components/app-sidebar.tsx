@@ -1,28 +1,27 @@
-import type * as React from "react"
 import { Link, useLocation } from "@tanstack/react-router"
 import {
   ActivityIcon,
   ChartNoAxesCombinedIcon,
+  ClipboardListIcon,
   FileClockIcon,
   FilesIcon,
   GaugeIcon,
   HardDriveIcon,
   NetworkIcon,
-  ShellIcon,
   PackageCheckIcon,
   ServerCogIcon,
-  SquareTerminalIcon,
-  UserRoundCogIcon,
-  UsersIcon,
+  ServerIcon,
   SettingsIcon,
+  ShellIcon,
   ShieldCheckIcon,
   SirenIcon,
-  ClipboardListIcon,
-  ServerIcon,
+  SquareTerminalIcon,
   TimerIcon,
+  UserRoundCogIcon,
+  UsersIcon,
 } from "lucide-react"
-
-import type { User } from "@/lib/api"
+import type * as React from "react"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Sidebar,
@@ -37,7 +36,7 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import type { User } from "@/lib/api"
 
 const groups = [
   {

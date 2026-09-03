@@ -1,13 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
+import { createFileRoute } from "@tanstack/react-router"
 
 import { CapabilitySettings } from "@/components/settings/capability-settings"
 import { MonitoringSettings } from "@/components/settings/monitoring-settings"
-import { api, type Capability } from "@/lib/api"
 import {
   useMonitoringPreference,
   useSetMonitoringPreference,
 } from "@/hooks/use-monitoring-preference"
+import { api, type Capability } from "@/lib/api"
 
 export function SettingsPage() {
   const preference = useMonitoringPreference()

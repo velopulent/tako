@@ -1,5 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { createFileRoute } from "@tanstack/react-router"
 import { ClipboardListIcon, DatabaseIcon, XCircleIcon } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -196,7 +196,8 @@ export function JobsPage() {
             </EmptyMedia>
             <EmptyTitle>No diagnostic jobs yet</EmptyTitle>
             <EmptyDescription>
-              Run a host inventory to capture an in-memory, reconnectable report.
+              Run a host inventory to capture an in-memory, reconnectable
+              report.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>

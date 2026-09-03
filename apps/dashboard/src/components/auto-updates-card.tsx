@@ -1,6 +1,6 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CalendarClock } from "lucide-react"
+import * as React from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -23,9 +23,9 @@ import {
 } from "@/components/ui/select"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
-  api,
   type AutoUpdatesConfig,
   type AutoUpdatesOperation,
+  api,
 } from "@/lib/api"
 
 const dayLabels: Record<AutoUpdatesConfig["day"], string> = {
@@ -128,7 +128,12 @@ export function AutoUpdatesCard({
           </p>
         </div>
         {!administrative || save.isPending ? (
-          <Button variant="outline" size="sm" disabled={!administrative} onClick={openDialog}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!administrative}
+            onClick={openDialog}
+          >
             {config.installed ? "Edit" : "Enable"}
           </Button>
         ) : (
@@ -173,7 +178,11 @@ export function AutoUpdatesCard({
                       value={day === "" ? "everyday" : day}
                       onValueChange={(value: string | null) => {
                         if (value === null) return
-                        setDay(value === "everyday" ? "" : (value as AutoUpdatesConfig["day"]))
+                        setDay(
+                          value === "everyday"
+                            ? ""
+                            : (value as AutoUpdatesConfig["day"])
+                        )
                       }}
                     >
                       <SelectTrigger id="auto-update-day" className="w-40">
@@ -218,7 +227,10 @@ export function AutoUpdatesCard({
             >
               Cancel
             </Button>
-            <Button onClick={submit} disabled={save.isPending || !administrative}>
+            <Button
+              onClick={submit}
+              disabled={save.isPending || !administrative}
+            >
               {save.isPending ? "Saving…" : "Save changes"}
             </Button>
           </DialogFooter>

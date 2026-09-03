@@ -1,6 +1,6 @@
-import * as React from "react"
-import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { createFileRoute } from "@tanstack/react-router"
+import * as React from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -33,6 +33,7 @@ const ntpItems = [
   { value: "enabled", label: "Enabled" },
   { value: "disabled", label: "Disabled" },
 ]
+
 import { PowerControls } from "@/components/power-controls"
 import {
   api,

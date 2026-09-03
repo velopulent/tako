@@ -1,7 +1,10 @@
-import { createFileRoute, Outlet, useLocation, useNavigate } from "@tanstack/react-router"
-
-import { Page } from "@/lib/page"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  createFileRoute,
+  Outlet,
+  useLocation,
+  useNavigate,
+} from "@tanstack/react-router"
+import { ChevronDownIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -9,7 +12,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { ChevronDownIcon } from "lucide-react"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Page } from "@/lib/page"
 
 const tabs = [
   { value: "users", label: "Users", to: "/accounts/users" },

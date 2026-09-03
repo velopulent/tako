@@ -1,6 +1,6 @@
-import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ChevronRight, History } from "lucide-react"
+import * as React from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -111,10 +111,16 @@ export function UpdateHistoryCard({ enabled }: { enabled: boolean }) {
                     }
                   >
                     <ChevronRight
-                      className={isOpen ? "rotate-90 transition-transform" : "transition-transform"}
+                      className={
+                        isOpen
+                          ? "rotate-90 transition-transform"
+                          : "transition-transform"
+                      }
                     />
                   </CollapsibleTrigger>
-                  <span className="truncate text-sm">{formatTime(entry.time)}</span>
+                  <span className="truncate text-sm">
+                    {formatTime(entry.time)}
+                  </span>
                 </div>
                 <Badge variant="secondary">
                   {names.length} package{names.length === 1 ? "" : "s"}

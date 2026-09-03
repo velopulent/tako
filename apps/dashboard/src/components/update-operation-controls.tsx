@@ -45,6 +45,7 @@ export function UpdateOperationControls({
       <FieldGroup className="rounded-md border p-3 sm:flex-row sm:items-end">
         <Field>
           <FieldLabel>Update scope</FieldLabel>
+          {/* biome-ignore lint/a11y/useSemanticElements: labeled scope-switcher button pair; a fieldset restyle is out of scope */}
           <div className="flex gap-2" role="group" aria-label="Update scope">
             <Button
               type="button"

@@ -1,8 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-
-import { api, type SessionResponse } from "@/lib/api"
+import { createFileRoute } from "@tanstack/react-router"
 import { FileBrowser } from "@/components/file-browser"
+import { api, type SessionResponse } from "@/lib/api"
 import { Page } from "@/lib/page"
 
 function FilesPage() {

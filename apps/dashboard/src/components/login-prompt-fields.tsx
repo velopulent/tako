@@ -1,6 +1,4 @@
 import { InfoIcon, LockKeyholeIcon } from "lucide-react"
-
-import type { LoginPrompt } from "@/lib/api"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Field, FieldLabel } from "@/components/ui/field"
 import {
@@ -8,6 +6,7 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group"
+import type { LoginPrompt } from "@/lib/api"
 
 export function LoginPromptFields({ prompts }: { prompts: LoginPrompt[] }) {
   return prompts.map((prompt) => {

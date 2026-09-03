@@ -1,5 +1,5 @@
-import * as React from "react"
-import { Outlet, createRootRouteWithContext } from "@tanstack/react-router"
+import { createRootRouteWithContext, Outlet } from "@tanstack/react-router"
+import type * as React from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"

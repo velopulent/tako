@@ -1,9 +1,7 @@
-import * as React from "react"
-import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
+import { createFileRoute } from "@tanstack/react-router"
 import { TerminalIcon } from "lucide-react"
-
-import { api, type TerminalStatus } from "@/lib/api"
+import * as React from "react"
 import {
   Empty,
   EmptyDescription,
@@ -12,6 +10,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
+import { api, type TerminalStatus } from "@/lib/api"
 import { Page } from "@/lib/page"
 
 const SystemTerminal = React.lazy(() =>

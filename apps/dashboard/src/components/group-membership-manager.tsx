@@ -1,15 +1,5 @@
-import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-
-import {
-  api,
-  APIError,
-  type GroupInfo,
-  type GroupMembershipOperation,
-  type GroupMembershipPreview,
-  type GroupMembershipState,
-  type UserInfo,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
@@ -22,6 +12,15 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  APIError,
+  api,
+  type GroupInfo,
+  type GroupMembershipOperation,
+  type GroupMembershipPreview,
+  type GroupMembershipState,
+  type UserInfo,
+} from "@/lib/api"
 
 function groupError(error: unknown) {
   if (error instanceof APIError && error.code === "group-conflict")
@@ -82,119 +81,119 @@ export function GroupMembershipManager({
 
   return (
     <div className="flex flex-col gap-5">
-        {!group.local && (
-          <Alert>
-            <AlertTitle>Remote group is read-only</AlertTitle>
-            <AlertDescription>
-              Tako cannot mutate membership in a remote identity provider.
-            </AlertDescription>
-          </Alert>
-        )}
-        {(preview.isError || apply.isError) && (
-          <Alert variant="destructive">
-            <AlertTitle>Membership operation failed</AlertTitle>
-            <AlertDescription>
-              {groupError(preview.error ?? apply.error)}
-            </AlertDescription>
-          </Alert>
-        )}
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="membership-user">Local user</FieldLabel>
-            <Select
-              items={localUsers.map((user) => ({
-                value: user.username,
-                label: user.username,
-              }))}
-              value={username}
-              onValueChange={(value) => {
-                setUsername(value ?? "")
-                setFingerprint("")
-                preview.reset()
-              }}
-              disabled={pending || !administrative || !group.local}
-            >
-              <SelectTrigger id="membership-user" aria-label="Local user">
-                <SelectValue placeholder="Choose a local user" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {localUsers.map((user) => (
-                    <SelectItem key={user.username} value={user.username}>
-                      {user.username}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              variant={action === "add" ? "secondary" : "outline"}
-              disabled={pending || !canWrite}
-              onClick={() => {
-                setAction("add")
-                setFingerprint("")
-                preview.reset()
-              }}
-            >
-              Add member
-            </Button>
-            <Button
-              type="button"
-              variant={action === "remove" ? "secondary" : "outline"}
-              disabled={pending || !canWrite}
-              onClick={() => {
-                setAction("remove")
-                setFingerprint("")
-                preview.reset()
-              }}
-            >
-              Remove member
-            </Button>
-          </div>
-        </FieldGroup>
-        {preview.data && (
-          <Alert
-            variant={
-              preview.data.stale || !preview.data.allowed
-                ? "destructive"
-                : "default"
-            }
+      {!group.local && (
+        <Alert>
+          <AlertTitle>Remote group is read-only</AlertTitle>
+          <AlertDescription>
+            Tako cannot mutate membership in a remote identity provider.
+          </AlertDescription>
+        </Alert>
+      )}
+      {(preview.isError || apply.isError) && (
+        <Alert variant="destructive">
+          <AlertTitle>Membership operation failed</AlertTitle>
+          <AlertDescription>
+            {groupError(preview.error ?? apply.error)}
+          </AlertDescription>
+        </Alert>
+      )}
+      <FieldGroup>
+        <Field>
+          <FieldLabel htmlFor="membership-user">Local user</FieldLabel>
+          <Select
+            items={localUsers.map((user) => ({
+              value: user.username,
+              label: user.username,
+            }))}
+            value={username}
+            onValueChange={(value) => {
+              setUsername(value ?? "")
+              setFingerprint("")
+              preview.reset()
+            }}
+            disabled={pending || !administrative || !group.local}
           >
-            <AlertTitle>
-              {preview.data.stale ? "Refresh required" : "Membership preview"}
-            </AlertTitle>
-            <AlertDescription>
-              {preview.data.reason ??
-                "Changes: " + preview.data.changes.join(", ") + "."}
-              {preview.data.warnings.length
-                ? " " + preview.data.warnings.join(" ")
-                : ""}
-            </AlertDescription>
-          </Alert>
-        )}
+            <SelectTrigger id="membership-user" aria-label="Local user">
+              <SelectValue placeholder="Choose a local user" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {localUsers.map((user) => (
+                  <SelectItem key={user.username} value={user.username}>
+                    {user.username}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </Field>
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
-            variant="outline"
+            variant={action === "add" ? "secondary" : "outline"}
             disabled={pending || !canWrite}
-            onClick={() =>
-              preview.mutate({ ...operation, expectedFingerprint: undefined })
-            }
+            onClick={() => {
+              setAction("add")
+              setFingerprint("")
+              preview.reset()
+            }}
           >
-            {preview.isPending ? "Previewing…" : "Preview"}
+            Add member
           </Button>
           <Button
             type="button"
-            disabled={pending || !canWrite || !fingerprint}
-            onClick={() => apply.mutate(operation)}
+            variant={action === "remove" ? "secondary" : "outline"}
+            disabled={pending || !canWrite}
+            onClick={() => {
+              setAction("remove")
+              setFingerprint("")
+              preview.reset()
+            }}
           >
-            {apply.isPending ? "Applying…" : "Apply membership"}
+            Remove member
           </Button>
         </div>
-        {pending && <Skeleton className="h-1 w-full" />}
+      </FieldGroup>
+      {preview.data && (
+        <Alert
+          variant={
+            preview.data.stale || !preview.data.allowed
+              ? "destructive"
+              : "default"
+          }
+        >
+          <AlertTitle>
+            {preview.data.stale ? "Refresh required" : "Membership preview"}
+          </AlertTitle>
+          <AlertDescription>
+            {preview.data.reason ??
+              `Changes: ${preview.data.changes.join(", ")}.`}
+            {preview.data.warnings.length
+              ? ` ${preview.data.warnings.join(" ")}`
+              : ""}
+          </AlertDescription>
+        </Alert>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pending || !canWrite}
+          onClick={() =>
+            preview.mutate({ ...operation, expectedFingerprint: undefined })
+          }
+        >
+          {preview.isPending ? "Previewing…" : "Preview"}
+        </Button>
+        <Button
+          type="button"
+          disabled={pending || !canWrite || !fingerprint}
+          onClick={() => apply.mutate(operation)}
+        >
+          {apply.isPending ? "Applying…" : "Apply membership"}
+        </Button>
+      </div>
+      {pending && <Skeleton className="h-1 w-full" />}
     </div>
   )
 }

@@ -60,6 +60,8 @@ describe("FileBrowser", () => {
     renderBrowser()
     expect(await screen.findByText("private")).toBeTruthy()
     expect(screen.getByText("Locked")).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Actions for private" })).toBeTruthy()
+    expect(
+      screen.getByRole("button", { name: "Actions for private" })
+    ).toBeTruthy()
   })
 })

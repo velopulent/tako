@@ -40,7 +40,10 @@ describe("SavedLogViews", () => {
       priority: "3",
     })
 
-    await user.type(screen.getByLabelText("Save current filters in this browser"), "New")
+    await user.type(
+      screen.getByLabelText("Save current filters in this browser"),
+      "New"
+    )
     await user.click(screen.getByRole("button", { name: "Save view" }))
     expect(await screen.findByText("New")).toBeTruthy()
 
@@ -85,7 +88,9 @@ describe("SavedLogViews", () => {
     )
     await user.click(screen.getByRole("button", { name: "Save view" }))
     expect(
-      await screen.findByText("A view with this name already exists in this browser.")
+      await screen.findByText(
+        "A view with this name already exists in this browser."
+      )
     ).toBeTruthy()
   })
 })

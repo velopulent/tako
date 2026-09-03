@@ -1,15 +1,5 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-
-import {
-  api,
-  APIError,
-  type SSHKeyOperation,
-  type SSHKeyPreview,
-  type SSHKeyState,
-  type SessionResponse,
-  type UserInfo,
-} from "@/lib/api"
+import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -38,6 +28,15 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  APIError,
+  api,
+  type SessionResponse,
+  type SSHKeyOperation,
+  type SSHKeyPreview,
+  type SSHKeyState,
+  type UserInfo,
+} from "@/lib/api"
 
 function keyError(error: unknown) {
   if (error instanceof APIError) {

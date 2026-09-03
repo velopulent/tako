@@ -1,12 +1,12 @@
 import { Ban } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import type { UpdateObservation } from "@/lib/api"
 
@@ -34,9 +34,7 @@ export function UpdateLivePanel({
     : ""
 
   if (!live.active) {
-    return log.length > 0 ? (
-      <LogCollapsible log={log} />
-    ) : null
+    return log.length > 0 ? <LogCollapsible log={log} /> : null
   }
 
   return (
@@ -88,7 +86,11 @@ export function ForeignUpdateAlert({
       <AlertDescription className="space-y-2 text-xs">
         Another session or tool started a package update. Tako is watching it
         live; updates here stay paused until it finishes.
-        <UpdateLivePanel observation={observation} onCancel={onCancel} canceling={canceling} />
+        <UpdateLivePanel
+          observation={observation}
+          onCancel={onCancel}
+          canceling={canceling}
+        />
       </AlertDescription>
     </Alert>
   )
@@ -102,12 +104,17 @@ function LogCollapsible({ log }: { log: UpdateObservation["log"] }) {
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="max-h-40 overflow-auto rounded-md border bg-muted/20 p-2 font-mono text-xs">
-          {log.map((entry, index) => (
-            <div key={`${entry.packageId}-${index}`} className="flex gap-2">
+          {log.map((entry) => (
+            <div
+              key={`${entry.timestamp ?? ""}:${entry.packageId}:${entry.status}`}
+              className="flex gap-2"
+            >
               <span className="w-24 shrink-0 text-muted-foreground">
                 {entry.statusLabel}
               </span>
-              <span className="truncate">{formatPackageId(entry.packageId)}</span>
+              <span className="truncate">
+                {formatPackageId(entry.packageId)}
+              </span>
             </div>
           ))}
         </div>

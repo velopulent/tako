@@ -1,9 +1,8 @@
 import { Ban } from "lucide-react"
-
-import { UpdateLivePanel } from "@/components/update-live-panel"
-import { activeUpdateJobStates } from "@/components/update-job-state"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
+import { activeUpdateJobStates } from "@/components/update-job-state"
+import { UpdateLivePanel } from "@/components/update-live-panel"
 import type { DiagnosticJob, UpdateObservation } from "@/lib/api"
 
 export function UpdateJobProgress({
@@ -29,7 +28,10 @@ export function UpdateJobProgress({
         <span className="font-medium">Update job: {job.state}</span>
         <span className="text-muted-foreground tabular-nums">{percent}%</span>
       </div>
-      <Progress value={percent} aria-label={`Update job progress: ${percent}%`} />
+      <Progress
+        value={percent}
+        aria-label={`Update job progress: ${percent}%`}
+      />
       {activeUpdateJobStates.has(job.state) ? (
         <>
           {live?.active ? (
@@ -42,7 +44,12 @@ export function UpdateJobProgress({
             <p className="text-sm text-muted-foreground">{job.message}</p>
           )}
           {(!live?.active || !live.allowCancel) && (
-            <Button variant="outline" size="sm" disabled={canceling} onClick={onCancel}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={canceling}
+              onClick={onCancel}
+            >
               <Ban data-icon="inline-start" />
               {canceling ? "Canceling…" : "Cancel update job"}
             </Button>

@@ -1,4 +1,3 @@
-import type { TimerAction, TimerOperation } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -17,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import type { TimerAction, TimerOperation } from "@/lib/api"
 
 const scopeItems = [
   { value: "user", label: "User session" },

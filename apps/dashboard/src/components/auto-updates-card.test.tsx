@@ -54,14 +54,15 @@ describe("AutoUpdatesCard", () => {
     expect(screen.getByText("Disabled")).toBeTruthy()
 
     await user.click(screen.getByRole("button", { name: "Edit" }))
-    await user.click(await screen.findByRole("button", { name: "Security only" }))
+    await user.click(
+      await screen.findByRole("button", { name: "Security only" })
+    )
     await user.click(screen.getByRole("button", { name: "Save changes" }))
 
     await vi.waitFor(() => {
       const call = fetchMock.mock.calls.find(
         ([input, init]) =>
-          String(input).endsWith("/updates/automatic") &&
-          init?.method === "PUT"
+          String(input).endsWith("/updates/automatic") && init?.method === "PUT"
       )
       expect(call).toBeTruthy()
       const body = JSON.parse(String(call?.[1]?.body))
