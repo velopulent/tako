@@ -25,10 +25,19 @@
         "cwd": "apps/dashboard"
       }
     },
+    "lint": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": ["default", "^production"],
+      "options": {
+        "command": "bunx --bun @biomejs/biome check .",
+        "cwd": "apps/dashboard"
+      }
+    },
     "format": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "prettier --write .",
+        "command": "bunx --bun @biomejs/biome check --write .",
         "cwd": "apps/dashboard"
       }
     }

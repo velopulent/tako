@@ -16,7 +16,7 @@ Frontend source lives in `apps/dashboard/src/`. Reusable shadcn components belon
 - `bun run dev:ui`: passwordless `serve --dev` + Vite on :5173 (no PAM/PTY; UI-only).
 - `bun run build`: type-check and build the dashboard, then produce the stripped `bin/tako` executable.
 - `bun run test`: run Go tests and dashboard type checking through Nx.
-- `bun run lint`: run `go vet` and ESLint through Nx.
+- `bun run lint`: run `go vet` (backend) and Biome check (dashboard) through Nx.
 - `bun run race`: run the full Go race suite before security-sensitive changes.
 - `bun nx <target> <project>`: run an individual Nx target, such as `bun nx test backend`.
 
