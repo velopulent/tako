@@ -161,11 +161,10 @@ export function JobsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm text-muted-foreground">
-            Durable read-only diagnostics that keep running across navigation.
+            In-memory diagnostics that keep running across navigation.
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Jobs interrupted by a service restart are recorded and never retried
-            silently.
+            Jobs clear on service restart and are never retried silently.
           </p>
         </div>
         <Button
@@ -197,7 +196,7 @@ export function JobsPage() {
             </EmptyMedia>
             <EmptyTitle>No diagnostic jobs yet</EmptyTitle>
             <EmptyDescription>
-              Run a host inventory to capture a durable, reconnectable report.
+              Run a host inventory to capture an in-memory, reconnectable report.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
