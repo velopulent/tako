@@ -388,6 +388,29 @@ units_installed() {
   [[ -f "$UNIT_DIR/tako.service" ]] && [[ -f "$UNIT_DIR/tako-sessiond.socket" ]]
 }
 
+restart_sockets() {
+  # Stop services first: restarting a socket unit under a live service (e.g. a
+  # long-lived Vite HMR websocket proxied through the gateway) can fail the
+  # re-bind and wedge the socket in failed/resources. Stopped services
+  # socket-activate on the next request, so no explicit start is needed.
+  log_run "systemctl stop tako.service tako-sessiond.service"
+  systemctl stop tako.service tako-sessiond.service 2>/dev/null || true
+  systemctl reset-failed tako.socket tako-sessiond.socket tako.service tako-sessiond.service 2>/dev/null || true
+  log_run "systemctl daemon-reload"
+  systemctl daemon-reload
+  local attempt
+  for attempt in 1 2 3; do
+    if systemctl restart tako-sessiond.socket tako.socket; then
+      log_ok "sockets listening (attempt $attempt/3)"
+      return 0
+    fi
+    log_warn "socket restart failed (attempt $attempt/3) — retrying…"
+    sleep 1
+  done
+  log_error "sockets failed to restart — see: systemctl status tako.socket tako-sessiond.socket · journalctl -u tako.socket -u tako-sessiond.socket -n 50"
+  return 1
+}
+
 cmd_reload() {
   if ! units_installed; then
     log_error "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup"
@@ -401,10 +424,7 @@ cmd_reload() {
     write_host_dropins
     write_overlay_sync
     remove_legacy_sync_units
-    log_run "systemctl daemon-reload + restart sockets"
-    systemctl daemon-reload
-    systemctl restart tako-sessiond.socket tako.socket
-    systemctl try-restart tako.service tako-sessiond.service
+    restart_sockets
     log_ok "reload complete — https://127.0.0.1:9090"
   else
     log_info "escalating restart to root…"
@@ -421,10 +441,7 @@ cmd_restart_as_root() {
   write_host_dropins
   write_overlay_sync
   remove_legacy_sync_units
-  log_run "systemctl daemon-reload + restart sockets"
-  systemctl daemon-reload
-  systemctl restart tako-sessiond.socket tako.socket
-  systemctl try-restart tako.service tako-sessiond.service
+  restart_sockets
   log_ok "restart complete"
 }
 
