@@ -222,9 +222,10 @@ func (c *Client) getUpdatesRaw(ctx context.Context) (map[string]*Update, error) 
 		}
 	}()
 
-	// Call GetUpdates
+	// Call GetUpdates. The filter is a uint64 bitmask on the wire ("t");
+	// passing uint32 makes the daemon reject the call, so keep this uint64.
 	obj := c.conn.Object(dbusDest, transactionPath)
-	call := obj.CallWithContext(ctx, transactionIface+".GetUpdates", 0, uint32(0))
+	call := obj.CallWithContext(ctx, transactionIface+".GetUpdates", 0, uint64(0))
 	if call.Err != nil {
 		return nil, call.Err
 	}
@@ -483,7 +484,8 @@ func (c *Client) UpdatePackages(ctx context.Context, packageIDs []string) error 
 	}()
 
 	obj := c.conn.Object(dbusDest, transactionPath)
-	call := obj.CallWithContext(ctx, transactionIface+".UpdatePackages", 0, uint32(0), packageIDs)
+	// Transaction flags are uint64 on the wire ("t"), like GetUpdates above.
+	call := obj.CallWithContext(ctx, transactionIface+".UpdatePackages", 0, uint64(0), packageIDs)
 	if call.Err != nil {
 		return call.Err
 	}
