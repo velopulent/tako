@@ -17,7 +17,6 @@ import {
   SettingsIcon,
   ShieldCheckIcon,
   SirenIcon,
-  ListChecksIcon,
   ClipboardListIcon,
   ServerIcon,
   TimerIcon,
@@ -73,7 +72,6 @@ const groups = [
     items: [
       { title: "Accounts", to: "/accounts", icon: UsersIcon },
       { title: "Updates", to: "/updates", icon: PackageCheckIcon },
-      { title: "Operations", to: "/operations", icon: ListChecksIcon },
       { title: "Jobs", to: "/jobs", icon: ClipboardListIcon },
       { title: "Host", to: "/host", icon: ServerIcon },
     ],

@@ -18,7 +18,6 @@ import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as MetricsRouteImport } from './routes/metrics'
 import { Route as NetworkRouteImport } from './routes/network'
-import { Route as OperationsRouteImport } from './routes/operations'
 import { Route as ProcessesRouteImport } from './routes/processes'
 import { Route as SecurityRouteImport } from './routes/security'
 import { Route as ServicesRouteImport } from './routes/services'
@@ -80,11 +79,6 @@ const MetricsRoute = MetricsRouteImport.update({
 const NetworkRoute = NetworkRouteImport.update({
   id: '/network',
   path: '/network',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OperationsRoute = OperationsRouteImport.update({
-  id: '/operations',
-  path: '/operations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProcessesRoute = ProcessesRouteImport.update({
@@ -183,7 +177,6 @@ export interface FileRoutesByFullPath {
   '/logs': typeof LogsRoute
   '/metrics': typeof MetricsRoute
   '/network': typeof NetworkRoute
-  '/operations': typeof OperationsRoute
   '/processes': typeof ProcessesRouteWithChildren
   '/security': typeof SecurityRoute
   '/services': typeof ServicesRouteWithChildren
@@ -211,7 +204,6 @@ export interface FileRoutesByTo {
   '/logs': typeof LogsRoute
   '/metrics': typeof MetricsRoute
   '/network': typeof NetworkRoute
-  '/operations': typeof OperationsRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
   '/storage': typeof StorageRoute
@@ -239,7 +231,6 @@ export interface FileRoutesById {
   '/logs': typeof LogsRoute
   '/metrics': typeof MetricsRoute
   '/network': typeof NetworkRoute
-  '/operations': typeof OperationsRoute
   '/processes': typeof ProcessesRouteWithChildren
   '/security': typeof SecurityRoute
   '/services': typeof ServicesRouteWithChildren
@@ -270,7 +261,6 @@ export interface FileRouteTypes {
     | '/logs'
     | '/metrics'
     | '/network'
-    | '/operations'
     | '/processes'
     | '/security'
     | '/services'
@@ -298,7 +288,6 @@ export interface FileRouteTypes {
     | '/logs'
     | '/metrics'
     | '/network'
-    | '/operations'
     | '/security'
     | '/settings'
     | '/storage'
@@ -325,7 +314,6 @@ export interface FileRouteTypes {
     | '/logs'
     | '/metrics'
     | '/network'
-    | '/operations'
     | '/processes'
     | '/security'
     | '/services'
@@ -355,7 +343,6 @@ export interface RootRouteChildren {
   LogsRoute: typeof LogsRoute
   MetricsRoute: typeof MetricsRoute
   NetworkRoute: typeof NetworkRoute
-  OperationsRoute: typeof OperationsRoute
   ProcessesRoute: typeof ProcessesRouteWithChildren
   SecurityRoute: typeof SecurityRoute
   ServicesRoute: typeof ServicesRouteWithChildren
@@ -429,13 +416,6 @@ declare module '@tanstack/react-router' {
       path: '/network'
       fullPath: '/network'
       preLoaderRoute: typeof NetworkRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/operations': {
-      id: '/operations'
-      path: '/operations'
-      fullPath: '/operations'
-      preLoaderRoute: typeof OperationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/processes': {
@@ -618,7 +598,6 @@ const rootRouteChildren: RootRouteChildren = {
   LogsRoute: LogsRoute,
   MetricsRoute: MetricsRoute,
   NetworkRoute: NetworkRoute,
-  OperationsRoute: OperationsRoute,
   ProcessesRoute: ProcessesRouteWithChildren,
   SecurityRoute: SecurityRoute,
   ServicesRoute: ServicesRouteWithChildren,

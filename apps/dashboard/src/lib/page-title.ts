@@ -4,7 +4,6 @@ const titles: Record<string, string> = {
   accounts: "Accounts",
   users: "Accounts",
   updates: "Updates",
-  operations: "Operations",
   jobs: "Jobs",
   host: "Host",
   terminal: "Terminal",
