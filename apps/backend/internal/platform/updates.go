@@ -104,7 +104,11 @@ type updateDependencies struct {
 // Updates reports read-only installed-software updates. It deliberately does
 // not invoke package installation or refresh package metadata.
 func Updates(ctx context.Context) UpdateStatus {
-	deadline, cancel := context.WithTimeout(ctx, 8*time.Second)
+	// The inventory budget must cover a cold PackageKit daemon (activation +
+	// GetUpdates + batched GetUpdateDetail) and, when D-Bus is unavailable,
+	// the pkcon CLI fallback. Callers above allow 30s, so 25s keeps us inside
+	// their deadline while giving slow backends a real chance.
+	deadline, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	status := updatesWithDependencies(deadline, defaultUpdateDependencies())
 	status.Fingerprint = UpdateFingerprint(status)
@@ -117,7 +121,7 @@ func Updates(ctx context.Context) UpdateStatus {
 	// Populate TimeSinceRefresh via GetTimeSinceAction(REFRESH_CACHE)
 	if status.Backend == "PackageKit" {
 		if client, err := packagekit.New(); err == nil {
-			refreshCtx, refreshCancel := context.WithTimeout(ctx, 1*time.Second)
+			refreshCtx, refreshCancel := context.WithTimeout(ctx, 3*time.Second)
 			if secs, err := client.GetTimeSinceAction(refreshCtx, packagekit.RoleRefreshCache); err == nil {
 				status.TimeSinceRefresh = &secs
 			}
@@ -851,7 +855,9 @@ func commandExists(name string) bool {
 }
 
 func runUpdateCommand(ctx context.Context, name string, arguments ...string) updateCommandResult {
-	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Inventory fallbacks (pkcon/apt/dnf) routinely take 10s+ against a cold
+	// daemon; the caller's context still bounds us where it is tighter.
+	commandCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, name, arguments...)
 	stdout, err := command.StdoutPipe()
