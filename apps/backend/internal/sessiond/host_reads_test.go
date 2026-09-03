@@ -161,6 +161,33 @@ func TestHostOperationUsesAuthenticatedUserBridge(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusOperationReachesUserBridge(t *testing.T) {
+	bridge := &recordingUserBridge{}
+	store, token := newReadTestStore(bridge)
+	runtime := newHostRuntime()
+	defer store.closeAll()
+	defer runtime.close()
+
+	// The gateway reads inventory as "updates.status"; it must dispatch like
+	// "updates.read" instead of falling through with an empty response.
+	for _, operation := range []string{"updates.read", "updates.status"} {
+		result, err := dispatchHostOperation(context.Background(), auth.Request{
+			Operation:  operation,
+			Token:      token,
+			UpdateRead: &auth.UpdateReadOperation{},
+		}, store, runtime)
+		if err != nil {
+			t.Fatalf("%s: %v", operation, err)
+		}
+		if result.lane != "user-bridge" || result.response.UpdateStatus == nil {
+			t.Fatalf("%s: unexpected user-lane result: %+v", operation, result)
+		}
+	}
+	if !bridge.saw("updates.read") {
+		t.Fatal("update status bypassed authenticated user bridge")
+	}
+}
+
 func TestHostOperationRoutesUserSignalToBridge(t *testing.T) {
 	bridge := &recordingUserBridge{}
 	store, token := newReadTestStore(bridge)

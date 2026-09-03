@@ -415,7 +415,7 @@ func dispatchHostOperation(ctx context.Context, request auth.Request, grants *gr
 			item, err = reader.readNetworkSnapshot(ctx)
 		}
 		result.response.NetworkSnapshot = &item
-	case "updates.read":
+	case "updates.read", "updates.status":
 		if administrative {
 			status := platform.Updates(ctx)
 			result.response.UpdateStatus = &status
