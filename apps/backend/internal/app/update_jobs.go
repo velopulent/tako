@@ -12,7 +12,6 @@ import (
 
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/platform"
-	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
 	"go.uber.org/zap"
 )
@@ -121,7 +120,7 @@ func writeUpdateProblem(writer http.ResponseWriter, err error) {
 	}
 }
 
-func (server *Server) runSoftwareUpdateJob(ctx context.Context, job preferences.Job, update func(int, string) error) (json.RawMessage, error) {
+func (server *Server) runSoftwareUpdateJob(ctx context.Context, job Job, update func(int, string) error) (json.RawMessage, error) {
 	var operation platform.UpdateOperation
 	decoder := json.NewDecoder(bytes.NewReader(job.Parameters))
 	decoder.DisallowUnknownFields()
@@ -148,13 +147,13 @@ func (server *Server) runSoftwareUpdateJob(ctx context.Context, job preferences.
 		return nil, ctx.Err()
 	}
 	if err := update(5, "Checking package-manager state"); err != nil {
-		if errors.Is(err, preferences.ErrJobTerminal) {
+		if errors.Is(err, ErrJobTerminal) {
 			return nil, context.Canceled
 		}
 		return nil, err
 	}
 	if err := update(20, "Applying selected software updates"); err != nil {
-		if errors.Is(err, preferences.ErrJobTerminal) {
+		if errors.Is(err, ErrJobTerminal) {
 			return nil, context.Canceled
 		}
 		return nil, err
@@ -174,7 +173,7 @@ func (server *Server) runSoftwareUpdateJob(ctx context.Context, job preferences.
 		return nil, err
 	}
 	if err := update(85, "Verifying installed-software state"); err != nil {
-		if errors.Is(err, preferences.ErrJobTerminal) {
+		if errors.Is(err, ErrJobTerminal) {
 			return nil, context.Canceled
 		}
 		return nil, err
@@ -186,7 +185,7 @@ func (server *Server) runSoftwareUpdateJob(ctx context.Context, job preferences.
 	}
 	server.recordOperation(context.Background(), job.Actor, target, startedAt, "succeeded", "", true)
 	if err := update(100, "Updates applied and verified"); err != nil {
-		if errors.Is(err, preferences.ErrJobTerminal) {
+		if errors.Is(err, ErrJobTerminal) {
 			return nil, context.Canceled
 		}
 		return nil, err

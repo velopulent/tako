@@ -171,7 +171,7 @@ type Request struct {
 
 // PasswordChangeOperation is deliberately wire-only. Secret fields are sent
 // over the protected session socket and are cleared immediately after the PAM
-// transaction; they are never included in an operation receipt or persisted
+// transaction; they are never logged or persisted
 // by the gateway.
 type PasswordChangeOperation struct {
 	Action          string `json:"action"`

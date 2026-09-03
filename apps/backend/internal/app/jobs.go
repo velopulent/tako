@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +17,6 @@ import (
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/platform"
-	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
 	"go.uber.org/zap"
 )
@@ -23,21 +24,57 @@ import (
 const hostInventoryJob = "host-inventory"
 const softwareUpdateJob = "software-update"
 
+const (
+	JobPending     = "pending"
+	JobRunning     = "running"
+	JobSucceeded   = "succeeded"
+	JobFailed      = "failed"
+	JobCanceled    = "canceled"
+	JobInterrupted = "interrupted"
+)
+
 var (
 	ErrJobQueueFull     = errors.New("diagnostic job queue is full")
 	ErrJobManagerClosed = errors.New("diagnostic jobs are unavailable")
+	ErrJobNotFound      = errors.New("job not found")
+	ErrJobTerminal      = errors.New("job is already complete")
 )
 
+type Job struct {
+	ID              string          `json:"id"`
+	Kind            string          `json:"kind"`
+	Actor           string          `json:"actor"`
+	Parameters      json.RawMessage `json:"-"`
+	State           string          `json:"state"`
+	Progress        int             `json:"progress"`
+	Message         string          `json:"message"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	StartedAt       time.Time       `json:"startedAt,omitempty"`
+	CompletedAt     time.Time       `json:"completedAt,omitempty"`
+	CancelRequested bool            `json:"cancelRequested"`
+	Dangerous       bool            `json:"dangerous"`
+}
+
+func jobID() string {
+	buffer := make([]byte, 18)
+	if _, err := rand.Read(buffer); err != nil {
+		return base64.RawURLEncoding.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer)
+}
+
 type diagnosticJobManager struct {
-	store   *preferences.Store
 	queue   chan string
 	ctx     context.Context
 	cancel  context.CancelFunc
-	execute func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error)
+	execute func(context.Context, Job, func(int, string) error) (json.RawMessage, error)
 
 	mu       sync.Mutex
 	notifyMu sync.Mutex
 	closed   bool
+	jobs     map[string]*Job
 	inflight map[string]context.CancelFunc
 	pending  int
 	busyHook func(bool)
@@ -77,14 +114,14 @@ func (manager *diagnosticJobManager) notifyBusy() {
 	}
 }
 
-func newDiagnosticJobManager(parent context.Context, store *preferences.Store, execute func(context.Context, preferences.Job, func(int, string) error) (json.RawMessage, error)) *diagnosticJobManager {
+func newDiagnosticJobManager(parent context.Context, execute func(context.Context, Job, func(int, string) error) (json.RawMessage, error)) *diagnosticJobManager {
 	ctx, cancel := context.WithCancel(parent)
 	manager := &diagnosticJobManager{
-		store:    store,
 		queue:    make(chan string, 32),
 		ctx:      ctx,
 		cancel:   cancel,
 		execute:  execute,
+		jobs:     make(map[string]*Job),
 		inflight: make(map[string]context.CancelFunc),
 	}
 	for range 2 {
@@ -94,26 +131,85 @@ func newDiagnosticJobManager(parent context.Context, store *preferences.Store, e
 	return manager
 }
 
-func (manager *diagnosticJobManager) Submit(ctx context.Context, kind, actor string) (preferences.Job, error) {
+func (manager *diagnosticJobManager) createJob(kind, actor string, dangerous bool, parameters json.RawMessage) (Job, error) {
+	if kind == "" || len(kind) > 64 || actor == "" || len(actor) > 256 {
+		return Job{}, errors.New("invalid job")
+	}
+	if len(parameters) > 64<<10 || (len(parameters) > 0 && !json.Valid(parameters)) {
+		return Job{}, errors.New("invalid job parameters")
+	}
+	job := Job{
+		ID:         jobID(),
+		Kind:       kind,
+		Actor:      actor,
+		Parameters: append(json.RawMessage(nil), parameters...),
+		State:      JobPending,
+		Message:    "Queued",
+		CreatedAt:  time.Now().UTC(),
+		Dangerous:  dangerous,
+	}
+	manager.mu.Lock()
+	manager.jobs[job.ID] = &job
+	manager.mu.Unlock()
+	return job, nil
+}
+
+func (manager *diagnosticJobManager) GetJob(id string) (Job, error) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	job, ok := manager.jobs[id]
+	if !ok {
+		return Job{}, ErrJobNotFound
+	}
+	return *job, nil
+}
+
+func (manager *diagnosticJobManager) Jobs(limit int) []Job {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	items := make([]Job, 0, len(manager.jobs))
+	for _, job := range manager.jobs {
+		items = append(items, *job)
+	}
+	// Newest first, bounded.
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[j].CreatedAt.After(items[i].CreatedAt) {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items
+}
+
+func (manager *diagnosticJobManager) Submit(ctx context.Context, kind, actor string) (Job, error) {
 	return manager.SubmitWithSetup(ctx, kind, actor, nil)
 }
 
 // SubmitWithSetup lets a caller attach short-lived in-memory authority to a
-// durable job ID before a worker can observe it. The setup value is never part
-// of the persisted job record.
-func (manager *diagnosticJobManager) SubmitWithSetup(ctx context.Context, kind, actor string, setup func(string)) (preferences.Job, error) {
+// job ID before a worker can observe it.
+func (manager *diagnosticJobManager) SubmitWithSetup(ctx context.Context, kind, actor string, setup func(string)) (Job, error) {
 	manager.mu.Lock()
 	if manager.closed {
 		manager.mu.Unlock()
-		return preferences.Job{}, ErrJobManagerClosed
+		return Job{}, ErrJobManagerClosed
 	}
 	manager.mu.Unlock()
 	if kind != hostInventoryJob {
-		return preferences.Job{}, fmt.Errorf("unsupported diagnostic job %q", kind)
+		return Job{}, fmt.Errorf("unsupported diagnostic job %q", kind)
 	}
-	job, err := manager.store.CreateJob(ctx, kind, actor, false)
+	job, err := manager.createJob(kind, actor, false, nil)
 	if err != nil {
-		return preferences.Job{}, err
+		return Job{}, err
 	}
 	if setup != nil {
 		setup(job.ID)
@@ -124,32 +220,30 @@ func (manager *diagnosticJobManager) SubmitWithSetup(ctx context.Context, kind, 
 		return job, nil
 	default:
 		manager.addPending(-1)
-		_ = manager.store.FailJob(context.Background(), job.ID, "Not queued", ErrJobQueueFull)
-		return preferences.Job{}, ErrJobQueueFull
+		_ = manager.failJob(job.ID, "Not queued", ErrJobQueueFull)
+		return Job{}, ErrJobQueueFull
 	}
 }
 
-func (manager *diagnosticJobManager) SubmitParameterized(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage) (preferences.Job, error) {
+func (manager *diagnosticJobManager) SubmitParameterized(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage) (Job, error) {
 	return manager.SubmitParameterizedWithSetup(ctx, kind, actor, dangerous, parameters, nil)
 }
 
-// SubmitParameterizedWithSetup persists a job and runs setup after the job ID
-// exists but before it becomes visible to a worker. Setup is intentionally
-// in-memory only; callers use it for short-lived credentials that must never be
-// persisted with durable job parameters.
-func (manager *diagnosticJobManager) SubmitParameterizedWithSetup(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage, setup func(string)) (preferences.Job, error) {
+// SubmitParameterizedWithSetup keeps credentials out of the job record;
+// setup runs after the ID exists but before workers observe it.
+func (manager *diagnosticJobManager) SubmitParameterizedWithSetup(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage, setup func(string)) (Job, error) {
 	manager.mu.Lock()
 	if manager.closed {
 		manager.mu.Unlock()
-		return preferences.Job{}, ErrJobManagerClosed
+		return Job{}, ErrJobManagerClosed
 	}
 	manager.mu.Unlock()
 	if kind != softwareUpdateJob {
-		return preferences.Job{}, fmt.Errorf("unsupported parameterized job %q", kind)
+		return Job{}, fmt.Errorf("unsupported parameterized job %q", kind)
 	}
-	job, err := manager.store.CreateParameterizedJob(ctx, kind, actor, dangerous, parameters)
+	job, err := manager.createJob(kind, actor, dangerous, parameters)
 	if err != nil {
-		return preferences.Job{}, err
+		return Job{}, err
 	}
 	if setup != nil {
 		setup(job.ID)
@@ -160,22 +254,108 @@ func (manager *diagnosticJobManager) SubmitParameterizedWithSetup(ctx context.Co
 		return job, nil
 	default:
 		manager.addPending(-1)
-		_ = manager.store.FailJob(context.Background(), job.ID, "Not queued", ErrJobQueueFull)
-		return preferences.Job{}, ErrJobQueueFull
+		_ = manager.failJob(job.ID, "Not queued", ErrJobQueueFull)
+		return Job{}, ErrJobQueueFull
 	}
 }
 
-func (manager *diagnosticJobManager) Cancel(ctx context.Context, id string) (preferences.Job, error) {
-	job, err := manager.store.CancelJob(ctx, id)
-	if err != nil && !errors.Is(err, preferences.ErrJobTerminal) {
-		return preferences.Job{}, err
-	}
+func (manager *diagnosticJobManager) Cancel(ctx context.Context, id string) (Job, error) {
 	manager.mu.Lock()
-	if cancel, ok := manager.inflight[id]; ok {
+	job, ok := manager.jobs[id]
+	if !ok {
+		manager.mu.Unlock()
+		return Job{}, ErrJobNotFound
+	}
+	if job.State != JobPending && job.State != JobRunning {
+		snapshot := *job
+		manager.mu.Unlock()
+		return snapshot, ErrJobTerminal
+	}
+	job.State = JobCanceled
+	job.CancelRequested = true
+	job.Message = "Canceled by operator"
+	job.CompletedAt = time.Now().UTC()
+	snapshot := *job
+	cancel, ok := manager.inflight[id]
+	manager.mu.Unlock()
+	if ok {
 		cancel()
 	}
-	manager.mu.Unlock()
-	return job, err
+	return snapshot, nil
+}
+
+func (manager *diagnosticJobManager) startJob(id string) bool {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	job, ok := manager.jobs[id]
+	if !ok || job.State != JobPending || job.CancelRequested {
+		return false
+	}
+	job.State = JobRunning
+	job.StartedAt = time.Now().UTC()
+	job.Message = "Running"
+	job.Progress = 1
+	return true
+}
+
+func (manager *diagnosticJobManager) updateProgress(id string, progress int, message string) error {
+	if progress < 0 || progress > 100 || len(message) > 256 {
+		return errors.New("invalid job progress")
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	job, ok := manager.jobs[id]
+	if !ok || job.State != JobRunning {
+		return ErrJobTerminal
+	}
+	job.Progress = progress
+	job.Message = message
+	return nil
+}
+
+func (manager *diagnosticJobManager) completeJob(id string, result json.RawMessage) error {
+	if len(result) > 1<<20 || (len(result) > 0 && !json.Valid(result)) {
+		return errors.New("invalid job result")
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	job, ok := manager.jobs[id]
+	if !ok || job.State != JobRunning || job.CancelRequested {
+		return ErrJobTerminal
+	}
+	job.State = JobSucceeded
+	job.Progress = 100
+	job.Message = "Completed"
+	job.Result = result
+	job.CompletedAt = time.Now().UTC()
+	return nil
+}
+
+func (manager *diagnosticJobManager) failJob(id, message string, jobErr error) error {
+	if message == "" || len(message) > 256 {
+		return errors.New("invalid job failure")
+	}
+	if jobErr == nil {
+		jobErr = errors.New("job failed")
+	}
+	publicError := jobErr.Error()
+	if len(publicError) > 1024 {
+		publicError = publicError[:1024]
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	job, ok := manager.jobs[id]
+	if !ok {
+		return ErrJobNotFound
+	}
+	if job.State != JobPending && job.State != JobRunning {
+		return ErrJobTerminal
+	}
+	job.State = JobFailed
+	job.Message = message
+	job.Error = publicError
+	job.CompletedAt = time.Now().UTC()
+	return nil
 }
 
 func (manager *diagnosticJobManager) worker() {
@@ -195,11 +375,11 @@ func (manager *diagnosticJobManager) run(id string) {
 	if manager.ctx.Err() != nil {
 		return
 	}
-	if err := manager.store.StartJob(context.Background(), id); err != nil {
+	if !manager.startJob(id) {
 		return
 	}
-	job, err := manager.store.GetJob(context.Background(), id)
-	if err != nil || job.State != preferences.JobRunning || job.CancelRequested {
+	job, err := manager.GetJob(id)
+	if err != nil || job.State != JobRunning || job.CancelRequested {
 		return
 	}
 	timeout := 45 * time.Second
@@ -218,20 +398,16 @@ func (manager *diagnosticJobManager) run(id string) {
 	}()
 
 	result, runErr := manager.execute(jobCtx, job, func(progress int, message string) error {
-		return manager.store.UpdateJobProgress(context.Background(), id, progress, message)
+		return manager.updateProgress(id, progress, message)
 	})
 	if jobCtx.Err() != nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return
 	}
 	if runErr != nil {
-		finishCtx, finishCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = manager.store.FailJob(finishCtx, id, "Diagnostic collection failed", errors.New("diagnostic collection failed"))
-		finishCancel()
+		_ = manager.failJob(id, "Diagnostic collection failed", errors.New("diagnostic collection failed"))
 		return
 	}
-	finishCtx, finishCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = manager.store.CompleteJob(finishCtx, id, result)
-	finishCancel()
+	_ = manager.completeJob(id, result)
 }
 
 func (manager *diagnosticJobManager) Close(ctx context.Context) error {
@@ -264,13 +440,7 @@ func (server *Server) jobsList(writer http.ResponseWriter, request *http.Request
 		}
 		limit = parsed
 	}
-	items, err := server.preferences.Jobs(request.Context(), limit)
-	if err != nil {
-		server.logger.Error("diagnostic jobs unavailable", zap.Error(err))
-		problem(writer, http.StatusInternalServerError, "jobs-unavailable", "Diagnostic jobs are unavailable")
-		return
-	}
-	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+	writeJSON(writer, http.StatusOK, map[string]any{"items": server.jobs.Jobs(limit)})
 }
 
 func (server *Server) startHostInventoryJob(writer http.ResponseWriter, request *http.Request) {
@@ -318,14 +488,9 @@ func (server *Server) jobDetail(writer http.ResponseWriter, request *http.Reques
 		problem(writer, http.StatusBadRequest, "invalid-job-id", "Job id is invalid")
 		return
 	}
-	job, err := server.preferences.GetJob(request.Context(), id)
-	if errors.Is(err, preferences.ErrJobNotFound) {
+	job, err := server.jobs.GetJob(id)
+	if errors.Is(err, ErrJobNotFound) {
 		problem(writer, http.StatusNotFound, "job-not-found", "Diagnostic job was not found")
-		return
-	}
-	if err != nil {
-		server.logger.Error("diagnostic job unavailable", zap.Error(err))
-		problem(writer, http.StatusInternalServerError, "jobs-unavailable", "Diagnostic jobs are unavailable")
 		return
 	}
 	payload := map[string]any{"job": job}
@@ -356,11 +521,11 @@ func (server *Server) cancelJob(writer http.ResponseWriter, request *http.Reques
 	}
 	job, err := server.jobs.Cancel(request.Context(), id)
 	server.deleteInventoryCredentials(id)
-	if errors.Is(err, preferences.ErrJobNotFound) {
+	if errors.Is(err, ErrJobNotFound) {
 		problem(writer, http.StatusNotFound, "job-not-found", "Diagnostic job was not found")
 		return
 	}
-	if errors.Is(err, preferences.ErrJobTerminal) {
+	if errors.Is(err, ErrJobTerminal) {
 		problem(writer, http.StatusConflict, "job-not-running", "Diagnostic job is no longer running")
 		return
 	}
@@ -373,7 +538,7 @@ func (server *Server) cancelJob(writer http.ResponseWriter, request *http.Reques
 	writeJSON(writer, http.StatusOK, map[string]any{"job": job})
 }
 
-func (server *Server) runDiagnosticJob(ctx context.Context, job preferences.Job, update func(int, string) error) (json.RawMessage, error) {
+func (server *Server) runDiagnosticJob(ctx context.Context, job Job, update func(int, string) error) (json.RawMessage, error) {
 	if job.Kind == softwareUpdateJob {
 		return server.runSoftwareUpdateJob(ctx, job, update)
 	}
@@ -385,9 +550,8 @@ func (server *Server) runDiagnosticJob(ctx context.Context, job preferences.Job,
 	}
 	credentials := server.takeInventoryCredentials(job.ID)
 	if !server.config.Development && credentials.Token == "" && credentials.AdminToken == "" {
-		// Durable job rows intentionally do not contain host authority. A job
-		// that outlives the gateway process must not silently fall back to an
-		// empty or gateway-local host read.
+		// Jobs are in-memory only. Missing authority means the request
+		// context is gone; never fall back to gateway-local reads.
 		return nil, auth.ErrServiceUnavailable
 	}
 	jobContext := context.WithValue(ctx, hostCredentialsKey{}, credentials)

@@ -75,9 +75,9 @@ func (query LoginHistoryQuery) Validate() error {
 type loginHistoryQueryLogs func(context.Context, JournalQuery) (JournalPage, error)
 type loginHistoryIdentityResolver func(context.Context, string) LoginHistoryIdentity
 
-// QueryLoginHistory queries journald directly. It deliberately does not use
-// the preferences store, so potentially large or sensitive journal data is
-// never copied into SQLite.
+// QueryLoginHistory queries journald directly. It deliberately keeps no
+// server-side copy, so potentially large or sensitive journal data is
+// never stored.
 func QueryLoginHistory(ctx context.Context, query LoginHistoryQuery) (LoginHistoryPage, error) {
 	return QueryLoginHistoryWithDependencies(ctx, query, QueryLogs, resolveLoginHistoryIdentity)
 }

@@ -36,7 +36,6 @@ import (
 	"github.com/velopulent/tako/internal/idle"
 	"github.com/velopulent/tako/internal/metrics"
 	"github.com/velopulent/tako/internal/platform"
-	"github.com/velopulent/tako/internal/preferences"
 	"github.com/velopulent/tako/internal/session"
 	"go.uber.org/zap"
 )
@@ -47,7 +46,6 @@ type Server struct {
 	sessions               *session.Store
 	authenticator          auth.Authenticator
 	broker                 HostBroker
-	preferences            *preferences.Store
 	jobs                   *diagnosticJobManager
 	loginAttempts          *loginLimiter
 	logger                 *zap.Logger
@@ -131,16 +129,6 @@ func New(cfg config.Config) (*Server, error) {
 	if cfg.Development {
 		broker = fakeHostBroker{}
 	}
-	preferenceStore, err := preferences.Open(cfg.DataDir)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	if err := preferenceStore.RecoverJobs(context.Background()); err != nil {
-		_ = preferenceStore.Close()
-		cancel()
-		return nil, err
-	}
 	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
 	var server *Server
 	server = &Server{
@@ -148,7 +136,6 @@ func New(cfg config.Config) (*Server, error) {
 		sessions:      sessions,
 		authenticator: authenticator,
 		broker:        broker,
-		preferences:   preferenceStore,
 		loginAttempts: newLoginLimiter(5, time.Minute),
 		logger:        zap.L().Named("gateway"),
 		cancel:        cancel,
@@ -288,7 +275,7 @@ func New(cfg config.Config) (*Server, error) {
 		return server.hostBroker().ReadLoginHistory(ctx, credentialsFromContext(ctx), query)
 	}
 	server.followLogs = server.followJournal
-	server.jobs = newDiagnosticJobManager(ctx, preferenceStore, server.runDiagnosticJob)
+	server.jobs = newDiagnosticJobManager(ctx, server.runDiagnosticJob)
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
 	sessions.SetCountHook(func(count int) { server.idle.SetBusy("sessions", count > 0) })
 	server.jobs.SetBusyHook(func(busy bool) { server.idle.SetBusy("jobs", busy) })
@@ -436,8 +423,7 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	jobErr := server.jobs.Close(ctx)
 	server.clearUpdateTokens()
 	server.clearInventoryCredentials()
-	closeErr := server.preferences.Close()
-	return errors.Join(shutdownErr, closeErr, jobErr)
+	return errors.Join(shutdownErr, jobErr)
 }
 
 func (server *Server) routes() http.Handler {
@@ -460,17 +446,10 @@ func (server *Server) routes() http.Handler {
 			router.Get("/dashboard", server.dashboard)
 			router.Get("/metrics", server.metricHistory)
 			router.Get("/metrics/stream", server.metricStream)
-			router.Get("/preferences/monitoring", server.monitoringPreference)
-			router.With(server.requireCSRF).Put("/preferences/monitoring", server.updateMonitoringPreference)
 			router.Get("/terminal/ws", server.terminalWebSocket)
 			router.Get("/logs", server.logs)
 			router.Get("/logs/stream", server.logStream)
 			router.Get("/logs/export", server.logExport)
-			router.Get("/log-views", server.savedLogViews)
-			router.With(server.requireCSRF).Post("/log-views", server.createSavedLogView)
-			router.With(server.requireCSRF).Put("/log-views/{id}", server.updateSavedLogView)
-			router.With(server.requireCSRF).Delete("/log-views/{id}", server.deleteSavedLogView)
-			router.Get("/operations", server.operationReceipts)
 			router.Get("/jobs", server.jobsList)
 			router.With(server.requireCSRF).Post("/jobs/host-inventory", server.startHostInventoryJob)
 			router.Get("/jobs/{id}", server.jobDetail)
@@ -743,25 +722,6 @@ func (server *Server) adminDrop(writer http.ResponseWriter, request *http.Reques
 	}
 	server.logger.Info("administrative access dropped", zap.String("username", current.Identity.Username))
 	writer.WriteHeader(http.StatusNoContent)
-}
-
-func (server *Server) operationReceipts(writer http.ResponseWriter, request *http.Request) {
-	limit := 50
-	if raw := request.URL.Query().Get("limit"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			problem(writer, http.StatusBadRequest, "invalid-limit", "Limit must be a positive integer")
-			return
-		}
-		limit = parsed
-	}
-	items, err := server.preferences.OperationReceipts(request.Context(), limit)
-	if err != nil {
-		server.logger.Error("operation receipts failed", zap.Error(err))
-		problem(writer, http.StatusInternalServerError, "operations-unavailable", "Operation history is unavailable")
-		return
-	}
-	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
 }
 
 func (server *Server) logout(writer http.ResponseWriter, request *http.Request) {
@@ -1953,7 +1913,7 @@ func (server *Server) serviceAction(writer http.ResponseWriter, request *http.Re
 	}
 	if actionErr != nil {
 		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "service action failed", operation.Scope == "system")
-		problem(writer, http.StatusBadGateway, "service-action-failed", "Service action could not be completed; inspect operation history")
+		problem(writer, http.StatusBadGateway, "service-action-failed", "Service action could not be completed; inspect system logs")
 		return
 	}
 	server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", operation.Scope == "system")
@@ -2057,7 +2017,7 @@ func writeTimerError(writer http.ResponseWriter, err error) {
 	case "invalid-bridge-token", "user-bridge-unavailable":
 		problem(writer, http.StatusForbidden, code, "The authenticated user session is unavailable")
 	default:
-		problem(writer, http.StatusBadGateway, "timer-operation-failed", "Timer operation could not be completed; inspect operation history")
+		problem(writer, http.StatusBadGateway, "timer-operation-failed", "Timer operation could not be completed; inspect system logs")
 	}
 }
 
@@ -2152,23 +2112,19 @@ func writeOverrideError(writer http.ResponseWriter, err error) {
 	case "invalid-bridge-token", "user-bridge-unavailable":
 		problem(writer, http.StatusForbidden, code, "The authenticated user session is unavailable")
 	default:
-		problem(writer, http.StatusBadGateway, "service-override-failed", "Service override could not be completed; inspect operation history")
+		problem(writer, http.StatusBadGateway, "service-override-failed", "Service override could not be completed; inspect system logs")
 	}
 }
 
 func (server *Server) recordOperation(ctx context.Context, actor, target string, startedAt time.Time, result, failure string, administrative bool) {
-	_, err := server.preferences.RecordOperation(ctx, preferences.OperationReceipt{
-		Actor:          actor,
-		Target:         target,
-		StartedAt:      startedAt,
-		CompletedAt:    time.Now().UTC(),
-		Result:         result,
-		Error:          failure,
-		Administrative: administrative,
-	})
-	if err != nil {
-		server.logger.Warn("operation receipt failed", zap.String("target", target), zap.Error(err))
-	}
+	server.logger.Info("operation completed",
+		zap.String("actor", actor),
+		zap.String("target", target),
+		zap.String("result", result),
+		zap.String("error", failure),
+		zap.Bool("administrative", administrative),
+		zap.Duration("duration", time.Since(startedAt)),
+	)
 }
 
 func (server *Server) journalRequest(current session.Session, query platform.JournalQuery) auth.JournalRequest {
@@ -2343,133 +2299,6 @@ func encodeJournalCSV(entries []platform.LogEntry) ([]byte, error) {
 		return nil, err
 	}
 	return output.Bytes(), nil
-}
-
-type savedLogViewPayload struct {
-	Name             string                     `json:"name"`
-	Filter           preferences.SavedLogFilter `json:"filter"`
-	ExpectedRevision int64                      `json:"expectedRevision,omitempty"`
-}
-
-func journalQueryFromSavedFilter(filter preferences.SavedLogFilter) (platform.JournalQuery, error) {
-	query := platform.JournalQuery{
-		Limit:      1,
-		Boot:       filter.Boot,
-		Priority:   filter.Priority,
-		Unit:       filter.Unit,
-		Executable: filter.Executable,
-		Text:       filter.Text,
-		Details:    filter.Details,
-	}
-	for key, destination := range map[string]*time.Time{"since": &query.Since, "until": &query.Until} {
-		raw := map[string]string{"since": filter.Since, "until": filter.Until}[key]
-		if raw == "" {
-			continue
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, raw)
-		if err != nil {
-			return platform.JournalQuery{}, err
-		}
-		*destination = parsed
-	}
-	if err := query.Validate(); err != nil {
-		return platform.JournalQuery{}, err
-	}
-	return query, nil
-}
-
-func decodeSavedLogViewPayload(writer http.ResponseWriter, request *http.Request) (savedLogViewPayload, error) {
-	request.Body = http.MaxBytesReader(writer, request.Body, 32<<10)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	var payload savedLogViewPayload
-	if err := decoder.Decode(&payload); err != nil {
-		return savedLogViewPayload{}, err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			return savedLogViewPayload{}, errors.New("trailing request data")
-		}
-		return savedLogViewPayload{}, err
-	}
-	if _, err := journalQueryFromSavedFilter(payload.Filter); err != nil {
-		return savedLogViewPayload{}, err
-	}
-	return payload, nil
-}
-
-func (server *Server) savedLogViews(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	limit := 100
-	if raw := request.URL.Query().Get("limit"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > 100 {
-			problem(writer, http.StatusBadRequest, "invalid-log-view-limit", "Saved log view limit must be between 1 and 100")
-			return
-		}
-		limit = parsed
-	}
-	items, err := server.preferences.SavedLogViews(request.Context(), current.Identity.Username, limit)
-	if err != nil {
-		problem(writer, http.StatusInternalServerError, "log-views-unavailable", "Saved log views are unavailable")
-		return
-	}
-	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
-}
-
-func (server *Server) createSavedLogView(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	payload, err := decodeSavedLogViewPayload(writer, request)
-	if err != nil || payload.Name == "" {
-		problem(writer, http.StatusBadRequest, "invalid-log-view", "Saved log view name or filters are invalid")
-		return
-	}
-	item, err := server.preferences.CreateSavedLogView(request.Context(), current.Identity.Username, payload.Name, payload.Filter)
-	if err != nil {
-		writeSavedLogViewError(writer, err)
-		return
-	}
-	writeJSON(writer, http.StatusCreated, item)
-}
-
-func (server *Server) updateSavedLogView(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	payload, err := decodeSavedLogViewPayload(writer, request)
-	if err != nil || payload.Name == "" || payload.ExpectedRevision < 1 {
-		problem(writer, http.StatusBadRequest, "invalid-log-view", "Saved log view name, revision, or filters are invalid")
-		return
-	}
-	item, err := server.preferences.UpdateSavedLogView(request.Context(), current.Identity.Username, chi.URLParam(request, "id"), payload.Name, payload.Filter, payload.ExpectedRevision)
-	if err != nil {
-		writeSavedLogViewError(writer, err)
-		return
-	}
-	writeJSON(writer, http.StatusOK, item)
-}
-
-func (server *Server) deleteSavedLogView(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	revision, err := strconv.ParseInt(request.URL.Query().Get("expectedRevision"), 10, 64)
-	if err != nil || revision < 1 {
-		problem(writer, http.StatusBadRequest, "invalid-log-view-revision", "A positive expectedRevision is required")
-		return
-	}
-	if err := server.preferences.DeleteSavedLogView(request.Context(), current.Identity.Username, chi.URLParam(request, "id"), revision); err != nil {
-		writeSavedLogViewError(writer, err)
-		return
-	}
-	writer.WriteHeader(http.StatusNoContent)
-}
-
-func writeSavedLogViewError(writer http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, preferences.ErrConflict):
-		problem(writer, http.StatusConflict, "log-view-conflict", "The saved log view changed; refresh it before retrying")
-	case errors.Is(err, preferences.ErrSavedLogViewNotFound):
-		problem(writer, http.StatusNotFound, "log-view-not-found", "Saved log view was not found")
-	default:
-		problem(writer, http.StatusBadRequest, "invalid-log-view", "Saved log view name or filters are invalid")
-	}
 }
 
 func (server *Server) logStream(writer http.ResponseWriter, request *http.Request) {

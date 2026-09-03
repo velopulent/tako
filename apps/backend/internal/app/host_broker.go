@@ -100,7 +100,7 @@ func credentialsFromContext(ctx context.Context) auth.HostReadCredentials {
 }
 
 // hostCredentialsKey carries a short-lived job grant without putting an
-// authentication token in the durable job row or in the worker's generic API.
+// authentication token in the job record or in the worker's generic API.
 type hostCredentialsKey struct{}
 
 func credentialsForScope(ctx context.Context, scope string) auth.HostReadCredentials {
