@@ -126,6 +126,15 @@ func Updates(ctx context.Context) UpdateStatus {
 		}
 	}
 	status.LastChecked = time.Now().UTC().Format(time.RFC3339)
+	if status.Packages == nil {
+		status.Packages = []UpdatePackage{}
+	}
+	if status.Recovery.RestartServices == nil {
+		status.Recovery.RestartServices = []string{}
+	}
+	if status.Recovery.Hints == nil {
+		status.Recovery.Hints = []string{}
+	}
 	return status
 }
 
@@ -139,6 +148,9 @@ func UpdateRecoveryForBackend(ctx context.Context, backend string) UpdateRecover
 	if tracerResult := tryTracerRecovery(ctx); tracerResult != nil {
 		recovery.RebootRequired = len(tracerResult.Reboot) > 0
 		recovery.RestartServices = tracerResult.Daemons
+		if recovery.RestartServices == nil {
+			recovery.RestartServices = []string{}
+		}
 		recovery.RebootPackages = tracerResult.Reboot
 		recovery.ManualPackages = tracerResult.Manual
 		recovery.Authoritative = true
@@ -422,6 +434,9 @@ func fetchPackageKitDBus(ctx context.Context) ([]UpdatePackage, string, error) {
 		}
 	}
 	pkgs = sortUpdates(pkgs)
+	if pkgs == nil {
+		pkgs = []UpdatePackage{}
+	}
 	return pkgs, version, nil
 }
 
@@ -1005,6 +1020,15 @@ func PreviewUpdates(ctx context.Context, operation UpdateOperation, statusFn fun
 		return UpdatePreview{}, ErrUpdateUnavailable
 	}
 	current := statusFn(ctx)
+	if current.Packages == nil {
+		current.Packages = []UpdatePackage{}
+	}
+	if current.Recovery.RestartServices == nil {
+		current.Recovery.RestartServices = []string{}
+	}
+	if current.Recovery.Hints == nil {
+		current.Recovery.Hints = []string{}
+	}
 	preview := UpdatePreview{Operation: operation, Current: current, Selected: make([]UpdatePackage, 0), Changes: []string{}, Warnings: []string{}, Fingerprint: UpdateFingerprint(current)}
 	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != preview.Fingerprint {
 		preview.Stale = true

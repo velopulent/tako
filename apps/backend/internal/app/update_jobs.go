@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/packagekit"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
 	"go.uber.org/zap"
@@ -29,6 +30,24 @@ func (server *Server) previewUpdates(writer http.ResponseWriter, request *http.R
 	if err != nil {
 		writeUpdateProblem(writer, err)
 		return
+	}
+	if preview.Selected == nil {
+		preview.Selected = []platform.UpdatePackage{}
+	}
+	if preview.Changes == nil {
+		preview.Changes = []string{}
+	}
+	if preview.Warnings == nil {
+		preview.Warnings = []string{}
+	}
+	if preview.Current.Packages == nil {
+		preview.Current.Packages = []platform.UpdatePackage{}
+	}
+	if preview.Current.Recovery.RestartServices == nil {
+		preview.Current.Recovery.RestartServices = []string{}
+	}
+	if preview.Current.Recovery.Hints == nil {
+		preview.Current.Recovery.Hints = []string{}
 	}
 	writeJSON(writer, http.StatusOK, preview)
 }
@@ -261,6 +280,15 @@ func (server *Server) refreshUpdates(writer http.ResponseWriter, request *http.R
 		writeUpdateProblem(writer, err)
 		return
 	}
+	if status.Packages == nil {
+		status.Packages = []platform.UpdatePackage{}
+	}
+	if status.Recovery.RestartServices == nil {
+		status.Recovery.RestartServices = []string{}
+	}
+	if status.Recovery.Hints == nil {
+		status.Recovery.Hints = []string{}
+	}
 	server.syncUpdateNotifications(status)
 	writeJSON(writer, http.StatusOK, status)
 }
@@ -274,6 +302,9 @@ func (server *Server) updateLiveStatus(writer http.ResponseWriter, request *http
 	if err != nil {
 		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Live update status is unavailable")
 		return
+	}
+	if observation.Log == nil {
+		observation.Log = []packagekit.ActionLogEntry{}
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"live": observation.Live,
@@ -292,6 +323,14 @@ func (server *Server) updateHistory(writer http.ResponseWriter, request *http.Re
 		// failing the page.
 		writeJSON(writer, http.StatusOK, map[string]any{"items": []platform.UpdateHistoryEntry{}, "available": false})
 		return
+	}
+	if items == nil {
+		items = []platform.UpdateHistoryEntry{}
+	}
+	for index := range items {
+		if items[index].Packages == nil {
+			items[index].Packages = map[string]string{}
+		}
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"items": items, "available": true})
 }
@@ -335,6 +374,18 @@ func (server *Server) kpatchStatus(writer http.ResponseWriter, request *http.Req
 		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Kernel live-patch status is unavailable")
 		return
 	}
+	if status.Loaded == nil {
+		status.Loaded = []string{}
+	}
+	if status.Installed == nil {
+		status.Installed = []string{}
+	}
+	if settings.Missing == nil {
+		settings.Missing = []string{}
+	}
+	if settings.Unavailable == nil {
+		settings.Unavailable = []string{}
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":   status,
 		"settings": settings,
@@ -374,6 +425,12 @@ func (server *Server) applyKpatchSettings(writer http.ResponseWriter, request *h
 		return
 	}
 	server.recordOperation(request.Context(), current.Identity.Username, "system/updates/kpatch", startedAt, "succeeded", "", true)
+	if settings.Missing == nil {
+		settings.Missing = []string{}
+	}
+	if settings.Unavailable == nil {
+		settings.Unavailable = []string{}
+	}
 	writeJSON(writer, http.StatusOK, settings)
 }
 

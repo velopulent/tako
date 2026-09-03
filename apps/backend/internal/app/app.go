@@ -2363,6 +2363,15 @@ func (server *Server) updates(writer http.ResponseWriter, request *http.Request)
 	if status.Fingerprint == "" {
 		status.Fingerprint = platform.UpdateFingerprint(status)
 	}
+	if status.Packages == nil {
+		status.Packages = []platform.UpdatePackage{}
+	}
+	if status.Recovery.RestartServices == nil {
+		status.Recovery.RestartServices = []string{}
+	}
+	if status.Recovery.Hints == nil {
+		status.Recovery.Hints = []string{}
+	}
 	server.syncUpdateNotifications(status)
 	writeJSON(writer, http.StatusOK, status)
 }
