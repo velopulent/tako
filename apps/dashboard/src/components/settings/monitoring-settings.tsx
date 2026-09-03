@@ -34,8 +34,8 @@ export function MonitoringSettings({
       <CardHeader>
         <CardTitle>Monitoring</CardTitle>
         <CardDescription>
-          Default refresh interval shared by browsers without a page-specific
-          override. Metric history is retained in memory for 24 hours.
+          Default refresh interval stored in this browser. Metric history is
+          retained in memory for 24 hours.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -49,7 +49,7 @@ export function MonitoringSettings({
             <AlertDescription>
               {loadError
                 ? "Try reloading this page before changing the setting."
-                : "The previous server value remains active."}
+                : "The previous local value remains active."}
             </AlertDescription>
           </Alert>
         ) : null}

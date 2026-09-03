@@ -25,41 +25,17 @@ function renderSettings() {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  localStorage.clear()
   document.documentElement.classList.remove("dark")
 })
 
 describe("SettingsPage", () => {
-  it("keeps the monitoring field pending while the server preference loads", async () => {
-    const never = new Promise<Response>(() => {})
+  it("reads the monitoring default from this browser", async () => {
+    localStorage.setItem("tako-monitoring-default:v1", "30s")
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const path = String(input)
-        if (path.endsWith("/preferences/monitoring")) return never
-        if (path.endsWith("/capabilities"))
-          return Promise.resolve(jsonResponse({ capabilities: [] }))
-        return Promise.resolve(jsonResponse({ csrfToken: "token" }))
-      })
-    )
-
-    const { container } = renderSettings()
-
-    expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull()
-    expect(screen.queryByText("Default refresh interval")).toBeNull()
-  })
-
-  it("shows preference errors and the empty capability state", async () => {
-    document.documentElement.classList.add("dark")
-    Object.defineProperty(window, "innerWidth", {
-      configurable: true,
-      value: 375,
-    })
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const path = String(input)
-        if (path.endsWith("/preferences/monitoring"))
-          return Promise.resolve(jsonResponse({ code: "unavailable" }, 500))
         if (path.endsWith("/capabilities"))
           return Promise.resolve(jsonResponse({ capabilities: [] }))
         return Promise.resolve(jsonResponse({ csrfToken: "token" }))
@@ -68,41 +44,30 @@ describe("SettingsPage", () => {
 
     renderSettings()
 
-    expect(
-      await screen.findByText("Could not load monitoring preference")
-    ).toBeTruthy()
-    expect(
-      await screen.findByText("No optional capabilities detected")
-    ).toBeTruthy()
+    expect((await screen.findByRole("combobox")).textContent).toContain("30 seconds")
   })
 
-  it("saves a keyboard-selected interval with the current revision", async () => {
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const path = String(input)
-        if (path.endsWith("/preferences/monitoring") && init?.method === "PUT")
-          return jsonResponse({ defaultInterval: "30s", revision: 4 })
-        if (path.endsWith("/preferences/monitoring"))
-          return jsonResponse({ defaultInterval: "1m", revision: 3 })
-        if (path.endsWith("/capabilities"))
-          return jsonResponse({
-            capabilities: [
-              {
-                id: "services",
-                state: "ready",
-                backend: "systemd",
-                readable: true,
-                mutable: true,
-                rollback: false,
-                readAuthority: "session",
-                mutationAuthority: "administrative",
-                contract: "dbus",
-              },
-            ],
-          })
-        return jsonResponse({ csrfToken: "csrf-token" })
-      }
-    )
+  it("saves a keyboard-selected interval locally", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.endsWith("/capabilities"))
+        return jsonResponse({
+          capabilities: [
+            {
+              id: "services",
+              state: "ready",
+              backend: "systemd",
+              readable: true,
+              mutable: true,
+              rollback: false,
+              readAuthority: "session",
+              mutationAuthority: "administrative",
+              contract: "dbus",
+            },
+          ],
+        })
+      return jsonResponse({ csrfToken: "csrf-token" })
+    })
     vi.stubGlobal("fetch", fetchMock)
     const user = userEvent.setup()
     renderSettings()
@@ -116,14 +81,14 @@ describe("SettingsPage", () => {
     await user.keyboard("{Enter}")
 
     await vi.waitFor(() => {
-      const put = fetchMock.mock.calls.find(
-        ([, init]) => init?.method === "PUT"
-      )
-      expect(put).toBeTruthy()
-      expect(put?.[1]?.body).toBe(
-        JSON.stringify({ defaultInterval: "30s", expectedRevision: 3 })
-      )
+      expect(localStorage.getItem("tako-monitoring-default:v1")).toBe("30s")
     })
+    expect(
+      fetchMock.mock.calls.some(
+        (call) =>
+          (call as [RequestInfo | URL, RequestInit?])[1]?.method === "PUT"
+      )
+    ).toBe(false)
     expect(screen.getByText("systemd")).toBeTruthy()
     expect(screen.getByText("Read · Write · No rollback")).toBeTruthy()
     expect(screen.getByText("Contract: dbus")).toBeTruthy()
