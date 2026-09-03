@@ -13,11 +13,33 @@ OVERLAY_SYNC="/usr/local/libexec/tako-overlay-sync"
 SUDOERS_FILE="/etc/sudoers.d/tako-host"
 DIST="$ROOT/apps/backend/internal/dashboard/dist"
 OVERLAY="/run/tako/dashboard"
+# Vite dev server for host-dev HMR. The gateway reverse-proxies non-API
+# traffic here (TAKO_VITE_URL) so the browser stays on the gateway origin
+# (TLS, cookies, CSRF) while Vite provides instant updates.
+VITE_DEV_URL="http://127.0.0.1:5173"
 CONFIG_DIR="/etc/tako"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 UNIT_DIR="/etc/systemd/system"
 HOST_BIN_FCONTEXT='/usr/local/libexec/tako'
 DROPIN_MARKER="# Managed by tools/tako-host — do not edit by hand"
+
+# --- pretty logs (color only on a TTY, honors NO_COLOR) ---
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  C_RESET=$'\e[0m' C_BOLD=$'\e[1m' C_DIM=$'\e[2m'
+  C_CYAN=$'\e[36m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m'
+  C_RED=$'\e[31m' C_BLUE=$'\e[34m'
+else
+  C_RESET='' C_BOLD='' C_DIM=''
+  C_CYAN='' C_GREEN='' C_YELLOW=''
+  C_RED='' C_BLUE=''
+fi
+
+log_step() { printf '%s==>%s %s%s%s\n' "$C_CYAN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
+log_ok() { printf '%s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+log_info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_RESET"; }
+log_warn() { printf '%s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+log_error() { printf '%s✗ %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; }
+log_run() { printf '  %s$%s %s\n' "$C_BLUE" "$C_RESET" "$*"; }
 
 usage() {
   cat <<'EOF'
@@ -29,7 +51,7 @@ usage: tools/tako-host <command>
   stop       Stop and disable Tako units
   uninstall  Stop units and remove host files installed by setup
   status     Show unit and overlay status
-  watch      Build once, start host stack, then vite build --watch
+  watch      Build once, start host stack, then vite dev (HMR via gateway)
 
 Linux only. Prefer `bun run dev` (calls watch) after `sudo tools/tako-host setup`.
 EOF
@@ -37,7 +59,7 @@ EOF
 
 need_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
-    echo "tools/tako-host: this command needs root (try: sudo $0 $*)" >&2
+    log_error "tools/tako-host: this command needs root (try: sudo $0 $*)"
     exit 1
   fi
 }
@@ -92,18 +114,22 @@ detect_pam_source() {
 }
 
 ensure_session_group() {
+  log_info "session group: tako-session"
   if [[ -f "$PACKAGING/sysusers.d/tako.conf" ]]; then
     install -d -m 0755 /usr/lib/sysusers.d
     install -m 0644 "$PACKAGING/sysusers.d/tako.conf" /usr/lib/sysusers.d/tako.conf
+    log_run "systemd-sysusers /usr/lib/sysusers.d/tako.conf"
     systemd-sysusers /usr/lib/sysusers.d/tako.conf
   fi
   if ! getent group tako-session >/dev/null; then
+    log_run "groupadd --system tako-session"
     groupadd --system tako-session
   fi
 }
 
 install_unit() {
   local name="$1"
+  log_info "unit: $UNIT_DIR/$name"
   install -m 0644 "$PACKAGING/systemd/$name" "$UNIT_DIR/$name"
 }
 
@@ -112,6 +138,7 @@ write_dropin() {
   local body="$2"
   local dir="$UNIT_DIR/${unit}.d"
   mkdir -p "$dir"
+  log_info "drop-in: $dir/10-tako-host.conf"
   cat >"$dir/10-tako-host.conf" <<EOF
 $DROPIN_MARKER
 [Service]
@@ -121,9 +148,10 @@ EOF
 
 install_host_binary() {
   if [[ ! -x "$BIN" ]]; then
-    echo "tools/tako-host: missing $BIN — build first (bun nx build backend)" >&2
+    log_error "tools/tako-host: missing $BIN — build first (bun nx build backend)"
     exit 1
   fi
+  log_info "binary: $BIN → $HOST_BIN"
   install -d -m 0755 "$(dirname "$HOST_BIN")"
   install -m 0755 "$BIN" "$HOST_BIN"
   label_host_binary
@@ -189,6 +217,7 @@ EOF
 }
 
 sync_overlay() {
+  log_info "overlay: $DIST → $OVERLAY"
   systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf 2>/dev/null || true
   mkdir -p "$DIST"
   if [[ -x "$OVERLAY_SYNC" ]]; then
@@ -214,13 +243,16 @@ run_overlay_sync() {
     return
   fi
   if [[ -x "$OVERLAY_SYNC" ]] && sudo -n "$OVERLAY_SYNC" 2>/dev/null; then
+    log_info "overlay synced via NOPASSWD helper"
     return
   fi
+  log_info "overlay sync needs root once (sudo)"
   sudo "$ROOT/tools/tako-host" _sync_overlay
 }
 
 remove_legacy_sync_units() {
   # Old host-dev used a systemd path unit that watched /home and failed.
+  log_info "cleanup: legacy tako-dashboard-sync units"
   systemctl stop tako-dashboard-sync.path tako-dashboard-sync.service 2>/dev/null || true
   systemctl disable tako-dashboard-sync.path tako-dashboard-sync.service 2>/dev/null || true
   rm -f "$UNIT_DIR/tako-dashboard-sync.service" "$UNIT_DIR/tako-dashboard-sync.path"
@@ -229,10 +261,14 @@ remove_legacy_sync_units() {
 
 write_host_dropins() {
   # Binary lives outside /home (ProtectHome). Dashboard is copied to /run/tako,
-  # not bind-mounted from the checkout.
+  # not bind-mounted from the checkout. TAKO_VITE_URL enables same-origin HMR:
+  # when `watch` runs `vite dev`, the gateway proxies to it; otherwise it
+  # falls back to the built overlay/embed assets.
+  log_info "drop-ins: gateway → $HOST_BIN + TAKO_DASHBOARD_DIR=$OVERLAY + TAKO_VITE_URL=$VITE_DEV_URL"
   write_dropin tako.service "ExecStart=
 ExecStart=$HOST_BIN serve --config $CONFIG_FILE
-Environment=TAKO_DASHBOARD_DIR=$OVERLAY"
+Environment=TAKO_DASHBOARD_DIR=$OVERLAY
+Environment=TAKO_VITE_URL=$VITE_DEV_URL"
 
   write_dropin tako-sessiond.service "ExecStart=
 ExecStart=$HOST_BIN sessiond --socket /run/tako/session.sock --config $CONFIG_FILE"
@@ -241,24 +277,34 @@ ExecStart=$HOST_BIN sessiond --socket /run/tako/session.sock --config $CONFIG_FI
 cmd_setup() {
   need_root setup
 
+  log_step "[1/8] session group + PAM + tmpfiles"
   ensure_session_group
 
+  pam_source="$(detect_pam_source)"
+  log_info "PAM: $pam_source → /etc/pam.d/tako"
   install -d -m 0755 "$CONFIG_DIR"
-  install -m 0644 "$(detect_pam_source)" /etc/pam.d/tako
+  install -m 0644 "$pam_source" /etc/pam.d/tako
+  log_info "tmpfiles: $PACKAGING/tmpfiles.d/tako.conf → /etc/tmpfiles.d/tako.conf"
   install -m 0644 "$PACKAGING/tmpfiles.d/tako.conf" /etc/tmpfiles.d/tako.conf
   systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf
 
   if [[ -d /usr/share/polkit-1/actions ]] && [[ -f "$PACKAGING/polkit/org.velopulent.tako.policy" ]]; then
+    log_info "polkit: org.velopulent.tako.policy → /usr/share/polkit-1/actions/"
     install -m 0644 "$PACKAGING/polkit/org.velopulent.tako.policy" \
       /usr/share/polkit-1/actions/org.velopulent.tako.policy
+  else
+    log_info "polkit: skipped (no actions dir or policy file)"
   fi
 
+  log_step "[2/8] systemd units"
   install_unit tako.service
   install_unit tako.socket
   install_unit tako-sessiond.service
   install_unit tako-sessiond.socket
 
+  log_step "[3/8] config $CONFIG_FILE"
   if [[ ! -f "$CONFIG_FILE" ]]; then
+    log_info "writing default config (existing file preserved on re-run)"
     cat >"$CONFIG_FILE" <<EOF
 [server]
 address = "127.0.0.1:9090"
@@ -277,37 +323,58 @@ EOF
   fi
   chown root:tako-session "$CONFIG_FILE"
   chmod 0640 "$CONFIG_FILE"
+  log_ok "config ready ($CONFIG_FILE, root:tako-session 0640)"
 
   install -d -m 0700 /var/lib/tako
+  log_info "state dir: /var/lib/tako (0700)"
 
   # Ensure the checkout dist exists so the bind path is valid at first start.
+  log_step "[4/8] checkout dashboard dist"
   mkdir -p "$DIST"
   if [[ ! -f "$DIST/index.html" ]]; then
+    log_warn "dist/index.html missing — writing placeholder (run bun run dev to build)"
     printf '%s\n' '<!doctype html><title>Tako</title><p>Build the dashboard (bun run dev).</p>' >"$DIST/index.html"
+  else
+    log_ok "dist ready ($DIST/index.html)"
   fi
 
+  log_step "[5/8] binary"
   if [[ ! -x "$BIN" ]]; then
-    echo "Building $BIN…"
+    log_info "no $BIN yet — building now…"
     build_binary
+  else
+    log_ok "checkout binary present ($BIN)"
   fi
+  log_info "installing host binary"
   install_host_binary
+  log_ok "host binary ready ($HOST_BIN)"
+  log_step "[6/8] host drop-ins + overlay helper"
   write_host_dropins
   write_overlay_sync
+  log_step "[7/8] dashboard overlay"
   sync_overlay
+  log_ok "overlay synced ($OVERLAY)"
+  log_step "[8/8] systemd daemon + sockets"
   remove_legacy_sync_units
 
+  log_run "systemctl daemon-reload"
   systemctl daemon-reload
   systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf
+  log_run "systemctl enable --now tako-sessiond.socket tako.socket"
   systemctl enable --now tako-sessiond.socket
   systemctl enable --now tako.socket
   systemctl disable tako.service 2>/dev/null || true
   systemctl stop tako.service 2>/dev/null || true
 
-  echo "https://127.0.0.1:9090"
+  log_ok "setup complete — open ${C_BOLD}https://127.0.0.1:9090${C_RESET}"
+  log_info "day-to-day: bun run dev (gateway + Vite HMR) · logs: journalctl -u tako.service -u tako-sessiond.service -f"
 }
 
 build_binary() {
+  log_step "building $BIN (bun nx build backend)"
+  log_run "bun nx build backend"
   run_as_user "cd '$ROOT' && command -v bun >/dev/null || { echo 'tools/tako-host: bun not found (install from https://bun.sh)' >&2; exit 1; }; bun nx build backend"
+  log_ok "build finished ($BIN)"
 }
 
 refresh_overlay() {
@@ -323,9 +390,10 @@ units_installed() {
 
 cmd_reload() {
   if ! units_installed; then
-    echo "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup" >&2
+    log_error "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup"
     exit 1
   fi
+  log_step "reload: rebuild binary + restart units"
   build_binary
   if [[ "$(id -u)" -eq 0 ]]; then
     refresh_overlay
@@ -333,60 +401,78 @@ cmd_reload() {
     write_host_dropins
     write_overlay_sync
     remove_legacy_sync_units
+    log_run "systemctl daemon-reload + restart sockets"
     systemctl daemon-reload
     systemctl restart tako-sessiond.socket tako.socket
     systemctl try-restart tako.service tako-sessiond.service
+    log_ok "reload complete — https://127.0.0.1:9090"
   else
+    log_info "escalating restart to root…"
     sudo "$ROOT/tools/tako-host" _restart
+    log_ok "reload complete — https://127.0.0.1:9090"
   fi
 }
 
 cmd_restart_as_root() {
   need_root _restart
+  log_step "restart (as root): overlay + binary + units"
   refresh_overlay
   install_host_binary
   write_host_dropins
   write_overlay_sync
   remove_legacy_sync_units
+  log_run "systemctl daemon-reload + restart sockets"
   systemctl daemon-reload
   systemctl restart tako-sessiond.socket tako.socket
   systemctl try-restart tako.service tako-sessiond.service
+  log_ok "restart complete"
 }
 
 cmd_start() {
   if ! units_installed; then
-    echo "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup" >&2
+    log_error "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup"
     exit 1
   fi
   if [[ ! -x "$BIN" ]]; then
+    log_warn "no $BIN — building first…"
     build_binary
   fi
   if [[ "$(id -u)" -eq 0 ]]; then
     refresh_overlay
+    log_run "systemctl start tako-sessiond.socket tako.socket"
     systemctl start tako-sessiond.socket tako.socket
+    log_ok "units started — https://127.0.0.1:9090"
   else
+    log_info "escalating start to root…"
     sudo "$ROOT/tools/tako-host" _start_root
+    log_ok "units started — https://127.0.0.1:9090"
   fi
 }
 
 cmd_start_root() {
   need_root _start_root
+  log_step "start (as root)"
   refresh_overlay
   if [[ -x "$BIN" ]]; then
     install_host_binary
   fi
   systemd-tmpfiles --create /etc/tmpfiles.d/tako.conf 2>/dev/null || true
+  log_run "systemctl start tako-sessiond.socket tako.socket"
   systemctl start tako-sessiond.socket tako.socket
+  log_ok "units started"
 }
 
 cmd_stop() {
   if [[ "$(id -u)" -ne 0 ]]; then
+    log_info "escalating stop to root…"
     sudo "$ROOT/tools/tako-host" stop
     return
   fi
+  log_step "stopping + disabling Tako units"
   remove_legacy_sync_units
   systemctl stop tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
   systemctl disable tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
+  log_ok "stopped"
 }
 
 remove_overlay() {
@@ -396,13 +482,13 @@ remove_overlay() {
   fi
   if [[ -d "$OVERLAY" ]] && mountpoint -q "$OVERLAY" 2>/dev/null; then
     umount "$OVERLAY" || umount -l "$OVERLAY" || {
-      echo "tools/tako-host: could not unmount $OVERLAY; leaving it in place" >&2
+      log_warn "tools/tako-host: could not unmount $OVERLAY; leaving it in place"
       return
     }
   fi
   if [[ -d "$OVERLAY" ]]; then
     if mountpoint -q "$OVERLAY" 2>/dev/null; then
-      echo "tools/tako-host: $OVERLAY still mounted; not removing" >&2
+      log_warn "tools/tako-host: $OVERLAY still mounted; not removing"
       return
     fi
     rm -rf "$OVERLAY"
@@ -413,9 +499,12 @@ remove_overlay() {
 
 cmd_uninstall() {
   need_root uninstall
+  log_step "uninstall: stopping units + removing host files"
   remove_legacy_sync_units
+  log_run "systemctl stop + disable tako.*"
   systemctl stop tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
   systemctl disable tako.service tako.socket tako-sessiond.service tako-sessiond.socket 2>/dev/null || true
+  log_info "removing units, PAM, tmpfiles, sysusers, polkit, $HOST_BIN, $OVERLAY_SYNC"
   rm -f "$UNIT_DIR/tako.service" "$UNIT_DIR/tako.socket" \
     "$UNIT_DIR/tako-sessiond.service" "$UNIT_DIR/tako-sessiond.socket"
   rm -rf "$UNIT_DIR/tako.service.d" "$UNIT_DIR/tako-sessiond.service.d"
@@ -428,44 +517,38 @@ cmd_uninstall() {
   fi
   remove_overlay
   systemctl daemon-reload
+  log_ok "uninstalled (config/state in /etc/tako + /var/lib/tako left in place)"
 }
 
 cmd_status() {
-  echo "checkout: $BIN$([ -x "$BIN" ] && echo ' (present)' || echo ' (missing)')"
-  echo "host bin: $HOST_BIN$([ -x "$HOST_BIN" ] && echo ' (present)' || echo ' (missing)')"
-  echo "dist:     $DIST$([ -f "$DIST/index.html" ] && echo ' (ready)' || echo ' (missing index.html)')"
-  echo "overlay:  $OVERLAY (copy of dist, restorecon)"
+  log_step "tako-host status"
+  if [[ -x "$BIN" ]]; then log_ok "checkout: $BIN (present)"; else log_warn "checkout: $BIN (missing — run bun nx build backend)"; fi
+  if [[ -x "$HOST_BIN" ]]; then log_ok "host bin: $HOST_BIN (present)"; else log_warn "host bin: $HOST_BIN (missing — run reload)"; fi
+  if [[ -f "$DIST/index.html" ]]; then log_ok "dist:     $DIST (ready)"; else log_warn "dist:     $DIST (missing index.html)"; fi
+  log_info "overlay:  $OVERLAY (copy of dist, restorecon)"
+  log_info "vite:     $VITE_DEV_URL (gateway proxies here when vite dev is running)"
   if units_installed; then
+    log_info "units: installed — live state below"
     systemctl --no-pager --full status tako.service tako-sessiond.socket 2>/dev/null || true
   else
-    echo "units: not installed (sudo tools/tako-host setup)"
+    log_warn "units: not installed (sudo tools/tako-host setup)"
   fi
 }
 
 cmd_watch() {
   if ! units_installed; then
-    echo "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup" >&2
+    log_error "tools/tako-host: host stack not installed. Run: sudo tools/tako-host setup"
     exit 1
   fi
+  log_step "dev: build + start stack + Vite HMR"
   build_binary
   cmd_start
   run_overlay_sync
-  watch_overlay_loop &
-  local watch_pid=$!
-  trap 'kill "$watch_pid" 2>/dev/null || true' EXIT
-  run_as_user "cd '$ROOT/apps/dashboard' && bun x vite build --watch"
-}
-
-watch_overlay_loop() {
-  local last="" now
-  while true; do
-    now="$(stat -c %Y "$DIST/index.html" 2>/dev/null || echo 0)"
-    if [[ "$now" != "$last" ]]; then
-      last=$now
-      run_overlay_sync || true
-    fi
-    sleep 0.5
-  done
+  log_ok "gateway up at ${C_BOLD}https://127.0.0.1:9090${C_RESET} (log in with your UNIX user)"
+  log_info "vite dev at $VITE_DEV_URL — proxied through the gateway, HMR no refresh needed"
+  log_info "backend change? run ./tools/tako-host reload · logs: journalctl -u tako.service -u tako-sessiond.service -f"
+  log_run "bun x vite --host 127.0.0.1 --port 5173 --strictPort (in apps/dashboard)"
+  run_as_user "cd '$ROOT/apps/dashboard' && bun x vite --host 127.0.0.1 --port 5173 --strictPort"
 }
 
 main() {
@@ -486,7 +569,7 @@ main() {
       ;;
     -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 2 ;;
     *)
-      echo "unknown command: $cmd" >&2
+      log_error "unknown command: $cmd"
       usage
       exit 2
       ;;
