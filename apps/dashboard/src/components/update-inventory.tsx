@@ -1,23 +1,17 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  Shield,
   Bug,
-  Sparkles,
-  RefreshCw,
   Check,
+  RefreshCw,
   RotateCcw,
   Settings,
+  Shield,
+  Sparkles,
   TriangleAlert,
 } from "lucide-react"
-
-import { UpdateHistoryCard } from "@/components/update-history-card"
+import * as React from "react"
 import { AutoUpdatesCard } from "@/components/auto-updates-card"
 import { KpatchSettingsCard } from "@/components/kpatch-settings-card"
-import { ForeignUpdateAlert, UpdateLivePanel } from "@/components/update-live-panel"
-import { UpdateJobProgress } from "@/components/update-job-progress"
-import { activeUpdateJobStates } from "@/components/update-job-state"
-import { UpdatePackageTable } from "@/components/update-package-table"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -43,10 +37,22 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
-  api,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { UpdateHistoryCard } from "@/components/update-history-card"
+import { UpdateJobProgress } from "@/components/update-job-progress"
+import { activeUpdateJobStates } from "@/components/update-job-state"
+import {
+  ForeignUpdateAlert,
+  UpdateLivePanel,
+} from "@/components/update-live-panel"
+import { UpdatePackageTable } from "@/components/update-package-table"
+import {
   type AutoUpdatesConfig,
+  api,
   type DiagnosticJob,
   type SessionResponse,
   type UpdateLive,
@@ -72,9 +78,11 @@ function formatLastChecked(iso?: string) {
   const seconds = Math.round(diff / 1000)
   if (seconds < 45) return "Last checked: just now"
   const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `Last checked: ${minutes} minute${minutes === 1 ? "" : "s"} ago`
+  if (minutes < 60)
+    return `Last checked: ${minutes} minute${minutes === 1 ? "" : "s"} ago`
   const hours = Math.round(minutes / 60)
-  if (hours < 24) return `Last checked: ${hours} hour${hours === 1 ? "" : "s"} ago`
+  if (hours < 24)
+    return `Last checked: ${hours} hour${hours === 1 ? "" : "s"} ago`
   const days = Math.round(hours / 24)
   return `Last checked: ${days} day${days === 1 ? "" : "s"} ago`
 }
@@ -86,7 +94,8 @@ function getHighestSeverity(packages: UpdateStatus["packages"]) {
 }
 
 function CountBadge({ severity }: { severity: string }) {
-  if (severity === "security") return <Shield className="size-5 text-destructive" />
+  if (severity === "security")
+    return <Shield className="size-5 text-destructive" />
   if (severity === "bugfix") return <Bug className="size-5 text-amber-600" />
   return <Sparkles className="size-5 text-muted-foreground" />
 }
@@ -97,8 +106,10 @@ export function UpdateInventory() {
   const [selected, setSelected] = React.useState<string[]>([])
   const [jobID, setJobID] = React.useState(readSavedJob)
   const [dialogOpen, setDialogOpen] = React.useState(false)
-  const [pendingOperation, setPendingOperation] = React.useState<UpdateOperation | null>(null)
-  const [pendingPreview, setPendingPreview] = React.useState<UpdatePreview | null>(null)
+  const [pendingOperation, setPendingOperation] =
+    React.useState<UpdateOperation | null>(null)
+  const [pendingPreview, setPendingPreview] =
+    React.useState<UpdatePreview | null>(null)
 
   const query = useQuery({
     queryKey: ["updates"],
@@ -110,7 +121,8 @@ export function UpdateInventory() {
   })
   const job = useQuery({
     queryKey: ["update-job", jobID],
-    queryFn: () => api<{ job: DiagnosticJob; update?: UpdateObservation }>(`/jobs/${jobID}`),
+    queryFn: () =>
+      api<{ job: DiagnosticJob; update?: UpdateObservation }>(`/jobs/${jobID}`),
     enabled: jobID !== "",
     refetchInterval: (current) => {
       const state = current?.state?.data?.job?.state
@@ -148,7 +160,8 @@ export function UpdateInventory() {
   // lock is held, and our own metadata refresh for a progress bar.
   const foreignLive = useQuery({
     queryKey: ["updates-live"],
-    queryFn: () => api<{ live: UpdateLive; log: UpdateObservation["log"] }>("/updates/live"),
+    queryFn: () =>
+      api<{ live: UpdateLive; log: UpdateObservation["log"] }>("/updates/live"),
     enabled:
       ((query.data?.externalLock ?? false) && !ownJobRunning) ||
       refreshRequest.isPending,
@@ -161,12 +174,13 @@ export function UpdateInventory() {
   })
 
   // Auto-refresh: if cache never refreshed or >=1 day old, trigger refresh
+  // biome-ignore lint/correctness/useExhaustiveDependencies: effect intentionally triggers only off the refresh age; depending on the mutation object would re-fire on every mutation state change
   React.useEffect(() => {
     const secs = query.data?.timeSinceRefresh
     if (secs !== undefined && (secs < 0 || secs >= 24 * 3600)) {
       if (!refreshRequest.isPending) refreshRequest.mutate()
     }
-  }, [query.data?.timeSinceRefresh]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [query.data?.timeSinceRefresh])
 
   // Also refresh on visibility change
   React.useEffect(() => {
@@ -245,7 +259,9 @@ export function UpdateInventory() {
       const groupKey = pkg?.groupKey
       let groupNames: string[] = []
       if (groupKey) {
-        groupNames = query.data.packages.filter((p) => p.groupKey === groupKey).map((p) => p.name)
+        groupNames = query.data.packages
+          .filter((p) => p.groupKey === groupKey)
+          .map((p) => p.name)
       } else if (pkg?.dependencies?.length) {
         groupNames = [name, ...pkg.dependencies]
       } else {
@@ -258,7 +274,9 @@ export function UpdateInventory() {
           return current.filter((n) => !groupNames.includes(n))
         }
         const next = new Set(current)
-        groupNames.forEach((n) => next.add(n))
+        groupNames.forEach((n) => {
+          next.add(n)
+        })
         return Array.from(next)
       })
     },
@@ -274,21 +292,33 @@ export function UpdateInventory() {
       const securityNames = query.data.packages
         .filter((p) => p.severity === "security")
         .map((p) => p.name)
-      operation = { scope: "selected", packages: securityNames, expectedFingerprint: query.data.fingerprint }
+      operation = {
+        scope: "selected",
+        packages: securityNames,
+        expectedFingerprint: query.data.fingerprint,
+      }
     } else {
       // expand selected with dependencies already handled via toggle, but ensure deps included
       const expanded = new Set(selected)
       for (const name of selected) {
         const pkg = query.data.packages.find((p) => p.name === name)
-        pkg?.dependencies?.forEach((dep) => expanded.add(dep))
+        pkg?.dependencies?.forEach((dep) => {
+          expanded.add(dep)
+        })
         if (pkg?.groupKey) {
           query.data.packages
             .filter((p) => p.groupKey === pkg.groupKey)
-            .forEach((p) => expanded.add(p.name))
+            .forEach((p) => {
+              expanded.add(p.name)
+            })
         }
       }
       const packages = Array.from(expanded)
-      operation = { scope: "selected", packages, expectedFingerprint: query.data.fingerprint }
+      operation = {
+        scope: "selected",
+        packages,
+        expectedFingerprint: query.data.fingerprint,
+      }
     }
     setPendingOperation(operation)
     previewRequest.mutate(operation, {
@@ -320,11 +350,16 @@ export function UpdateInventory() {
   if (!query.data) return null
   const status = query.data
   const activeJob = job.data?.job
-  const actionError = previewRequest.error || applyRequest.error || cancelRequest.error
+  const actionError =
+    previewRequest.error || applyRequest.error || cancelRequest.error
 
   const total = status.packages.length
-  const securityCount = status.packages.filter((p) => p.severity === "security").length
-  const bugfixCount = status.packages.filter((p) => p.severity === "bugfix").length
+  const securityCount = status.packages.filter(
+    (p) => p.severity === "security"
+  ).length
+  const bugfixCount = status.packages.filter(
+    (p) => p.severity === "bugfix"
+  ).length
   const highestSeverity = getHighestSeverity(status.packages)
   const hasMixed = securityCount > 0 && securityCount < total
   const isLocked = status.externalLock
@@ -335,9 +370,15 @@ export function UpdateInventory() {
     const expanded = new Set(selected)
     for (const name of selected) {
       const pkg = status.packages.find((p) => p.name === name)
-      pkg?.dependencies?.forEach((dep) => expanded.add(dep))
+      pkg?.dependencies?.forEach((dep) => {
+        expanded.add(dep)
+      })
       if (pkg?.groupKey) {
-        status.packages.filter((p) => p.groupKey === pkg.groupKey).forEach((p) => expanded.add(p.name))
+        status.packages
+          .filter((p) => p.groupKey === pkg.groupKey)
+          .forEach((p) => {
+            expanded.add(p.name)
+          })
       }
     }
     return Array.from(expanded)
@@ -354,8 +395,20 @@ export function UpdateInventory() {
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <Button variant="outline" size="icon-sm" aria-label="Check for updates" onClick={handleRefresh} disabled={query.isFetching || refreshRequest.isPending}>
-                      <RefreshCw className={query.isFetching || refreshRequest.isPending ? "animate-spin" : ""} />
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label="Check for updates"
+                      onClick={handleRefresh}
+                      disabled={query.isFetching || refreshRequest.isPending}
+                    >
+                      <RefreshCw
+                        className={
+                          query.isFetching || refreshRequest.isPending
+                            ? "animate-spin"
+                            : ""
+                        }
+                      />
                     </Button>
                   }
                 />
@@ -369,7 +422,11 @@ export function UpdateInventory() {
                 <Check className="size-5 text-green-600 mt-0.5 shrink-0" />
                 <div>
                   <p className="text-sm font-medium">System is up to date</p>
-                  {status.lastChecked && <p className="text-xs text-muted-foreground">{formatLastChecked(status.lastChecked)}</p>}
+                  {status.lastChecked && (
+                    <p className="text-xs text-muted-foreground">
+                      {formatLastChecked(status.lastChecked)}
+                    </p>
+                  )}
                 </div>
               </div>
             ) : total > 0 ? (
@@ -385,8 +442,18 @@ export function UpdateInventory() {
                         ? `${total} updates available, including ${securityCount} security fix${securityCount === 1 ? "" : "es"}`
                         : `${total} update${total === 1 ? "" : "s"} available`}
                   </p>
-                  {status.lastChecked && <p className="text-xs text-muted-foreground">{formatLastChecked(status.lastChecked)}</p>}
-                  {bugfixCount > 0 && <p className="text-xs text-muted-foreground">{bugfixCount} bug fix{bugfixCount === 1 ? "" : "es"} · {total - securityCount - bugfixCount} enhancement{total - securityCount - bugfixCount === 1 ? "" : "s"}</p>}
+                  {status.lastChecked && (
+                    <p className="text-xs text-muted-foreground">
+                      {formatLastChecked(status.lastChecked)}
+                    </p>
+                  )}
+                  {bugfixCount > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {bugfixCount} bug fix{bugfixCount === 1 ? "" : "es"} ·{" "}
+                      {total - securityCount - bugfixCount} enhancement
+                      {total - securityCount - bugfixCount === 1 ? "" : "s"}
+                    </p>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -396,51 +463,73 @@ export function UpdateInventory() {
                 <RotateCcw className="size-4" />
                 <AlertTitle className="text-sm">Reboot required</AlertTitle>
                 <AlertDescription className="text-xs">
-                  {status.recovery?.hints?.join(" ") || status.recovery?.reason || "Reboot the host after the update job completes."}
-                  {status.recovery?.rebootPackages?.length ? ` Packages: ${status.recovery?.rebootPackages?.join(", ")}` : ""}
+                  {status.recovery?.hints?.join(" ") ||
+                    status.recovery?.reason ||
+                    "Reboot the host after the update job completes."}
+                  {status.recovery?.rebootPackages?.length
+                    ? ` Packages: ${status.recovery?.rebootPackages?.join(", ")}`
+                    : ""}
                 </AlertDescription>
               </Alert>
             )}
-            {!status.recovery?.rebootRequired && (status.recovery?.restartServices?.length ?? 0) > 0 && (
-              <Alert className="py-2">
-                <Settings className="size-4" />
-                <AlertTitle className="text-sm">Restart services</AlertTitle>
-                <AlertDescription className="space-y-1.5 text-xs">
-                  <p>{status.recovery?.restartServices.join(", ")}</p>
-                  <div className="flex flex-wrap gap-1.5 pt-0.5">
-                    {status.recovery?.restartServices.slice(0, 6).map((unit) => (
-                      <RestartServiceButton
-                        key={unit}
-                        unit={unit}
-                        csrfToken={session.data?.csrfToken ?? ""}
-                        disabled={!administrative}
-                      />
-                    ))}
-                  </div>
-                </AlertDescription>
-              </Alert>
-            )}
+            {!status.recovery?.rebootRequired &&
+              (status.recovery?.restartServices?.length ?? 0) > 0 && (
+                <Alert className="py-2">
+                  <Settings className="size-4" />
+                  <AlertTitle className="text-sm">Restart services</AlertTitle>
+                  <AlertDescription className="space-y-1.5 text-xs">
+                    <p>{status.recovery?.restartServices.join(", ")}</p>
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {status.recovery?.restartServices
+                        .slice(0, 6)
+                        .map((unit) => (
+                          <RestartServiceButton
+                            key={unit}
+                            unit={unit}
+                            csrfToken={session.data?.csrfToken ?? ""}
+                            disabled={!administrative}
+                          />
+                        ))}
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              )}
             {(status.recovery?.manualPackages?.length ?? 0) > 0 && (
               <Alert className="py-2">
                 <Settings className="size-4" />
-                <AlertTitle className="text-sm">Manual restart required</AlertTitle>
-                <AlertDescription className="text-xs">{status.recovery?.manualPackages?.join(", ")}</AlertDescription>
+                <AlertTitle className="text-sm">
+                  Manual restart required
+                </AlertTitle>
+                <AlertDescription className="text-xs">
+                  {status.recovery?.manualPackages?.join(", ")}
+                </AlertDescription>
               </Alert>
             )}
             {status.recovery && !status.recovery?.authoritative && (
-              <p className="text-xs text-muted-foreground">Advisory only; verify service state after applying updates.</p>
+              <p className="text-xs text-muted-foreground">
+                Advisory only; verify service state after applying updates.
+              </p>
             )}
             {isLocked && (
               <Alert variant="destructive" className="py-2">
                 <TriangleAlert className="size-4" />
-                <AlertTitle className="text-sm">Another package tool holds a lock</AlertTitle>
-                <AlertDescription className="text-xs">{status.lockReason || "Updates are paused until the other operation finishes."}</AlertDescription>
+                <AlertTitle className="text-sm">
+                  Another package tool holds a lock
+                </AlertTitle>
+                <AlertDescription className="text-xs">
+                  {status.lockReason ||
+                    "Updates are paused until the other operation finishes."}
+                </AlertDescription>
               </Alert>
             )}
             {!status.available && status.reason && (
               <Alert className="py-2">
-                <AlertTitle className="text-sm">Updates are unavailable</AlertTitle>
-                <AlertDescription className="text-xs">{status.reason}</AlertDescription>
+                <AlertTitle className="text-sm">
+                  Updates are unavailable
+                </AlertTitle>
+                <AlertDescription className="text-xs">
+                  {status.reason}
+                </AlertDescription>
               </Alert>
             )}
             {status.version && (
@@ -476,22 +565,26 @@ export function UpdateInventory() {
       )}
 
       {refreshRequest.isPending && foreignLive.data?.live?.active && (
-        <UpdateLivePanel observation={{ live: foreignLive.data.live, log: foreignLive.data.log ?? [] }} />
+        <UpdateLivePanel
+          observation={{
+            live: foreignLive.data.live,
+            log: foreignLive.data.log ?? [],
+          }}
+        />
       )}
 
-      {isLocked &&
-        foreignLive.data?.live?.active && (
-          <ForeignUpdateAlert
-            observation={{
-              live: foreignLive.data.live,
-              log: foreignLive.data.log ?? [],
-            }}
-            canceling={cancelForeignRequest.isPending}
-            onCancel={() =>
-              administrative ? cancelForeignRequest.mutate() : undefined
-            }
-          />
-        )}
+      {isLocked && foreignLive.data?.live?.active && (
+        <ForeignUpdateAlert
+          observation={{
+            live: foreignLive.data.live,
+            log: foreignLive.data.log ?? [],
+          }}
+          canceling={cancelForeignRequest.isPending}
+          onCancel={() =>
+            administrative ? cancelForeignRequest.mutate() : undefined
+          }
+        />
+      )}
 
       {activeJob && (
         <UpdateJobProgress
@@ -505,24 +598,45 @@ export function UpdateInventory() {
       <Card id="available-updates">
         <CardHeader>
           <CardTitle>Available updates</CardTitle>
-          {total > 0 && <CardDescription>{total} package{total === 1 ? "" : "s"} with advisories grouped</CardDescription>}
+          {total > 0 && (
+            <CardDescription>
+              {total} package{total === 1 ? "" : "s"} with advisories grouped
+            </CardDescription>
+          )}
           {total > 0 && (
             <CardAction className="flex flex-wrap gap-2">
               {scope === "all" && hasMixed && (
-                <Button variant="outline" disabled={!canInstall || previewRequest.isPending} onClick={() => initiateInstall("security")}>
-                  {previewRequest.isPending ? "Loading…" : "Install security updates"}
+                <Button
+                  variant="outline"
+                  disabled={!canInstall || previewRequest.isPending}
+                  onClick={() => initiateInstall("security")}
+                >
+                  {previewRequest.isPending
+                    ? "Loading…"
+                    : "Install security updates"}
                 </Button>
               )}
               {scope === "all" ? (
-                <Button disabled={!canInstall || previewRequest.isPending} onClick={() => initiateInstall("all")}>
-                  {securityCount === total ? "Install security updates" : "Install all updates"}
+                <Button
+                  disabled={!canInstall || previewRequest.isPending}
+                  onClick={() => initiateInstall("all")}
+                >
+                  {securityCount === total
+                    ? "Install security updates"
+                    : "Install all updates"}
                 </Button>
               ) : (
                 <Button
-                  disabled={!canInstall || selectedWithDeps.length === 0 || previewRequest.isPending}
+                  disabled={
+                    !canInstall ||
+                    selectedWithDeps.length === 0 ||
+                    previewRequest.isPending
+                  }
                   onClick={() => initiateInstall("selected")}
                 >
-                  {previewRequest.isPending ? "Loading…" : `Install selected (${selectedWithDeps.length})`}
+                  {previewRequest.isPending
+                    ? "Loading…"
+                    : `Install selected (${selectedWithDeps.length})`}
                 </Button>
               )}
             </CardAction>
@@ -533,14 +647,21 @@ export function UpdateInventory() {
             <Empty>
               <EmptyHeader>
                 <EmptyTitle>No installed-software updates</EmptyTitle>
-                <EmptyDescription>The selected backend reported no available updates.</EmptyDescription>
+                <EmptyDescription>
+                  The selected backend reported no available updates.
+                </EmptyDescription>
               </EmptyHeader>
             </Empty>
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">Update scope</span>
-                <div className="flex gap-2" role="group" aria-label="Update scope">
+                {/* biome-ignore lint/a11y/useSemanticElements: labeled scope-switcher button pair; a fieldset restyle is out of scope */}
+                <div
+                  className="flex gap-2"
+                  role="group"
+                  aria-label="Update scope"
+                >
                   <Button
                     type="button"
                     size="sm"
@@ -558,16 +679,31 @@ export function UpdateInventory() {
                     Selected packages
                   </Button>
                 </div>
-                <span className="text-xs text-muted-foreground">Preview the current inventory before starting a serialized update job.</span>
+                <span className="text-xs text-muted-foreground">
+                  Preview the current inventory before starting a serialized
+                  update job.
+                </span>
               </div>
 
-              <UpdatePackageTable packages={status.packages} selected={selectedWithDeps} onToggle={handleToggle} selectable={scope === "selected"} />
+              <UpdatePackageTable
+                packages={status.packages}
+                selected={selectedWithDeps}
+                onToggle={handleToggle}
+                selectable={scope === "selected"}
+              />
 
               {scope === "selected" && selectedWithDeps.length === 0 && (
-                <p className="text-sm text-muted-foreground">Select at least one advisory to install selected updates. Dependent packages in the same advisory are auto-selected and cannot be toggled individually.</p>
+                <p className="text-sm text-muted-foreground">
+                  Select at least one advisory to install selected updates.
+                  Dependent packages in the same advisory are auto-selected and
+                  cannot be toggled individually.
+                </p>
               )}
               <p className="text-xs text-muted-foreground">
-                {status.backend} · {status.contract} {status.lastChecked ? `· ${formatLastChecked(status.lastChecked)}` : ""}
+                {status.backend} · {status.contract}{" "}
+                {status.lastChecked
+                  ? `· ${formatLastChecked(status.lastChecked)}`
+                  : ""}
               </p>
             </>
           )}
@@ -577,24 +713,47 @@ export function UpdateInventory() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{pendingPreview?.allowed ? "Confirm updates" : "Update cannot start"}</DialogTitle>
+            <DialogTitle>
+              {pendingPreview?.allowed
+                ? "Confirm updates"
+                : "Update cannot start"}
+            </DialogTitle>
             <DialogDescription>
-              {pendingPreview?.allowed ? "Review the preview and confirm to start the update job." : "The preview indicates the operation cannot proceed."}
+              {pendingPreview?.allowed
+                ? "Review the preview and confirm to start the update job."
+                : "The preview indicates the operation cannot proceed."}
             </DialogDescription>
             <div className="space-y-2 pt-2 text-sm">
               {previewRequest.isPending ? (
                 <p>Loading preview…</p>
               ) : pendingPreview ? (
                 <>
-                  <p>{pendingPreview.reason || pendingPreview.changes.join(", ") || `Update ${pendingPreview.selected.length} package${pendingPreview.selected.length === 1 ? "" : "s"}`}</p>
-                  {pendingPreview.warnings.length > 0 && <p className="text-xs text-muted-foreground">{pendingPreview.warnings.join(" ")}</p>}
-                  {pendingPreview.stale && <p className="text-destructive text-xs">Inventory changed; refresh before applying.</p>}
+                  <p>
+                    {pendingPreview.reason ||
+                      pendingPreview.changes.join(", ") ||
+                      `Update ${pendingPreview.selected.length} package${pendingPreview.selected.length === 1 ? "" : "s"}`}
+                  </p>
+                  {pendingPreview.warnings.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {pendingPreview.warnings.join(" ")}
+                    </p>
+                  )}
+                  {pendingPreview.stale && (
+                    <p className="text-destructive text-xs">
+                      Inventory changed; refresh before applying.
+                    </p>
+                  )}
                   {pendingPreview.selected.length > 0 && (
                     <div className="rounded-md border bg-muted/20 p-2 max-h-40 overflow-auto text-xs">
                       {pendingPreview.selected.map((p) => (
-                        <div key={p.name} className="flex justify-between gap-2">
+                        <div
+                          key={p.name}
+                          className="flex justify-between gap-2"
+                        >
                           <span className="font-medium">{p.name}</span>
-                          <span className="text-muted-foreground truncate">{p.candidateVersion}</span>
+                          <span className="text-muted-foreground truncate">
+                            {p.candidateVersion}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -604,17 +763,29 @@ export function UpdateInventory() {
             </div>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={applyRequest.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => setDialogOpen(false)}
+              disabled={applyRequest.isPending}
+            >
               Cancel
             </Button>
             <Button
-              disabled={!pendingPreview?.allowed || applyRequest.isPending || !session.data?.csrfToken}
+              disabled={
+                !pendingPreview?.allowed ||
+                applyRequest.isPending ||
+                !session.data?.csrfToken
+              }
               onClick={handleConfirm}
             >
               {applyRequest.isPending ? "Starting…" : "Confirm and install"}
             </Button>
           </DialogFooter>
-          {!session.data?.csrfToken && <p className="text-xs text-muted-foreground text-right">Sign-in required to apply updates.</p>}
+          {!session.data?.csrfToken && (
+            <p className="text-xs text-muted-foreground text-right">
+              Sign-in required to apply updates.
+            </p>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -651,7 +822,9 @@ function RestartServiceButton({
         disabled={disabled || restart.isPending}
         onClick={() => setConfirmOpen(true)}
       >
-        {restart.isPending ? "Restarting…" : `Restart ${unit.replace(/\.service$/, "")}`}
+        {restart.isPending
+          ? "Restarting…"
+          : `Restart ${unit.replace(/\.service$/, "")}`}
       </Button>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
@@ -662,10 +835,18 @@ function RestartServiceButton({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => setConfirmOpen(false)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setConfirmOpen(false)}
+          >
             Cancel
           </Button>
-          <Button variant="destructive" size="sm" onClick={() => restart.mutate()}>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => restart.mutate()}
+          >
             Restart service
           </Button>
         </DialogFooter>

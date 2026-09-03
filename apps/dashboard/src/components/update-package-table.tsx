@@ -1,22 +1,15 @@
+import { Bug, ChevronDown, ChevronRight, Shield, Sparkles } from "lucide-react"
 import * as React from "react"
-import {
-  Shield,
-  Bug,
-  Sparkles,
-  ChevronRight,
-  ChevronDown,
-} from "lucide-react"
-
-import type { UpdatePackage } from "@/lib/api"
 import { AdvisoryMarkdown } from "@/components/advisory-markdown"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import type { UpdatePackage } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 function getSeverityIcon(severity?: string) {
@@ -54,7 +47,10 @@ type AdvisoryGroup = {
 function buildGroups(packages: UpdatePackage[]): AdvisoryGroup[] {
   const map = new Map<string, UpdatePackage[]>()
   for (const pkg of packages) {
-    const key = pkg.groupKey?.trim() || pkg.advisoryId?.trim() || `${pkg.candidateVersion}::${pkg.summary ?? ""}::${pkg.severity ?? ""}`
+    const key =
+      pkg.groupKey?.trim() ||
+      pkg.advisoryId?.trim() ||
+      `${pkg.candidateVersion}::${pkg.summary ?? ""}::${pkg.severity ?? ""}`
     const list = map.get(key)
     if (list) list.push(pkg)
     else map.set(key, [pkg])
@@ -62,14 +58,18 @@ function buildGroups(packages: UpdatePackage[]): AdvisoryGroup[] {
   const groups: AdvisoryGroup[] = []
   for (const [key, pkgs] of map.entries()) {
     pkgs.sort((a, b) => a.name.localeCompare(b.name))
-    const severityRank = (s?: string) => (s === "security" ? 3 : s === "bugfix" ? 2 : 1)
-    const highest = [...pkgs].sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0]
+    const severityRank = (s?: string) =>
+      s === "security" ? 3 : s === "bugfix" ? 2 : 1
+    const highest = [...pkgs].sort(
+      (a, b) => severityRank(b.severity) - severityRank(a.severity)
+    )[0]
     groups.push({
       key,
       packages: pkgs,
       version: pkgs[0]?.candidateVersion ?? "",
       severity: highest?.severity ?? "enhancement",
-      description: highest?.description ?? highest?.details ?? highest?.summary ?? "",
+      description:
+        highest?.description ?? highest?.details ?? highest?.summary ?? "",
     })
   }
   groups.sort((a, b) => {
@@ -104,7 +104,9 @@ export function UpdatePackageTable({
       return next
     })
 
-  const allSelected = groups.length > 0 && groups.every((g) => g.packages.every((p) => selectedSet.has(p.name)))
+  const allSelected =
+    groups.length > 0 &&
+    groups.every((g) => g.packages.every((p) => selectedSet.has(p.name)))
   const headerChecked = allSelected
 
   const handleGroupToggle = (group: AdvisoryGroup) => {
@@ -123,9 +125,17 @@ export function UpdatePackageTable({
 
   const handleHeaderToggle = () => {
     if (allSelected) {
-      groups.forEach((g) => g.packages.forEach((p) => selectedSet.has(p.name) && onToggle(p.name)))
+      for (const g of groups) {
+        for (const p of g.packages) {
+          if (selectedSet.has(p.name)) onToggle(p.name)
+        }
+      }
     } else {
-      groups.forEach((g) => g.packages.forEach((p) => !selectedSet.has(p.name) && onToggle(p.name)))
+      for (const g of groups) {
+        for (const p of g.packages) {
+          if (!selectedSet.has(p.name)) onToggle(p.name)
+        }
+      }
     }
   }
 
@@ -159,10 +169,23 @@ export function UpdatePackageTable({
               const pkgNames = group.packages.map((p) => p.name)
               const displayNames = pkgNames.slice(0, 4)
               const truncated = pkgNames.length > 4
-              const cveCount = group.packages.reduce((sum, p) => sum + (p.cveUrls?.length ?? 0), 0)
-              const bugCount = group.packages.reduce((sum, p) => sum + (p.bugUrls?.length ?? 0), 0)
-              const severityCount = group.severity === "security" ? cveCount || 1 : group.severity === "bugfix" ? bugCount || group.packages.length : 0
-              const isGroupSelected = group.packages.every((p) => selectedSet.has(p.name))
+              const cveCount = group.packages.reduce(
+                (sum, p) => sum + (p.cveUrls?.length ?? 0),
+                0
+              )
+              const bugCount = group.packages.reduce(
+                (sum, p) => sum + (p.bugUrls?.length ?? 0),
+                0
+              )
+              const severityCount =
+                group.severity === "security"
+                  ? cveCount || 1
+                  : group.severity === "bugfix"
+                    ? bugCount || group.packages.length
+                    : 0
+              const isGroupSelected = group.packages.every((p) =>
+                selectedSet.has(p.name)
+              )
               const isSecurity = group.severity === "security"
 
               // special package detection like kpatch handled via badge maybe not needed
@@ -183,7 +206,11 @@ export function UpdatePackageTable({
                         aria-label={isExpanded ? "Collapse" : "Expand"}
                         onClick={() => toggleExpanded(group.key)}
                       >
-                        {isExpanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                        {isExpanded ? (
+                          <ChevronDown className="size-4" />
+                        ) : (
+                          <ChevronRight className="size-4" />
+                        )}
                       </Button>
                     </td>
                     {selectable && (
@@ -198,24 +225,37 @@ export function UpdatePackageTable({
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-1">
                         {displayNames.map((name, index) => {
-                          const pkg = group.packages.find((p) => p.name === name)
-                          const arch = pkg?.architecture ? ` (${pkg.architecture})` : ""
-                          const tip = pkg ? `${pkg.name}${arch} ${pkg.summary ?? ""}` : name
+                          const pkg = group.packages.find(
+                            (p) => p.name === name
+                          )
+                          const arch = pkg?.architecture
+                            ? ` (${pkg.architecture})`
+                            : ""
+                          const tip = pkg
+                            ? `${pkg.name}${arch} ${pkg.summary ?? ""}`
+                            : name
                           return (
                             <Tooltip key={name}>
                               <TooltipTrigger>
                                 <span className="font-medium">
                                   {name}
                                   {arch}
-                                  {index !== displayNames.length - 1 || truncated ? ", " : ""}
+                                  {index !== displayNames.length - 1 ||
+                                  truncated
+                                    ? ", "
+                                    : ""}
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent>{tip}</TooltipContent>
                             </Tooltip>
                           )
                         })}
-                        {truncated && <span className="text-muted-foreground">…</span>}
-                        {group.packages.some((p) => p.name.startsWith("kpatch")) && (
+                        {truncated && (
+                          <span className="text-muted-foreground">…</span>
+                        )}
+                        {group.packages.some((p) =>
+                          p.name.startsWith("kpatch")
+                        ) && (
                           <Badge variant="secondary" className="ml-1">
                             patches
                           </Badge>
@@ -223,7 +263,10 @@ export function UpdatePackageTable({
                       </div>
                     </td>
                     <td className="px-3 py-2 font-mono text-xs">
-                      <span className="truncate block max-w-[12rem]" title={group.version}>
+                      <span
+                        className="truncate block max-w-[12rem]"
+                        title={group.version}
+                      >
                         {group.version}
                       </span>
                     </td>
@@ -233,20 +276,27 @@ export function UpdatePackageTable({
                           <span className="inline-flex items-center gap-1.5 tabular-nums">
                             {getSeverityIcon(group.severity)}
                             <span className="text-xs">{group.severity}</span>
-                            {severityCount > 0 && group.severity !== "enhancement" ? (
-                              <span className="text-xs font-medium">{severityCount}</span>
+                            {severityCount > 0 &&
+                            group.severity !== "enhancement" ? (
+                              <span className="text-xs font-medium">
+                                {severityCount}
+                              </span>
                             ) : null}
                           </span>
                         </TooltipTrigger>
                         <TooltipContent>
                           {getSeverityLabel(group.severity)}
-                          {group.packages.find((p) => p.secSeverity)?.secSeverity
+                          {group.packages.find((p) => p.secSeverity)
+                            ?.secSeverity
                             ? ` (${group.packages.find((p) => p.secSeverity)?.secSeverity})`
                             : ""}
                         </TooltipContent>
                       </Tooltip>
                     </td>
-                    <td className="px-3 py-2 max-w-[24rem] truncate text-muted-foreground" title={firstLine(group.description)}>
+                    <td
+                      className="px-3 py-2 max-w-[24rem] truncate text-muted-foreground"
+                      title={firstLine(group.description)}
+                    >
                       {firstLine(group.description)}
                     </td>
                   </tr>
@@ -256,17 +306,36 @@ export function UpdatePackageTable({
                         <div className="grid gap-4 p-4 md:grid-cols-[280px_1fr]">
                           <dl className="space-y-3 text-sm">
                             <div>
-                              <dt className="font-medium text-foreground">Packages</dt>
+                              <dt className="font-medium text-foreground">
+                                Packages
+                              </dt>
                               <dd className="text-muted-foreground break-words">
-                                {group.packages.map((p) => p.name + (p.architecture ? ` (${p.architecture})` : "")).join(", ")}
+                                {group.packages
+                                  .map(
+                                    (p) =>
+                                      p.name +
+                                      (p.architecture
+                                        ? ` (${p.architecture})`
+                                        : "")
+                                  )
+                                  .join(", ")}
                               </dd>
                             </div>
                             {group.packages.some((p) => p.cveUrls?.length) && (
                               <div>
-                                <dt className="font-medium text-foreground">CVE</dt>
+                                <dt className="font-medium text-foreground">
+                                  CVE
+                                </dt>
                                 <dd className="flex flex-wrap gap-1">
-                                  {Array.from(new Set(group.packages.flatMap((p) => p.cveUrls ?? []))).map((url) => {
-                                    const label = url.match(/[^/=]+$/)?.[0] ?? url
+                                  {Array.from(
+                                    new Set(
+                                      group.packages.flatMap(
+                                        (p) => p.cveUrls ?? []
+                                      )
+                                    )
+                                  ).map((url) => {
+                                    const label =
+                                      url.match(/[^/=]+$/)?.[0] ?? url
                                     return (
                                       <a
                                         key={url}
@@ -282,22 +351,44 @@ export function UpdatePackageTable({
                                 </dd>
                               </div>
                             )}
-                            {group.packages[0]?.advisoryId && group.packages[0].advisoryId.startsWith("CVE") === false && (
+                            {group.packages[0]?.advisoryId &&
+                              group.packages[0].advisoryId.startsWith("CVE") ===
+                                false && (
+                                <div>
+                                  <dt className="font-medium text-foreground">
+                                    Severity
+                                  </dt>
+                                  <dd className="text-xs">
+                                    <Badge
+                                      variant="outline"
+                                      className="capitalize"
+                                    >
+                                      {group.severity}
+                                    </Badge>
+                                  </dd>
+                                </div>
+                              )}
+                            {Array.from(
+                              new Set(
+                                group.packages.flatMap(
+                                  (p) => p.vendorUrls ?? []
+                                )
+                              )
+                            ).length > 0 && (
                               <div>
-                                <dt className="font-medium text-foreground">Severity</dt>
-                                <dd className="text-xs">
-                                  <Badge variant="outline" className="capitalize">
-                                    {group.severity}
-                                  </Badge>
-                                </dd>
-                              </div>
-                            )}
-                            {Array.from(new Set(group.packages.flatMap((p) => p.vendorUrls ?? []))).length > 0 && (
-                              <div>
-                                <dt className="font-medium text-foreground">Errata</dt>
+                                <dt className="font-medium text-foreground">
+                                  Errata
+                                </dt>
                                 <dd className="flex flex-wrap gap-1">
-                                  {Array.from(new Set(group.packages.flatMap((p) => p.vendorUrls ?? []))).map((url) => {
-                                    const label = url.match(/[^/=]+$/)?.[0] ?? url
+                                  {Array.from(
+                                    new Set(
+                                      group.packages.flatMap(
+                                        (p) => p.vendorUrls ?? []
+                                      )
+                                    )
+                                  ).map((url) => {
+                                    const label =
+                                      url.match(/[^/=]+$/)?.[0] ?? url
                                     return (
                                       <a
                                         key={url}
@@ -315,10 +406,19 @@ export function UpdatePackageTable({
                             )}
                             {group.packages.some((p) => p.bugUrls?.length) && (
                               <div>
-                                <dt className="font-medium text-foreground">Bugs</dt>
+                                <dt className="font-medium text-foreground">
+                                  Bugs
+                                </dt>
                                 <dd className="flex flex-wrap gap-1">
-                                  {Array.from(new Set(group.packages.flatMap((p) => p.bugUrls ?? []))).map((url) => {
-                                    const label = url.match(/[0-9]+$/)?.[0] ?? url
+                                  {Array.from(
+                                    new Set(
+                                      group.packages.flatMap(
+                                        (p) => p.bugUrls ?? []
+                                      )
+                                    )
+                                  ).map((url) => {
+                                    const label =
+                                      url.match(/[0-9]+$/)?.[0] ?? url
                                     return (
                                       <a
                                         key={url}
@@ -336,21 +436,33 @@ export function UpdatePackageTable({
                             )}
                           </dl>
                           <div className="text-sm leading-relaxed">
-                            {group.packages.some((p) => p.markdown) && group.description ? (
+                            {group.packages.some((p) => p.markdown) &&
+                            group.description ? (
                               <AdvisoryMarkdown text={group.description} />
                             ) : (
-                              <p className="whitespace-pre-wrap break-words text-muted-foreground">{group.description || "No additional details."}</p>
+                              <p className="whitespace-pre-wrap break-words text-muted-foreground">
+                                {group.description || "No additional details."}
+                              </p>
                             )}
                             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                               {group.packages.map((p) => (
-                                <div key={p.name} className="rounded border bg-card p-2">
+                                <div
+                                  key={p.name}
+                                  className="rounded border bg-card p-2"
+                                >
                                   <div className="font-medium">{p.name}</div>
                                   <div className="text-muted-foreground">
-                                    {p.currentVersion ? `${p.currentVersion} → ${p.candidateVersion}` : p.candidateVersion}
+                                    {p.currentVersion
+                                      ? `${p.currentVersion} → ${p.candidateVersion}`
+                                      : p.candidateVersion}
                                   </div>
-                                  {p.dependencies && p.dependencies.length > 0 && (
-                                    <div className="mt-1 text-[11px]">Coupled with: {p.dependencies.join(", ")}</div>
-                                  )}
+                                  {p.dependencies &&
+                                    p.dependencies.length > 0 && (
+                                      <div className="mt-1 text-[11px]">
+                                        Coupled with:{" "}
+                                        {p.dependencies.join(", ")}
+                                      </div>
+                                    )}
                                 </div>
                               ))}
                             </div>

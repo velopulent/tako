@@ -1,4 +1,3 @@
-import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   CopyIcon,
@@ -10,8 +9,8 @@ import {
   Trash2Icon,
   UploadIcon,
 } from "lucide-react"
-
-import { api, type FileEntry, type FileResult } from "@/lib/api"
+import * as React from "react"
+import { MediaPreview } from "@/components/media-preview"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -22,20 +21,20 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { MediaPreview } from "@/components/media-preview"
+import { api, type FileEntry, type FileResult } from "@/lib/api"
 
 const encodePath = (path: string) => encodeURIComponent(path)
 
@@ -235,77 +234,132 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
           </div>
         )}
         {!files.isPending && !files.isError && entries.length > 0 && (
-          <div
-            className="divide-y rounded-lg border"
-            role="table"
-            aria-label="Files"
-          >
-            {entries.map((entry) => (
-              <ContextMenu key={`${entry.path}:${entry.fingerprint}`}>
-                <ContextMenuTrigger className="contents">
-                  <div
-                    className="flex min-h-14 items-center gap-3 px-3 py-2 hover:bg-muted/50"
-                    role="row"
-                    tabIndex={0}
-                    onDoubleClick={() => open(entry)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault()
-                        open(entry)
-                      }
-                    }}
-                  >
-                {entry.kind === "directory" ? (
-                  <FolderIcon
-                    className="size-5 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <FileIcon
-                    className="size-5 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                )}
-                <button
-                  className="min-w-0 flex-1 truncate text-left font-medium"
-                  onClick={() => open(entry)}
-                >
-                  {entry.name}
-                </button>
-                {entry.permissionDenied && (
-                  <span className="text-xs text-muted-foreground">Locked</span>
-                )}
-                <span className="hidden text-xs text-muted-foreground sm:inline">
-                  {formatBytes(entry.size)}
-                </span>
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Actions for ${entry.name}`}
-                      />
-                    }
-                  >
-                    <MoreHorizontalIcon aria-hidden="true" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
+          <>
+            {/* biome-ignore lint/a11y/useSemanticElements: entries are interactive rows (keyboard operable, context menu), not tabular data with headers; a table/treegrid conversion is out of scope */}
+            <div
+              className="divide-y rounded-lg border"
+              role="table"
+              aria-label="Files"
+            >
+              {entries.map((entry) => (
+                <ContextMenu key={`${entry.path}:${entry.fingerprint}`}>
+                  <ContextMenuTrigger className="contents">
+                    {/* biome-ignore lint/a11y/useSemanticElements: see container note above; this row is an interactive entry, not a table row */}
+                    <div
+                      className="flex min-h-14 items-center gap-3 px-3 py-2 hover:bg-muted/50"
+                      role="row"
+                      tabIndex={0}
+                      onDoubleClick={() => open(entry)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault()
+                          open(entry)
+                        }
+                      }}
+                    >
+                      {entry.kind === "directory" ? (
+                        <FolderIcon
+                          className="size-5 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <FileIcon
+                          className="size-5 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 truncate text-left font-medium"
+                        onClick={() => open(entry)}
+                      >
+                        {entry.name}
+                      </button>
+                      {entry.permissionDenied && (
+                        <span className="text-xs text-muted-foreground">
+                          Locked
+                        </span>
+                      )}
+                      <span className="hidden text-xs text-muted-foreground sm:inline">
+                        {formatBytes(entry.size)}
+                      </span>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`Actions for ${entry.name}`}
+                            />
+                          }
+                        >
+                          <MoreHorizontalIcon aria-hidden="true" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => open(entry)}
+                            disabled={entry.permissionDenied}
+                          >
+                            <FileIcon aria-hidden="true" /> Open
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => download(entry)}
+                            disabled={
+                              entry.permissionDenied ||
+                              entry.kind === "directory"
+                            }
+                          >
+                            <DownloadIcon aria-hidden="true" /> Download
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() =>
+                              mutation.mutate({
+                                action: "copy",
+                                path: entry.path,
+                                destination: `${entry.path}.copy`,
+                                expectedFingerprint: entry.fingerprint,
+                              })
+                            }
+                            disabled={
+                              entry.permissionDenied ||
+                              entry.kind === "directory"
+                            }
+                          >
+                            <CopyIcon aria-hidden="true" /> Copy here
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() =>
+                              mutation.mutate({
+                                action: "trash",
+                                path: entry.path,
+                                expectedFingerprint: entry.fingerprint,
+                              })
+                            }
+                            disabled={entry.permissionDenied}
+                          >
+                            <Trash2Icon aria-hidden="true" /> Move to trash
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem
                       onClick={() => open(entry)}
                       disabled={entry.permissionDenied}
                     >
                       <FileIcon aria-hidden="true" /> Open
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
+                    </ContextMenuItem>
+                    <ContextMenuItem
                       onClick={() => download(entry)}
                       disabled={
                         entry.permissionDenied || entry.kind === "directory"
                       }
                     >
                       <DownloadIcon aria-hidden="true" /> Download
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
+                    </ContextMenuItem>
+                    <ContextMenuItem
                       onClick={() =>
                         mutation.mutate({
                           action: "copy",
@@ -319,8 +373,8 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
                       }
                     >
                       <CopyIcon aria-hidden="true" /> Copy here
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
+                    </ContextMenuItem>
+                    <ContextMenuItem
                       className="text-destructive"
                       onClick={() =>
                         mutation.mutate({
@@ -332,58 +386,12 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
                       disabled={entry.permissionDenied}
                     >
                       <Trash2Icon aria-hidden="true" /> Move to trash
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                  </div>
-                </ContextMenuTrigger>
-                <ContextMenuContent>
-                  <ContextMenuItem
-                    onClick={() => open(entry)}
-                    disabled={entry.permissionDenied}
-                  >
-                    <FileIcon aria-hidden="true" /> Open
-                  </ContextMenuItem>
-                  <ContextMenuItem
-                    onClick={() => download(entry)}
-                    disabled={
-                      entry.permissionDenied || entry.kind === "directory"
-                    }
-                  >
-                    <DownloadIcon aria-hidden="true" /> Download
-                  </ContextMenuItem>
-                  <ContextMenuItem
-                    onClick={() =>
-                      mutation.mutate({
-                        action: "copy",
-                        path: entry.path,
-                        destination: `${entry.path}.copy`,
-                        expectedFingerprint: entry.fingerprint,
-                      })
-                    }
-                    disabled={
-                      entry.permissionDenied || entry.kind === "directory"
-                    }
-                  >
-                    <CopyIcon aria-hidden="true" /> Copy here
-                  </ContextMenuItem>
-                  <ContextMenuItem
-                    className="text-destructive"
-                    onClick={() =>
-                      mutation.mutate({
-                        action: "trash",
-                        path: entry.path,
-                        expectedFingerprint: entry.fingerprint,
-                      })
-                    }
-                    disabled={entry.permissionDenied}
-                  >
-                    <Trash2Icon aria-hidden="true" /> Move to trash
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
-            ))}
-          </div>
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+              ))}
+            </div>
+          </>
         )}
         <MediaPreview entry={selected} csrfToken={csrfToken} />
         {mutation.isError && (

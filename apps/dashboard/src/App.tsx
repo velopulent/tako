@@ -3,7 +3,7 @@ import {
   QueryClientProvider,
   useQuery,
 } from "@tanstack/react-query"
-import { RouterProvider, createRouter } from "@tanstack/react-router"
+import { createRouter, RouterProvider } from "@tanstack/react-router"
 
 import { LoginPage } from "@/components/login-page"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -12,7 +12,7 @@ import { routeTree } from "./routeTree.gen"
 
 const router = createRouter({
   routeTree,
-  context: { session: undefined! },
+  context: { session: undefined as unknown as SessionResponse },
 })
 
 declare module "@tanstack/react-router" {
