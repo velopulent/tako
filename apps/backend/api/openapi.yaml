@@ -6,6 +6,16 @@ info:
 servers:
   - url: /api/v1
 paths:
+  /branding:
+    get:
+      operationId: getBranding
+      description: Public pre-authentication host branding metadata.
+      responses:
+        '200':
+          description: Distro selection, host label, and optional background asset URL
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Branding' }
   /auth/login:
     post:
       operationId: login
@@ -1416,6 +1426,14 @@ paths:
         '101': { description: Binary PTY WebSocket }
 components:
   schemas:
+    Branding:
+      type: object
+      additionalProperties: false
+      required: [distribution, hostname]
+      properties:
+        distribution: { type: string, maxLength: 32 }
+        hostname: { type: string, maxLength: 253 }
+        backgroundUrl: { type: string, maxLength: 512, format: uri-reference }
     Capability:
       type: object
       required: [id, state, readable, mutable, rollback, readAuthority, mutationAuthority, contract]

@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/branding"
 	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/dashboard"
 	"github.com/velopulent/tako/internal/host"
@@ -38,11 +39,13 @@ import (
 	"github.com/velopulent/tako/internal/metrics"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
+	"github.com/velopulent/tako/internal/version"
 	"go.uber.org/zap"
 )
 
 type Server struct {
 	config                 config.Config
+	branding               *branding.Service
 	http                   *http.Server
 	sessions               *session.Store
 	authenticator          auth.Authenticator
@@ -131,9 +134,11 @@ func New(cfg config.Config) (*Server, error) {
 		broker = fakeHostBroker{}
 	}
 	sessions := session.NewStore(15*time.Minute, 12*time.Hour)
+	brandingDirectory := strings.TrimSpace(os.Getenv("TAKO_BRANDING_DIR"))
 	var server *Server
 	server = &Server{
 		config:        cfg,
+		branding:      branding.New(brandingDirectory, version.Value, cfg.Development),
 		sessions:      sessions,
 		authenticator: authenticator,
 		broker:        broker,
@@ -435,6 +440,7 @@ func (server *Server) routes() http.Handler {
 
 	router.Route("/api/v1", func(router chi.Router) {
 		router.Post("/auth/login", server.login)
+		router.Get("/branding", server.brandingMetadata)
 		router.Group(func(router chi.Router) {
 			router.Use(server.requireSession)
 			router.Get("/auth/session", server.currentSession)
@@ -523,6 +529,7 @@ func (server *Server) routes() http.Handler {
 			router.Get("/terminal", server.terminalStatus)
 		})
 	})
+	router.Get("/branding/{asset}", server.brandingAsset)
 	router.Handle("/*", spaHandler())
 	return router
 }
