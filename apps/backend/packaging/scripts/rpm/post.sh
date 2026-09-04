@@ -1,46 +1,87 @@
 #!/bin/sh
 set -eu
 
-systemd-sysusers /usr/lib/sysusers.d/tako.conf
-systemd-tmpfiles --create /usr/lib/tmpfiles.d/tako.conf
-systemctl daemon-reload >/dev/null 2>&1 || true
+systemd-sysusers tako.conf
+systemd-tmpfiles --create tako.conf
 
-# Always ensure the sockets are enabled (unless masked). A reinstall must
-# re-enable and an upgrade must not leave a stopped-but-enabled socket dead.
-for unit in tako.socket tako-sessiond.socket; do
-    if [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != masked ]; then
-        systemctl enable "$unit" >/dev/null 2>&1 || true
-    fi
-done
-
-if [ "${1:-0}" -eq 1 ]; then
-    for unit in tako.socket tako-sessiond.socket; do
-        if [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != masked ]; then
-            systemctl start "$unit" >/dev/null 2>&1 || true
-        fi
-    done
-else
-    # Upgrade: restart sockets so they pick up the new binary and start
-    # listening again even if stopped; only try-restart services so the
-    # socket-activated gateway is never started directly.
-    for unit in tako.socket tako-sessiond.socket; do
-        if [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != masked ]; then
-            systemctl restart "$unit" >/dev/null 2>&1 || systemctl start "$unit" >/dev/null 2>&1 || true
-        fi
-    done
-    for unit in tako-sessiond.service tako.service; do
-        if systemctl is-active --quiet "$unit"; then
-            systemctl try-restart "$unit" >/dev/null 2>&1 || true
-        fi
-    done
+systemd_runtime_dir="${TAKO_SYSTEMD_RUNTIME_DIR:-/run/systemd/system}"
+if [ ! -d "$systemd_runtime_dir" ]; then
+    exit 0
 fi
 
-# The gateway and sessiond are socket-activated and must never be
-# boot-enabled; only the sockets carry an [Install] section.
-for unit in tako.service tako-sessiond.service; do
-    if [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != masked ]; then
-        systemctl disable "$unit" >/dev/null 2>&1 || true
+run_systemctl() {
+    if ! systemctl "$@" >/dev/null 2>&1; then
+        echo "tako: warning: systemctl $* failed" >&2
     fi
-done
+}
+
+is_active() {
+    systemctl is-active --quiet "$1"
+}
+
+is_failed() {
+    systemctl is-failed --quiet "$1"
+}
+
+is_masked() {
+    [ "$(systemctl is-enabled "$1" 2>/dev/null || true)" = masked ]
+}
+
+install_count="${1:-0}"
+case "$install_count" in
+    ''|*[!0-9]*) install_count=0 ;;
+esac
+
+if [ "$install_count" -eq 1 ]; then
+    run_systemctl daemon-reload
+    run_systemctl reset-failed tako-sessiond.socket tako.socket tako-sessiond.service tako.service
+    for unit in tako-sessiond.socket tako.socket; do
+        if ! is_masked "$unit"; then
+            run_systemctl enable "$unit"
+            run_systemctl start "$unit"
+        fi
+    done
+    exit 0
+fi
+
+# RPM passes a value greater than one on upgrade. Preserve enablement and
+# runtime state; do not turn a deliberately stopped or disabled socket on.
+if [ "$install_count" -gt 1 ]; then
+    session_socket_active=false
+    gateway_socket_active=false
+    session_service_active=false
+    gateway_service_active=false
+    session_socket_failed=false
+    gateway_socket_failed=false
+    is_active tako-sessiond.socket && session_socket_active=true
+    is_active tako.socket && gateway_socket_active=true
+    is_active tako-sessiond.service && session_service_active=true
+    is_active tako.service && gateway_service_active=true
+    is_failed tako-sessiond.socket && session_socket_failed=true
+    is_failed tako.socket && gateway_socket_failed=true
+
+    if [ "$gateway_service_active" = true ]; then
+        run_systemctl stop tako.service
+    fi
+    if [ "$session_service_active" = true ]; then
+        run_systemctl stop tako-sessiond.service
+    fi
+
+    run_systemctl daemon-reload
+    run_systemctl reset-failed tako-sessiond.socket tako.socket tako-sessiond.service tako.service
+
+    if { [ "$session_socket_active" = true ] || [ "$session_socket_failed" = true ]; } && ! is_masked tako-sessiond.socket; then
+        run_systemctl restart tako-sessiond.socket
+    fi
+    if { [ "$gateway_socket_active" = true ] || [ "$gateway_socket_failed" = true ]; } && ! is_masked tako.socket; then
+        run_systemctl restart tako.socket
+    fi
+    if [ "$session_service_active" = true ]; then
+        run_systemctl start tako-sessiond.service
+    fi
+    if [ "$gateway_service_active" = true ]; then
+        run_systemctl start tako.service
+    fi
+fi
 
 exit 0

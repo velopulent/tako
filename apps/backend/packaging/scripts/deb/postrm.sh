@@ -1,25 +1,16 @@
 #!/bin/sh
 set -eu
 
-if command -v deb-systemd-invoke >/dev/null 2>&1; then
-    deb-systemd-invoke daemon-reload >/dev/null 2>&1 || systemctl daemon-reload >/dev/null 2>&1 || true
-else
-    systemctl daemon-reload >/dev/null 2>&1 || true
+if [ "${1:-}" = purge ]; then
+    deb-systemd-helper purge tako-sessiond.socket tako.socket tako-sessiond.service tako.service >/dev/null || true
+    default_package_state_dir="${DPKG_ROOT:-}/var/lib/tako"
+    package_state_dir="${TAKO_PACKAGE_STATE_DIR:-$default_package_state_dir}"
+    rm -f "$package_state_dir/package-removed"
 fi
 
-case "${1:-}" in
-    remove)
-        # Keep the prerm mask so a reinstall unmasks cleanly.
-        for unit in tako.socket tako-sessiond.socket; do
-            deb-systemd-helper mask "$unit" >/dev/null 2>&1 || true
-        done
-        ;;
-    purge|disappear)
-        for unit in tako.socket tako-sessiond.socket tako.service tako-sessiond.service; do
-            deb-systemd-helper purge "$unit" >/dev/null 2>&1 || true
-            deb-systemd-helper unmask "$unit" >/dev/null 2>&1 || true
-        done
-        ;;
-esac
+systemd_runtime_dir="${TAKO_SYSTEMD_RUNTIME_DIR:-/run/systemd/system}"
+if [ -z "${DPKG_ROOT:-}" ] && [ -d "$systemd_runtime_dir" ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 
 exit 0
