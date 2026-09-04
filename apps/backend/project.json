@@ -14,7 +14,8 @@
         "cwd": "apps/backend",
         "env": {
           "GOCACHE": "/tmp/tako-go-cache",
-          "TAKO_DASHBOARD_DIR": ""
+          "TAKO_DASHBOARD_DIR": "",
+          "TAKO_BRANDING_DIR": "packaging/branding"
         }
       }
     },

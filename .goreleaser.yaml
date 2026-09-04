@@ -19,7 +19,7 @@ builds:
       - -trimpath
       - -buildvcs=false
     ldflags:
-      - -s -w
+      - -s -w -X github.com/velopulent/tako/internal/version.Value={{ .Version }}
 
 archives:
   - formats:
@@ -77,6 +77,55 @@ nfpms:
         dst: /etc/pam.d/tako
         type: config|noreplace
         packager: rpm
+      - src: apps/backend/packaging/branding/debian.png
+        dst: /usr/share/tako/branding/debian.png
+        packager: deb
+        file_info:
+          mode: 0644
+          owner: root
+          group: root
+      - src: apps/backend/packaging/branding/ubuntu.png
+        dst: /usr/share/tako/branding/ubuntu.png
+        packager: deb
+        file_info:
+          mode: 0644
+          owner: root
+          group: root
+      - src: apps/backend/packaging/branding/almalinux.png
+        dst: /usr/share/tako/branding/almalinux.png
+        packager: rpm
+        file_info:
+          mode: 0644
+          owner: root
+          group: root
+      - src: apps/backend/packaging/branding/fedora.png
+        dst: /usr/share/tako/branding/fedora.png
+        packager: rpm
+        file_info:
+          mode: 0644
+          owner: root
+          group: root
+      - src: apps/backend/packaging/branding/opensuse.png
+        dst: /usr/share/tako/branding/opensuse.png
+        packager: rpm
+        file_info:
+          mode: 0644
+          owner: root
+          group: root
+      - src: apps/backend/packaging/branding/rockylinux.png
+        dst: /usr/share/tako/branding/rockylinux.png
+        packager: rpm
+        file_info:
+          mode: 0644
+          owner: root
+          group: root
+      - src: apps/backend/packaging/branding/rhel.png
+        dst: /usr/share/tako/branding/rhel.png
+        packager: rpm
+        file_info:
+          mode: 0644
+          owner: root
+          group: root
     overrides:
       deb:
         dependencies:
