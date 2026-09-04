@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+./tools/package-check
+goreleaser release --snapshot --clean
+
+deb_count=$(find dist -maxdepth 1 -type f -name '*.deb' | wc -l)
+rpm_count=$(find dist -maxdepth 1 -type f -name '*.rpm' | wc -l)
+[ "$deb_count" -eq 1 ] || { echo "package: expected one .deb, found $deb_count" >&2; exit 1; }
+[ "$rpm_count" -eq 1 ] || { echo "package: expected one .rpm, found $rpm_count" >&2; exit 1; }
+[ -s dist/checksums.txt ] || { echo "package: missing checksums.txt" >&2; exit 1; }
+(cd dist && sha256sum --check checksums.txt)
+
+bun -e '
+const artifacts = await Bun.file("dist/artifacts.json").json();
+const packages = artifacts.filter((artifact) => artifact.type === "Linux Package");
+const expectedFormats = new Set(["deb", "rpm"]);
+const requiredPaths = [
+  "/usr/bin/tako",
+  "/usr/lib/systemd/system/tako-sessiond.service",
+  "/usr/lib/systemd/system/tako-sessiond.socket",
+  "/usr/lib/systemd/system/tako.service",
+  "/usr/lib/systemd/system/tako.socket",
+  "/usr/lib/sysusers.d/tako.conf",
+  "/usr/lib/tmpfiles.d/tako.conf",
+  "/usr/share/polkit-1/actions/org.velopulent.tako.policy",
+  "/etc/pam.d/tako",
+];
+if (packages.length !== 2) throw new Error(`expected 2 package artifacts, found ${packages.length}`);
+for (const artifact of packages) {
+  if (!expectedFormats.delete(artifact.extra.Format)) throw new Error(`unexpected duplicate format: ${artifact.extra.Format}`);
+  if (artifact.goos !== "linux" || artifact.goarch !== "amd64") throw new Error(`unexpected target: ${artifact.target}`);
+  const paths = new Set(artifact.extra.Files.map((file) => file.dst));
+  for (const path of requiredPaths) if (!paths.has(path)) throw new Error(`${artifact.extra.Format} missing ${path}`);
+}
+if (expectedFormats.size) throw new Error(`missing formats: ${[...expectedFormats].join(", ")}`);
+'
+
+echo "Packages written to dist/"
