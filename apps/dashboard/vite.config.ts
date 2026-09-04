@@ -29,6 +29,9 @@ export default defineConfig({
         target: "http://127.0.0.1:9090",
         ws: true,
       },
+      "/branding": {
+        target: "http://127.0.0.1:9090",
+      },
     },
   },
   build: {

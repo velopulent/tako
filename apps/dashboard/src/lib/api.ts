@@ -15,6 +15,12 @@ export type SessionResponse = {
   adminIdleTimeoutSeconds?: number
 }
 
+export type BrandingResponse = {
+  distribution: string
+  hostname: string
+  backgroundUrl?: string
+}
+
 export type FileEntry = {
   name: string
   path: string

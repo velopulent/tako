@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -16,6 +16,58 @@ afterEach(() => {
 })
 
 describe("LoginPage", () => {
+  it("renders the hostname and fades in a loaded distro background", () => {
+    render(
+      <LoginPage
+        branding={{
+          distribution: "ubuntu",
+          hostname: "server-01",
+          backgroundUrl: "/branding/ubuntu.png?v=1.2.3",
+        }}
+        onAuthenticated={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText("Login to server-01")).toBeTruthy()
+    const image = document.querySelector("main img")
+    expect(image).not.toBeNull()
+    expect(image?.classList.contains("opacity-0")).toBe(true)
+
+    fireEvent.load(image as HTMLImageElement)
+    expect(image?.classList.contains("opacity-100")).toBe(true)
+  })
+
+  it("keeps the neutral backdrop when the background image fails", () => {
+    render(
+      <LoginPage
+        branding={{
+          distribution: "fedora",
+          hostname: "server-02",
+          backgroundUrl: "/branding/fedora.png?v=1.2.3",
+        }}
+        onAuthenticated={vi.fn()}
+      />
+    )
+
+    const image = document.querySelector("main img")
+    expect(image).not.toBeNull()
+    fireEvent.error(image as HTMLImageElement)
+    expect(image?.classList.contains("opacity-0")).toBe(true)
+  })
+
+  it("shows the login form while the session is checked", () => {
+    render(
+      <LoginPage
+        branding={{ distribution: "debian", hostname: "server-03" }}
+        onAuthenticated={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText("Login to server-03")).toBeTruthy()
+    expect(screen.getByLabelText("Username")).toBeTruthy()
+    expect(screen.queryByRole("status")).toBeNull()
+  })
+
   it("completes a keyboard-driven multi-round PAM conversation", async () => {
     const fetchMock = vi
       .fn()
