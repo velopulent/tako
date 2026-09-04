@@ -31,9 +31,9 @@ Password changes and administrative resets use the host's standard `passwd` PAM 
 
 Local packaging requires installed Bun dependencies, Go 1.26+, GoReleaser 2.x, a C compiler, and Linux amd64 PAM development headers and linker files. `bun run package:check` validates those host-neutral capabilities without assuming a distribution package manager. CGO is required for PAM, so arm64 cross-builds remain deferred until an AArch64 PAM toolchain is available.
 
-Run `bun run package` from repository root to validate packaging, build dashboard assets, build `tako` with CGO for Linux amd64, and emit exactly one `.deb`, one `.rpm`, and `checksums.txt` in `dist/`. GoReleaser's embedded nFPM packager creates both formats on Debian, Fedora, or Arch; building does not require `dpkg-deb`, `rpmbuild`, or `rpm`. Snapshot packages do not publish releases. Tagged release builds take version from the Git tag. No signing, archive, container, or GitHub workflow is configured. Because the executable is a native CGO build, its glibc and PAM compatibility follows the build host; cross-format output alone does not guarantee compatibility with older target libraries.
+Run `bun run package` from repository root to validate packaging, build dashboard assets, build all eight distro-tagged `tako` binaries with CGO for Linux amd64, and emit two `.deb`, five `.rpm`, one `.pkg.tar.zst`, and `checksums.txt` in `dist/`. GoReleaser's embedded nFPM packager creates every format without requiring native package-builder tools. Snapshot packages do not publish releases. Tagged release builds take version from the Git tag. No signing, archive, container, or GitHub workflow is configured. Because each executable is a native CGO build, its glibc and PAM compatibility follows the build host; cross-format output alone does not guarantee compatibility with older target libraries.
 
-Generated packages install full production runtime files: executable, four systemd units, sysusers and tmpfiles definitions, Polkit policy, the example TOML configuration under `/usr/share/doc/tako/`, read-only distro branding under `/usr/share/tako/branding/`, and a distribution-specific PAM stack at `/etc/pam.d/tako`. Debian includes Debian and Ubuntu art; RPM includes AlmaLinux, Fedora, RHEL, openSUSE, and Rocky Linux art. Arch Linux art is source-ready for host development or a future Arch package. Debian uses `pam/tako.debian`; RPM uses `pam/tako.redhat`. PAM files are package-managed as `config|noreplace`. Packages do not install a live `/etc/tako/config.toml`, sudoers example, smoke test, or operational README.
+Generated packages install full production runtime files: executable, four systemd units, sysusers and tmpfiles definitions, Polkit policy, the example TOML configuration under `/usr/share/doc/tako/`, exactly one matching distro branding asset under `/usr/share/tako/branding/`, and a distribution-specific PAM stack at `/etc/pam.d/tako`. Debian and Ubuntu use `pam/tako.debian`; RPM distributions use `pam/tako.redhat`; Arch Linux uses the generic `pam/tako` policy. PAM files are package-managed as `config|noreplace`. Packages do not install a live `/etc/tako/config.toml`, sudoers example, smoke test, or operational README.
 
 ## Login branding
 
@@ -46,7 +46,23 @@ from `/usr/share/tako/branding/` through the gateway's fixed `/branding/*.png`
 route. Production metadata revalidates with an ETag, while the selected
 release-versioned image URL is immutable-cacheable.
 
-Package installation requires systemd, PAM, D-Bus, and Polkit. Debian additionally requires `libnss-systemd` for the dynamic gateway identity and `init-system-helpers` for package-managed unit state. PackageKit and `pkcon` are recommendations rather than hard dependencies because Tako can fall back to the host's native package manager with reduced metadata. NetworkManager, UDisks2, Netplan, UFW/firewalld, SELinux, AppArmor, and other host-specific integrations remain optional; capability degradation is reported explicitly.
+Package installation requires systemd, PAM, D-Bus, Polkit, and the native package manager selected when building. Debian and Ubuntu use APT; Fedora, RHEL, Rocky, and AlmaLinux use DNF; Arch Linux uses Pacman plus `pacman-contrib`; openSUSE uses Zypper. NetworkManager, UDisks2, Netplan, UFW/firewalld, SELinux, AppArmor, and other host-specific integrations remain optional; capability degradation is reported explicitly.
+
+Build one distro at a time:
+
+```bash
+cd apps/backend
+go build -tags debian ./cmd/tako
+go build -tags ubuntu ./cmd/tako
+go build -tags fedora ./cmd/tako
+go build -tags rhel ./cmd/tako
+go build -tags rocky ./cmd/tako
+go build -tags almalinux ./cmd/tako
+go build -tags archlinux ./cmd/tako
+go build -tags opensuse ./cmd/tako
+```
+
+Nx commands detect `/etc/os-release`; set `TAKO_DISTRO` to override detection. Raw builds without exactly one distro-family tag fail compilation.
 
 Fresh installs enable and start `tako-sessiond.socket` before the public `tako.socket`; services remain socket-activated. Upgrades preserve administrator-disabled, stopped, and explicitly masked units. When units were running, scripts stop services before restarting sockets, reload systemd, clear failed/start-limit state, restore the private socket before the public socket, then restore only services that were previously active. Debian uses `deb-systemd-helper` state and `deb-systemd-invoke`, including offline-root and `policy-rc.d` behavior. Upgrades from older Tako packages remove only masks previously created by `deb-systemd-helper`; administrator masks remain intact.
 
