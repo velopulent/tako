@@ -5,179 +5,113 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestUpdateParsersStayBoundedAndExposeVersions(t *testing.T) {
-	apt := parseAPTUpdates("" +
-		"WARNING: apt does not have a stable CLI interface. Use with caution in scripts.\n" +
-		"Listing...\n" +
-		"openssl/bookworm-security 3.0.14-1~deb12u2 amd64 [upgradable from: 3.0.11-1~deb12u1]\n")
-	if len(apt) != 1 || apt[0].Name != "openssl" || apt[0].CurrentVersion == "" || apt[0].CandidateVersion == "" || apt[0].Architecture != "amd64" {
-		t.Fatalf("unexpected apt inventory: %#v", apt)
-	}
-	dnf := parseDNFUpdates("Last metadata expiration check: 0:01:00 ago on Tue.\nPackage     Arch     Version       Repository\nopenssl     x86_64   3.0.14-1      updates\n")
-	if len(dnf) != 1 || dnf[0].Name != "openssl" || dnf[0].CandidateVersion != "3.0.14-1" {
-		t.Fatalf("unexpected dnf inventory: %#v", dnf)
-	}
-	packageKit := parsePackageKitUpdates("Available packages\nopenssl.x86_64 3.0.14-1 Security update\n")
-	if len(packageKit) != 1 || packageKit[0].Name != "openssl" || packageKit[0].Architecture != "x86_64" || packageKit[0].Summary == "" {
-		t.Fatalf("unexpected PackageKit inventory: %#v", packageKit)
-	}
-	packageKitID := parsePackageKitUpdates("Available openssl;3.0.14-1;x86_64;updates Security update\n")
-	if len(packageKitID) != 1 || packageKitID[0].Name != "openssl" || packageKitID[0].CandidateVersion != "3.0.14-1" || packageKitID[0].Architecture != "x86_64" {
-		t.Fatalf("PackageKit package id was not decoded: %#v", packageKitID)
-	}
-	oversized := strings.Repeat("pkg/updates 1.0 amd64\n", MaxUpdatePackages+10)
-	if got := len(parseAPTUpdates(oversized)); got != MaxUpdatePackages {
-		t.Fatalf("parser exceeded package bound: %d", got)
-	}
+type fakeUpdateProvider struct {
+	packages     []UpdatePackage
+	changes      []UpdateChange
+	applied      bool
+	applyStarted chan struct{}
+	applyRelease chan struct{}
+	applyCtxErr  error
 }
 
-func TestPackageKitParserDecodesDebianNormalStatus(t *testing.T) {
-	// Exact shape reported from Debian trixie: status word, nevra.arch token
-	// with tilde revisions, repo in parentheses, free-text summary.
-	debian := parsePackageKitUpdates("Normal          docker-buildx-plugin-0.37.0-1~debian.13~trixie.amd64 (docker-trixie-stable)     Docker Buildx cli plugin.\n")
-	if len(debian) != 1 {
-		t.Fatalf("unexpected Debian PackageKit inventory: %#v", debian)
+func TestUpdateOutputSanitizedAndReplayBounded(t *testing.T) {
+	service := NewUpdateService(&fakeUpdateProvider{})
+	for index := 0; index < maxLiveEvents+20; index++ {
+		service.publish(UpdateStreamEvent{Kind: "output", Output: UpdateOutput{Stream: "stdout", Line: "\x1b[31mok\x00" + strings.Repeat("x", maxLiveLine-1) + "界界"}})
 	}
-	item := debian[0]
-	if item.Name != "docker-buildx-plugin" || item.Architecture != "amd64" || item.CandidateVersion != "0.37.0-1~debian.13~trixie" {
-		t.Fatalf("Debian package token was not decoded: %#v", item)
+	observation := service.Snapshot()
+	if len(observation.Output) > maxLiveEvents {
+		t.Fatalf("replay exceeded event bound: %d", len(observation.Output))
 	}
-	if item.Severity == "security" || item.Severity == "" {
-		t.Fatalf("Debian normal severity misclassified: %#v", item)
-	}
-}
-
-func TestUpdatesPreferPackageKitAndRemainReadOnly(t *testing.T) {
-	var calls []string
-	status := updatesWithDependencies(context.Background(), updateDependencies{
-		packageKitAvailable: func(context.Context) bool { return true },
-		commandExists:       func(name string) bool { return name == "pkcon" },
-		commandVersion: func(_ context.Context, name string, _ ...string) (string, bool) {
-			if name == "pkcon" {
-				return "pkcon 1.2", true
-			}
-			return "", false
-		},
-		commandOutput: func(_ context.Context, name string, args ...string) updateCommandResult {
-			calls = append(calls, name+" "+strings.Join(args, " "))
-			return updateCommandResult{Output: "Available packages\nvim.x86_64 9.0 editor\n", ExitCode: 0}
-		},
-	})
-	if !status.Available || status.Backend != "PackageKit" || status.Contract != "dbus-read-only" || len(status.Packages) != 1 || status.Packages[0].Name != "vim" {
-		t.Fatalf("unexpected PackageKit status: %#v", status)
-	}
-	if len(calls) != 1 || calls[0] != "pkcon --noninteractive get-updates" {
-		t.Fatalf("unexpected PackageKit command: %#v", calls)
-	}
-}
-
-func TestUpdatesUseVersionGatedAPTAndReportHeldLock(t *testing.T) {
-	var calls []string
-	status := updatesWithDependencies(context.Background(), updateDependencies{
-		packageKitAvailable: func(context.Context) bool { return false },
-		commandExists:       func(name string) bool { return name == "apt" },
-		commandVersion: func(_ context.Context, name string, _ ...string) (string, bool) {
-			if name == "apt-get" {
-				return "apt 3.0", true
-			}
-			return "", false
-		},
-		commandOutput: func(_ context.Context, name string, args ...string) updateCommandResult {
-			calls = append(calls, name+" "+strings.Join(args, " "))
-			return updateCommandResult{Output: "Listing...\nvim/bookworm 9.0 amd64 [upgradable from: 8.2]\n", ExitCode: 0}
-		},
-		lockHeld: func(path string) bool { return path == "/var/lib/dpkg/lock" },
-	})
-	if !status.Available || status.Backend != "apt-get" || !status.ExternalLock || status.LockReason == "" || len(status.Packages) != 1 {
-		t.Fatalf("unexpected APT status: %#v", status)
-	}
-	if len(calls) != 1 || calls[0] != "apt list --upgradable" {
-		t.Fatalf("APT did not use read-only inventory command: %#v", calls)
-	}
-}
-
-func TestUpdatesAcceptDNFCheckUpdateExitCodeAndFailClosed(t *testing.T) {
-	status := updatesWithDependencies(context.Background(), updateDependencies{
-		packageKitAvailable: func(context.Context) bool { return false },
-		commandExists:       func(string) bool { return false },
-		commandVersion: func(_ context.Context, name string, _ ...string) (string, bool) {
-			if name == "apt-get" {
-				return "apt 0.9", true
-			}
-			if name == "dnf" {
-				return "dnf 4.18", true
-			}
-			return "", false
-		},
-		commandOutput: func(_ context.Context, _ string, _ ...string) updateCommandResult {
-			return updateCommandResult{Output: "Package Arch Version Repository\nvim x86_64 9.0 updates\n", ExitCode: 100, Err: errors.New("updates available")}
-		},
-	})
-	if status.Backend != "dnf" || len(status.Packages) != 1 || status.Packages[0].CandidateVersion != "9.0" {
-		t.Fatalf("DNF exit 100 was not treated as inventory: %#v", status)
-	}
-	unavailable := updatesWithDependencies(context.Background(), updateDependencies{
-		packageKitAvailable: func(context.Context) bool { return false },
-		commandVersion:      func(context.Context, string, ...string) (string, bool) { return "", false },
-	})
-	if unavailable.Available || unavailable.Contract != "unavailable" || unavailable.Backend != "none" {
-		t.Fatalf("unsupported backend did not fail closed: %#v", unavailable)
-	}
-}
-
-func TestUpdateOperationsRejectUnsafeInputsAndDetectStaleInventory(t *testing.T) {
-	if err := ValidateUpdateOperation(UpdateOperation{Scope: "all", Packages: []string{"unexpected"}, Preview: true}); !errors.Is(err, ErrInvalidUpdateOperation) {
-		t.Fatalf("all-scope packages accepted: %v", err)
-	}
-	if err := ValidateUpdateOperation(UpdateOperation{Scope: "selected", Packages: []string{"bad/name"}, Preview: true}); !errors.Is(err, ErrInvalidUpdateOperation) {
-		t.Fatalf("unsafe package name accepted: %v", err)
-	}
-	status := UpdateStatus{Available: true, Backend: "apt-get", Version: "apt 3.0", Contract: "bounded-command-read-only", Packages: []UpdatePackage{{Name: "vim", CandidateVersion: "9.0"}}}
-	preview, err := PreviewUpdates(context.Background(), UpdateOperation{Scope: "selected", Packages: []string{"vim"}, ExpectedFingerprint: strings.Repeat("a", 64)}, func(context.Context) UpdateStatus { return status })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !preview.Stale || preview.Allowed || preview.Reason == "" {
-		t.Fatalf("stale preview was allowed: %#v", preview)
-	}
-	if len(UpdateFingerprint(status)) != 64 {
-		t.Fatalf("unexpected update fingerprint: %q", UpdateFingerprint(status))
-	}
-}
-
-func TestUpdateApplyArgumentsAreBackendSpecificAndBounded(t *testing.T) {
-	cases := []struct {
-		backend string
-		scope   string
-		want    []string
-	}{
-		{"PackageKit", "selected", []string{"pkcon", "--noninteractive", "update", "vim"}},
-		{"apt-get", "all", []string{"apt-get", "-y", "--no-remove", "--only-upgrade", "upgrade"}},
-		{"dnf", "selected", []string{"dnf", "-y", "upgrade", "--", "vim"}},
-	}
-	for _, item := range cases {
-		got, err := updateApplyArguments(item.backend, item.scope, []string{"vim"})
-		if err != nil || strings.Join(got, " ") != strings.Join(item.want, " ") {
-			t.Fatalf("%s/%s args=%v err=%v, want %v", item.backend, item.scope, got, err, item.want)
+	for _, output := range observation.Output {
+		if strings.Contains(output.Line, "\x1b") || strings.Contains(output.Line, "\x00") || len(output.Line) > maxLiveLine || strings.ToValidUTF8(output.Line, "") != output.Line {
+			t.Fatalf("unsafe output retained: %q", output.Line[:min(len(output.Line), 32)])
 		}
 	}
 }
 
-func TestLongUpdateCommandStopsItsProcessGroupOnCancellation(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	result := runLongUpdateCommand(ctx, "sh", "-c", "sleep 10")
-	if !errors.Is(result.Err, context.DeadlineExceeded) || time.Since(started) > 2*time.Second {
-		t.Fatalf("canceled update command was not bounded: result=%#v elapsed=%s", result, time.Since(started))
+func (provider *fakeUpdateProvider) Name() string                          { return "fake" }
+func (provider *fakeUpdateProvider) Probe(context.Context) (string, error) { return "1", nil }
+func (provider *fakeUpdateProvider) Inventory(context.Context) ([]UpdatePackage, error) {
+	return append([]UpdatePackage(nil), provider.packages...), nil
+}
+func (*fakeUpdateProvider) Refresh(context.Context, bool, func(UpdateStreamEvent)) error { return nil }
+func (provider *fakeUpdateProvider) Plan(context.Context) ([]UpdateChange, error) {
+	return append([]UpdateChange(nil), provider.changes...), nil
+}
+func (provider *fakeUpdateProvider) Apply(ctx context.Context, _ func(UpdateStreamEvent)) error {
+	if provider.applyStarted != nil {
+		close(provider.applyStarted)
+		<-provider.applyRelease
+		provider.applyCtxErr = ctx.Err()
+	}
+	provider.applied = true
+	provider.packages = nil
+	return nil
+}
+
+func TestUpdateServiceCommitContinuesAfterCallerDisconnect(t *testing.T) {
+	provider := &fakeUpdateProvider{
+		packages:     []UpdatePackage{{Name: "one", CurrentVersion: "1", CandidateVersion: "2"}},
+		changes:      []UpdateChange{{Action: "upgrade", Name: "one", CurrentVersion: "1", CandidateVersion: "2"}},
+		applyStarted: make(chan struct{}),
+		applyRelease: make(chan struct{}),
+	}
+	service := NewUpdateService(provider)
+	fingerprint := UpdatePlanFingerprint("fake", provider.changes)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Apply(ctx, UpdateOperation{ExpectedFingerprint: fingerprint, Confirmed: true})
+		result <- err
+	}()
+	<-provider.applyStarted
+	cancel()
+	close(provider.applyRelease)
+	if err := <-result; err != nil {
+		t.Fatalf("committed update stopped after disconnect: %v", err)
+	}
+	if provider.applyCtxErr != nil {
+		t.Fatalf("provider inherited caller cancellation: %v", provider.applyCtxErr)
+	}
+}
+func (*fakeUpdateProvider) History(context.Context, int) ([]UpdateHistoryEntry, error) {
+	return []UpdateHistoryEntry{}, nil
+}
+func (*fakeUpdateProvider) Recovery(context.Context) UpdateRecovery {
+	return UpdateRecovery{RestartServices: []string{}, Hints: []string{}}
+}
+func (*fakeUpdateProvider) LockStatus(context.Context) (bool, string) { return false, "" }
+
+func TestUpdateServiceRequiresExactPlanAndRiskConfirmation(t *testing.T) {
+	provider := &fakeUpdateProvider{
+		packages: []UpdatePackage{{Name: "old", CurrentVersion: "2", CandidateVersion: "1"}},
+		changes:  []UpdateChange{{Action: "downgrade", Name: "old", CurrentVersion: "2", CandidateVersion: "1"}},
+	}
+	service := NewUpdateService(provider)
+	status := service.Status(context.Background())
+	preview, err := service.Preview(context.Background(), UpdateOperation{ExpectedFingerprint: status.Fingerprint})
+	if err != nil || !preview.RequiresRiskConfirmation || preview.Fingerprint == "" {
+		t.Fatalf("unexpected preview: %#v, %v", preview, err)
+	}
+	_, err = service.Apply(context.Background(), UpdateOperation{ExpectedFingerprint: preview.Fingerprint, Confirmed: true})
+	if !errors.Is(err, ErrUpdateRiskNotAccepted) || provider.applied {
+		t.Fatalf("risky plan applied without confirmation: %v", err)
+	}
+	result, err := service.Apply(context.Background(), UpdateOperation{ExpectedFingerprint: preview.Fingerprint, Confirmed: true, RiskAccepted: true})
+	if err != nil || !result.Verified || !provider.applied {
+		t.Fatalf("apply failed: %#v, %v", result, err)
 	}
 }
 
-func TestVersionGate(t *testing.T) {
-	if !versionAtLeast("apt 3.0", 1) || versionAtLeast("dnf 3.0", 4) || versionAtLeast("unknown", 1) {
-		t.Fatal("version gate misclassified backend versions")
+func TestUpdateServiceRejectsStalePlan(t *testing.T) {
+	provider := &fakeUpdateProvider{changes: []UpdateChange{{Action: "upgrade", Name: "one", CandidateVersion: "2"}}}
+	service := NewUpdateService(provider)
+	stale := UpdatePlanFingerprint("fake", []UpdateChange{{Action: "upgrade", Name: "other"}})
+	_, err := service.Apply(context.Background(), UpdateOperation{ExpectedFingerprint: stale, Confirmed: true})
+	if !errors.Is(err, ErrUpdateConflict) {
+		t.Fatalf("expected stale-plan conflict, got %v", err)
 	}
 }

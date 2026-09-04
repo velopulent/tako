@@ -70,7 +70,6 @@ var versionCommands = map[string]string{
 	"services": "systemctl",
 	"logs":     "journalctl",
 	"storage":  "udisksctl",
-	"updates":  "pkcon",
 }
 
 func fileExists(path string) bool {
@@ -169,7 +168,7 @@ func readBounded(reader io.Reader, limit int64) ([]byte, error) {
 	return payload, nil
 }
 
-func Detect(ctx context.Context) []Capability {
+func Detect(ctx context.Context, services ...*UpdateService) []Capability {
 	for {
 		now := time.Now()
 		capabilityCache.Lock()
@@ -192,7 +191,7 @@ func Detect(ctx context.Context) []Capability {
 		capabilityCache.Unlock()
 
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		result := detect(probeCtx, hostProbe{})
+		result := detect(probeCtx, hostProbe{}, services...)
 		cancel()
 		capabilityCache.Lock()
 		capabilityCache.value = append([]Capability(nil), result...)
@@ -204,7 +203,7 @@ func Detect(ctx context.Context) []Capability {
 	}
 }
 
-func detect(ctx context.Context, probe runtimeProbe) []Capability {
+func detect(ctx context.Context, probe runtimeProbe, services ...*UpdateService) []Capability {
 	busNames, busErr := probe.BusNames(ctx)
 	capabilities := []Capability{
 		localCapability("dashboard", "built-in", true, false),
@@ -219,7 +218,7 @@ func detect(ctx context.Context, probe runtimeProbe) []Capability {
 		dbusCapability("logs", "journald", "org.freedesktop.systemd1", busNames, busErr, false, false),
 		dbusCapability("storage", "UDisks2", "org.freedesktop.UDisks2", busNames, busErr, false, false),
 	)
-	capabilities = append(capabilities, updateCapability(ctx, probe, busNames, busErr))
+	capabilities = append(capabilities, updateCapability(ctx, services...))
 	capabilities = append(capabilities, networkCapability(ctx, probe, busNames, busErr))
 	capabilities = append(capabilities, firewallCapability(ctx, probe, busNames, busErr))
 	capabilities = append(capabilities, policyCapability(ctx, probe, "selinux", "getenforce", "sestatus", "/sys/fs/selinux", "Install SELinux user-space tools and enable SELinux."))
@@ -281,34 +280,16 @@ func dbusCapability(id, backend, busName string, names map[string]bool, busErr e
 	return Capability{ID: id, State: StateReady, Backend: backend, Readable: true, Mutable: mutable, Rollback: rollback, ReadAuthority: "session", MutationAuthority: mutationAuthority, Contract: "dbus"}
 }
 
-func updateCapability(ctx context.Context, probe runtimeProbe, names map[string]bool, busErr error) Capability {
-	// Updates are writable in both branches: inventory reads happen over
-	// PackageKit D-Bus (or bounded CLI fallback), while the apply job,
-	// automatic-update configuration, and kpatch settings execute through
-	// sessiond with administrative authority. Rollback is not offered by any
-	// supported backend.
-	if busErr == nil && busAvailable(names, "org.freedesktop.PackageKit") {
-		return Capability{ID: "updates", State: StateReady, Backend: "PackageKit", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "dbus"}
+func updateCapability(ctx context.Context, services ...*UpdateService) Capability {
+	if len(services) == 0 || services[0] == nil || services[0].provider == nil {
+		return unavailable("updates", "distro-provider", "No compile-time update provider was injected", "Build Tako with exactly one supported distro tag.")
 	}
-	for _, candidate := range []struct {
-		command      string
-		argument     string
-		minimumMajor int
-	}{
-		{command: "apt-get", argument: "--version", minimumMajor: 1},
-		{command: "dnf", argument: "--version", minimumMajor: 4},
-	} {
-		if version, ok := probe.CommandVersion(ctx, candidate.command, candidate.argument); ok && versionAtLeast(version, candidate.minimumMajor) {
-			return Capability{
-				ID: "updates", State: StateReady, Backend: candidate.command, Version: version,
-				Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative",
-				Contract:      "bounded-command",
-				Reason:        candidate.command + " command path in use; PackageKit is unavailable",
-				SetupGuidance: "Install and start PackageKit for richer advisory metadata, update history, and live transaction progress.",
-			}
-		}
+	service := services[0]
+	version, err := service.provider.Probe(ctx)
+	if err != nil {
+		return unavailable("updates", service.ProviderName(), boundedError(err), "Install the native package manager required by this distro build.")
 	}
-	return unavailable("updates", "PackageKit", "No supported update backend detected", "Install and start PackageKit.")
+	return Capability{ID: "updates", State: StateReady, Backend: service.ProviderName(), Version: version, Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "native-distro-provider"}
 }
 
 func networkCapability(ctx context.Context, probe runtimeProbe, names map[string]bool, busErr error) Capability {

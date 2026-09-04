@@ -8,7 +8,7 @@ import (
 )
 
 // TestUpdatesAgainstHost exercises the real bounded read-only adapter in the
-// disposable Linux VM. A host without PackageKit, APT, or DNF is a supported
+// disposable Linux VM. A host without its tagged native package manager is a supported
 // degraded result, but the response must always remain bounded and explicit.
 func TestUpdatesAgainstHost(t *testing.T) {
 	status := Updates(context.Background())
