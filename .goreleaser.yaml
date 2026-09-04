@@ -130,12 +130,14 @@ nfpms:
       deb:
         dependencies:
           - systemd
+          - libnss-systemd
           - libpam0g
           - dbus
           - polkitd
+          - init-system-helpers
+        recommends:
           - packagekit
           - packagekit-tools
-          - init-system-helpers
         scripts:
           postinstall: apps/backend/packaging/scripts/deb/postinst.sh
           preremove: apps/backend/packaging/scripts/deb/prerm.sh
@@ -146,6 +148,7 @@ nfpms:
           - pam
           - dbus
           - polkit
+        recommends:
           - PackageKit
         scripts:
           postinstall: apps/backend/packaging/scripts/rpm/post.sh
