@@ -1,16 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import {
-  Bug,
-  Check,
-  RefreshCw,
-  RotateCcw,
-  Settings,
-  Shield,
-  Sparkles,
-  TriangleAlert,
-} from "lucide-react"
+import { Check, RefreshCw, TriangleAlert } from "lucide-react"
 import * as React from "react"
-import { AutoUpdatesCard } from "@/components/auto-updates-card"
+
 import { KpatchSettingsCard } from "@/components/kpatch-settings-card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -30,39 +21,36 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
 import { UpdateHistoryCard } from "@/components/update-history-card"
 import { UpdateJobProgress } from "@/components/update-job-progress"
 import { activeUpdateJobStates } from "@/components/update-job-state"
-import {
-  ForeignUpdateAlert,
-  UpdateLivePanel,
-} from "@/components/update-live-panel"
+import { UpdateLivePanel } from "@/components/update-live-panel"
 import { UpdatePackageTable } from "@/components/update-package-table"
 import {
-  type AutoUpdatesConfig,
   api,
   type DiagnosticJob,
   type SessionResponse,
-  type UpdateLive,
   type UpdateObservation,
   type UpdateOperation,
+  type UpdateOutput,
   type UpdatePreview,
+  type UpdateProgress,
   type UpdateStatus,
 } from "@/lib/api"
 
-const updateJobStorageKey = "tako-update-job:v1"
+const updateJobStorageKey = "tako-update-job:v2"
+const idleProgress: UpdateProgress = {
+  sequence: 0,
+  active: false,
+  phase: "idle",
+  current: 0,
+  total: 0,
+  percent: -1,
+  message: "No update is running.",
+  cancelable: false,
+  timestamp: "",
+}
 
 function readSavedJob() {
   try {
@@ -72,44 +60,21 @@ function readSavedJob() {
   }
 }
 
-function formatLastChecked(iso?: string) {
-  if (!iso) return ""
-  const diff = Date.now() - new Date(iso).getTime()
-  const seconds = Math.round(diff / 1000)
-  if (seconds < 45) return "Last checked: just now"
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60)
-    return `Last checked: ${minutes} minute${minutes === 1 ? "" : "s"} ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24)
-    return `Last checked: ${hours} hour${hours === 1 ? "" : "s"} ago`
-  const days = Math.round(hours / 24)
-  return `Last checked: ${days} day${days === 1 ? "" : "s"} ago`
-}
-
-function getHighestSeverity(packages: UpdateStatus["packages"]) {
-  if (packages.some((p) => p.severity === "security")) return "security"
-  if (packages.some((p) => p.severity === "bugfix")) return "bugfix"
-  return "enhancement"
-}
-
-function CountBadge({ severity }: { severity: string }) {
-  if (severity === "security")
-    return <Shield className="size-5 text-destructive" />
-  if (severity === "bugfix") return <Bug className="size-5 text-amber-600" />
-  return <Sparkles className="size-5 text-muted-foreground" />
+function formatLastChecked(value?: string) {
+  if (!value) return ""
+  return new Date(value).toLocaleString()
 }
 
 export function UpdateInventory() {
   const queryClient = useQueryClient()
-  const [scope, setScope] = React.useState<UpdateOperation["scope"]>("all")
-  const [selected, setSelected] = React.useState<string[]>([])
   const [jobID, setJobID] = React.useState(readSavedJob)
+  const [preview, setPreview] = React.useState<UpdatePreview | null>(null)
   const [dialogOpen, setDialogOpen] = React.useState(false)
-  const [pendingOperation, setPendingOperation] =
-    React.useState<UpdateOperation | null>(null)
-  const [pendingPreview, setPendingPreview] =
-    React.useState<UpdatePreview | null>(null)
+  const [riskAccepted, setRiskAccepted] = React.useState(false)
+  const [observation, setObservation] = React.useState<UpdateObservation>({
+    progress: idleProgress,
+    output: [],
+  })
 
   const query = useQuery({
     queryKey: ["updates"],
@@ -121,109 +86,76 @@ export function UpdateInventory() {
   })
   const job = useQuery({
     queryKey: ["update-job", jobID],
-    queryFn: () =>
-      api<{ job: DiagnosticJob; update?: UpdateObservation }>(`/jobs/${jobID}`),
+    queryFn: () => api<{ job: DiagnosticJob }>(`/jobs/${jobID}`),
     enabled: jobID !== "",
     refetchInterval: (current) => {
-      const state = current?.state?.data?.job?.state
+      const state = current.state.data?.job?.state
       return state && activeUpdateJobStates.has(state) ? 2000 : false
     },
   })
-  const administrative = session.data?.administrative ?? false
-  const ownJobRunning = (() => {
-    const state = job.data?.job?.state
-    return state !== undefined && activeUpdateJobStates.has(state)
-  })()
 
-  const cancelForeignRequest = useMutation({
-    mutationFn: () =>
-      api<{ canceled: boolean }>("/updates/cancel", {
-        method: "POST",
-        headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
-      }),
-    onSuccess: () => foreignLive.refetch(),
-  })
+  React.useEffect(() => {
+    const source = new EventSource("/api/v1/updates/live")
+    const onProgress = (event: MessageEvent<string>) => {
+      const progress = JSON.parse(event.data) as UpdateProgress
+      setObservation((current) => ({
+        progress,
+        output:
+          progress.jobId && progress.jobId !== current.progress.jobId
+            ? []
+            : current.output,
+      }))
+    }
+    const onOutput = (event: MessageEvent<string>) => {
+      const output = JSON.parse(event.data) as UpdateOutput
+      setObservation((current) => ({
+        ...current,
+        output: [...current.output, output].slice(-500),
+      }))
+    }
+    source.addEventListener("progress", onProgress as EventListener)
+    source.addEventListener("output", onOutput as EventListener)
+    return () => source.close()
+  }, [])
 
-  const refreshRequest = useMutation({
+  const refresh = useMutation({
     mutationFn: () =>
       api<UpdateStatus>("/updates/refresh", {
         method: "POST",
         body: JSON.stringify({ force: true }),
       }),
-    onSuccess: (data) => {
-      queryClient.setQueryData(["updates"], data)
-      queryClient.invalidateQueries({ queryKey: ["updates"] })
-    },
+    onSuccess: (status) => queryClient.setQueryData(["updates"], status),
   })
-
-  // Watch package-manager transactions while they run: foreign updates when a
-  // lock is held, and our own metadata refresh for a progress bar.
-  const foreignLive = useQuery({
-    queryKey: ["updates-live"],
-    queryFn: () =>
-      api<{ live: UpdateLive; log: UpdateObservation["log"] }>("/updates/live"),
-    enabled:
-      ((query.data?.externalLock ?? false) && !ownJobRunning) ||
-      refreshRequest.isPending,
-    refetchInterval: 1500,
-  })
-  const automatic = useQuery({
-    queryKey: ["updates-automatic"],
-    queryFn: () => api<AutoUpdatesConfig>("/updates/automatic"),
-    staleTime: 30 * 1000,
-  })
-
-  // Auto-refresh: if cache never refreshed or >=1 day old, trigger refresh
-  // biome-ignore lint/correctness/useExhaustiveDependencies: effect intentionally triggers only off the refresh age; depending on the mutation object would re-fire on every mutation state change
-  React.useEffect(() => {
-    const secs = query.data?.timeSinceRefresh
-    if (secs !== undefined && (secs < 0 || secs >= 24 * 3600)) {
-      if (!refreshRequest.isPending) refreshRequest.mutate()
-    }
-  }, [query.data?.timeSinceRefresh])
-
-  // Also refresh on visibility change
-  React.useEffect(() => {
-    const handler = () => {
-      if (!document.hidden) {
-        queryClient.invalidateQueries({ queryKey: ["updates"] })
-        query.refetch()
-      }
-    }
-    document.addEventListener("visibilitychange", handler)
-    return () => document.removeEventListener("visibilitychange", handler)
-  }, [queryClient, query])
-
   const previewRequest = useMutation({
     mutationFn: (operation: UpdateOperation) =>
       api<UpdatePreview>("/updates/preview", {
         method: "POST",
         body: JSON.stringify(operation),
       }),
+    onSuccess: (value) => {
+      setPreview(value)
+      setRiskAccepted(false)
+      setDialogOpen(true)
+    },
   })
-
-  const applyRequest = useMutation({
+  const apply = useMutation({
     mutationFn: (operation: UpdateOperation) =>
       api<{ job: DiagnosticJob }>("/updates", {
         method: "POST",
         headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
         body: JSON.stringify(operation),
       }),
-    onSuccess: (value) => {
-      setJobID(value.job.id)
+    onSuccess: ({ job: value }) => {
+      setJobID(value.id)
       setDialogOpen(false)
-      setPendingPreview(null)
-      setPendingOperation(null)
-      queryClient.invalidateQueries({ queryKey: ["updates"] })
       try {
-        sessionStorage.setItem(updateJobStorageKey, value.job.id)
+        sessionStorage.setItem(updateJobStorageKey, value.id)
       } catch {
-        // ignore
+        // Storage may be disabled.
       }
     },
   })
-
-  const cancelRequest = useMutation({
+  const cancel = useMutation({
     mutationFn: () =>
       api<{ job: DiagnosticJob }>(`/jobs/${jobID}/cancel`, {
         method: "POST",
@@ -231,631 +163,186 @@ export function UpdateInventory() {
       }),
   })
 
-  const currentJobState = job.data?.job?.state
-  React.useEffect(() => {
-    if (!currentJobState || activeUpdateJobStates.has(currentJobState)) return
-    try {
-      sessionStorage.removeItem(updateJobStorageKey)
-    } catch {
-      // ignore
-    }
-  }, [currentJobState])
-
-  const handleRefresh = () => {
-    // Prefer D-Bus RefreshCache, fallback to invalidate
-    if (refreshRequest.isPending) return
-    refreshRequest.mutate(undefined, {
-      onError: () => {
-        queryClient.invalidateQueries({ queryKey: ["updates"] })
-        query.refetch()
-      },
-    })
-  }
-
-  const handleToggle = React.useCallback(
-    (name: string) => {
-      if (!query.data) return
-      const pkg = query.data.packages.find((p) => p.name === name)
-      const groupKey = pkg?.groupKey
-      let groupNames: string[] = []
-      if (groupKey) {
-        groupNames = query.data.packages
-          .filter((p) => p.groupKey === groupKey)
-          .map((p) => p.name)
-      } else if (pkg?.dependencies?.length) {
-        groupNames = [name, ...pkg.dependencies]
-      } else {
-        groupNames = [name]
-      }
-      setPendingPreview(null)
-      setSelected((current) => {
-        const hasAll = groupNames.every((n) => current.includes(n))
-        if (hasAll) {
-          return current.filter((n) => !groupNames.includes(n))
-        }
-        const next = new Set(current)
-        groupNames.forEach((n) => {
-          next.add(n)
-        })
-        return Array.from(next)
-      })
-    },
-    [query.data]
-  )
-
-  const initiateInstall = (mode: "all" | "security" | "selected") => {
-    if (!query.data) return
-    let operation: UpdateOperation
-    if (mode === "all") {
-      operation = { scope: "all", expectedFingerprint: query.data.fingerprint }
-    } else if (mode === "security") {
-      const securityNames = query.data.packages
-        .filter((p) => p.severity === "security")
-        .map((p) => p.name)
-      operation = {
-        scope: "selected",
-        packages: securityNames,
-        expectedFingerprint: query.data.fingerprint,
-      }
-    } else {
-      // expand selected with dependencies already handled via toggle, but ensure deps included
-      const expanded = new Set(selected)
-      for (const name of selected) {
-        const pkg = query.data.packages.find((p) => p.name === name)
-        pkg?.dependencies?.forEach((dep) => {
-          expanded.add(dep)
-        })
-        if (pkg?.groupKey) {
-          query.data.packages
-            .filter((p) => p.groupKey === pkg.groupKey)
-            .forEach((p) => {
-              expanded.add(p.name)
-            })
-        }
-      }
-      const packages = Array.from(expanded)
-      operation = {
-        scope: "selected",
-        packages,
-        expectedFingerprint: query.data.fingerprint,
-      }
-    }
-    setPendingOperation(operation)
-    previewRequest.mutate(operation, {
-      onSuccess: (preview) => {
-        setPendingPreview(preview)
-        setDialogOpen(true)
-      },
-    })
-  }
-
-  const handleConfirm = () => {
-    if (!pendingOperation) return
-    const operation: UpdateOperation = {
-      ...pendingOperation,
-      confirmation: "CONFIRM",
-    }
-    applyRequest.mutate(operation)
-  }
-
   if (query.isPending) return <Skeleton className="h-72" />
-  if (query.isError) {
+  if (query.isError || !query.data) {
     return (
       <Alert variant="destructive">
         <AlertTitle>Update inventory unavailable</AlertTitle>
-        <AlertDescription>{query.error.message}</AlertDescription>
+        <AlertDescription>{query.error?.message}</AlertDescription>
       </Alert>
     )
   }
-  if (!query.data) return null
+
   const status = query.data
   const activeJob = job.data?.job
-  const actionError =
-    previewRequest.error || applyRequest.error || cancelRequest.error
-
-  const total = status.packages.length
-  const securityCount = status.packages.filter(
-    (p) => p.severity === "security"
-  ).length
-  const bugfixCount = status.packages.filter(
-    (p) => p.severity === "bugfix"
-  ).length
-  const highestSeverity = getHighestSeverity(status.packages)
-  const hasMixed = securityCount > 0 && securityCount < total
-  const isLocked = status.externalLock
-  const canInstall = status.available && !isLocked
-
-  const selectedWithDeps = (() => {
-    if (!status.packages.length) return []
-    const expanded = new Set(selected)
-    for (const name of selected) {
-      const pkg = status.packages.find((p) => p.name === name)
-      pkg?.dependencies?.forEach((dep) => {
-        expanded.add(dep)
-      })
-      if (pkg?.groupKey) {
-        status.packages
-          .filter((p) => p.groupKey === pkg.groupKey)
-          .forEach((p) => {
-            expanded.add(p.name)
-          })
-      }
-    }
-    return Array.from(expanded)
-  })()
+  const error =
+    refresh.error || previewRequest.error || apply.error || cancel.error
+  const canUpdate =
+    status.available && !status.externalLock && status.packages.length > 0
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Status + Settings grid */}
+      {status.externalLock && (
+        <Alert variant="destructive">
+          <TriangleAlert className="size-4" />
+          <AlertTitle>Package manager busy</AlertTitle>
+          <AlertDescription>
+            {status.lockReason ||
+              "Another package-manager operation is active."}
+          </AlertDescription>
+        </Alert>
+      )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertTitle>Update action failed</AlertTitle>
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
+      )}
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Status</CardTitle>
+            <CardTitle>Status</CardTitle>
             <CardAction>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label="Check for updates"
-                      onClick={handleRefresh}
-                      disabled={query.isFetching || refreshRequest.isPending}
-                    >
-                      <RefreshCw
-                        className={
-                          query.isFetching || refreshRequest.isPending
-                            ? "animate-spin"
-                            : ""
-                        }
-                      />
-                    </Button>
-                  }
+              <Button
+                variant="outline"
+                size="icon-sm"
+                aria-label="Check for updates"
+                disabled={refresh.isPending}
+                onClick={() => refresh.mutate()}
+              >
+                <RefreshCw
+                  className={refresh.isPending ? "animate-spin" : ""}
                 />
-                <TooltipContent>Check for updates</TooltipContent>
-              </Tooltip>
+              </Button>
             </CardAction>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {total === 0 && status.available ? (
-              <div className="flex gap-3">
-                <Check className="size-5 text-green-600 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium">System is up to date</p>
-                  {status.lastChecked && (
-                    <p className="text-xs text-muted-foreground">
-                      {formatLastChecked(status.lastChecked)}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ) : total > 0 ? (
-              <div className="flex gap-3">
-                <span className="mt-0.5 shrink-0">
-                  <CountBadge severity={highestSeverity} />
-                </span>
-                <div className="space-y-1">
-                  <p className="text-sm font-medium">
-                    {securityCount === total && total > 0
-                      ? `${securityCount} security fix${securityCount === 1 ? "" : "es"} available`
-                      : hasMixed
-                        ? `${total} updates available, including ${securityCount} security fix${securityCount === 1 ? "" : "es"}`
-                        : `${total} update${total === 1 ? "" : "s"} available`}
-                  </p>
-                  {status.lastChecked && (
-                    <p className="text-xs text-muted-foreground">
-                      {formatLastChecked(status.lastChecked)}
-                    </p>
-                  )}
-                  {bugfixCount > 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      {bugfixCount} bug fix{bugfixCount === 1 ? "" : "es"} ·{" "}
-                      {total - securityCount - bugfixCount} enhancement
-                      {total - securityCount - bugfixCount === 1 ? "" : "s"}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ) : null}
-
-            {status.recovery?.rebootRequired && (
-              <Alert className="py-2">
-                <RotateCcw className="size-4" />
-                <AlertTitle className="text-sm">Reboot required</AlertTitle>
-                <AlertDescription className="text-xs">
-                  {status.recovery?.hints?.join(" ") ||
-                    status.recovery?.reason ||
-                    "Reboot the host after the update job completes."}
-                  {status.recovery?.rebootPackages?.length
-                    ? ` Packages: ${status.recovery?.rebootPackages?.join(", ")}`
-                    : ""}
-                </AlertDescription>
-              </Alert>
-            )}
-            {!status.recovery?.rebootRequired &&
-              (status.recovery?.restartServices?.length ?? 0) > 0 && (
-                <Alert className="py-2">
-                  <Settings className="size-4" />
-                  <AlertTitle className="text-sm">Restart services</AlertTitle>
-                  <AlertDescription className="space-y-1.5 text-xs">
-                    <p>{status.recovery?.restartServices.join(", ")}</p>
-                    <div className="flex flex-wrap gap-1.5 pt-0.5">
-                      {status.recovery?.restartServices
-                        .slice(0, 6)
-                        .map((unit) => (
-                          <RestartServiceButton
-                            key={unit}
-                            unit={unit}
-                            csrfToken={session.data?.csrfToken ?? ""}
-                            disabled={!administrative}
-                          />
-                        ))}
-                    </div>
-                  </AlertDescription>
-                </Alert>
-              )}
-            {(status.recovery?.manualPackages?.length ?? 0) > 0 && (
-              <Alert className="py-2">
-                <Settings className="size-4" />
-                <AlertTitle className="text-sm">
-                  Manual restart required
-                </AlertTitle>
-                <AlertDescription className="text-xs">
-                  {status.recovery?.manualPackages?.join(", ")}
-                </AlertDescription>
-              </Alert>
-            )}
-            {status.recovery && !status.recovery?.authoritative && (
-              <p className="text-xs text-muted-foreground">
-                Advisory only; verify service state after applying updates.
+          <CardContent className="space-y-2 text-sm">
+            {status.packages.length === 0 && status.available ? (
+              <p className="flex items-center gap-2">
+                <Check className="size-4 text-green-600" />
+                System is up to date
               </p>
+            ) : (
+              <p>{status.message}</p>
             )}
-            {isLocked && (
-              <Alert variant="destructive" className="py-2">
-                <TriangleAlert className="size-4" />
-                <AlertTitle className="text-sm">
-                  Another package tool holds a lock
-                </AlertTitle>
-                <AlertDescription className="text-xs">
-                  {status.lockReason ||
-                    "Updates are paused until the other operation finishes."}
-                </AlertDescription>
-              </Alert>
-            )}
-            {!status.available && status.reason && (
-              <Alert className="py-2">
-                <AlertTitle className="text-sm">
-                  Updates are unavailable
-                </AlertTitle>
-                <AlertDescription className="text-xs">
-                  {status.reason}
-                </AlertDescription>
-              </Alert>
-            )}
-            {status.version && (
-              <p className="text-xs text-muted-foreground">
-                Backend {status.version} · contract {status.contract}
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">
+              {status.backend} · {status.contract}
+              {status.lastChecked
+                ? ` · ${formatLastChecked(status.lastChecked)}`
+                : ""}
+            </p>
           </CardContent>
         </Card>
-
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Settings</CardTitle>
+            <CardTitle>Settings</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            <AutoUpdatesCard
-              csrfToken={session.data?.csrfToken ?? ""}
-              administrative={administrative}
-            />
+          <CardContent>
             <KpatchSettingsCard
               csrfToken={session.data?.csrfToken ?? ""}
-              administrative={administrative}
+              administrative={session.data?.administrative ?? false}
             />
           </CardContent>
         </Card>
       </div>
 
-      {actionError && (
-        <Alert variant="destructive">
-          <AlertTitle>Update action failed</AlertTitle>
-          <AlertDescription>{actionError.message}</AlertDescription>
-        </Alert>
-      )}
-
-      {refreshRequest.isPending && foreignLive.data?.live?.active && (
-        <UpdateLivePanel
-          observation={{
-            live: foreignLive.data.live,
-            log: foreignLive.data.log ?? [],
-          }}
-        />
-      )}
-
-      {isLocked && foreignLive.data?.live?.active && (
-        <ForeignUpdateAlert
-          observation={{
-            live: foreignLive.data.live,
-            log: foreignLive.data.log ?? [],
-          }}
-          canceling={cancelForeignRequest.isPending}
-          onCancel={() =>
-            administrative ? cancelForeignRequest.mutate() : undefined
-          }
-        />
-      )}
-
+      <UpdateLivePanel
+        observation={observation}
+        canceling={cancel.isPending}
+        onCancel={jobID ? () => cancel.mutate() : undefined}
+      />
       {activeJob && (
         <UpdateJobProgress
           job={activeJob}
-          observation={job.data?.update}
-          canceling={cancelRequest.isPending}
-          onCancel={() => cancelRequest.mutate()}
+          observation={observation}
+          canceling={cancel.isPending}
+          onCancel={() => cancel.mutate()}
         />
       )}
 
-      <Card id="available-updates">
+      <Card>
         <CardHeader>
           <CardTitle>Available updates</CardTitle>
-          {total > 0 && (
-            <CardDescription>
-              {total} package{total === 1 ? "" : "s"} with advisories grouped
-            </CardDescription>
-          )}
-          {total > 0 && (
-            <CardAction className="flex flex-wrap gap-2">
-              {scope === "all" && hasMixed && (
-                <Button
-                  variant="outline"
-                  disabled={!canInstall || previewRequest.isPending}
-                  onClick={() => initiateInstall("security")}
-                >
-                  {previewRequest.isPending
-                    ? "Loading…"
-                    : "Install security updates"}
-                </Button>
-              )}
-              {scope === "all" ? (
-                <Button
-                  disabled={!canInstall || previewRequest.isPending}
-                  onClick={() => initiateInstall("all")}
-                >
-                  {securityCount === total
-                    ? "Install security updates"
-                    : "Install all updates"}
-                </Button>
-              ) : (
-                <Button
-                  disabled={
-                    !canInstall ||
-                    selectedWithDeps.length === 0 ||
-                    previewRequest.isPending
-                  }
-                  onClick={() => initiateInstall("selected")}
-                >
-                  {previewRequest.isPending
-                    ? "Loading…"
-                    : `Install selected (${selectedWithDeps.length})`}
-                </Button>
-              )}
-            </CardAction>
-          )}
+          <CardDescription>
+            Full-system update using manager-default dependency resolution.
+          </CardDescription>
+          <CardAction>
+            <Button
+              disabled={!canUpdate || previewRequest.isPending}
+              onClick={() =>
+                previewRequest.mutate({
+                  expectedFingerprint: status.fingerprint,
+                  confirmed: false,
+                })
+              }
+            >
+              Preview full update
+            </Button>
+          </CardAction>
         </CardHeader>
-        <CardContent className="space-y-4">
-          {total === 0 ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>No installed-software updates</EmptyTitle>
-                <EmptyDescription>
-                  The selected backend reported no available updates.
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium">Update scope</span>
-                {/* biome-ignore lint/a11y/useSemanticElements: labeled scope-switcher button pair; a fieldset restyle is out of scope */}
-                <div
-                  className="flex gap-2"
-                  role="group"
-                  aria-label="Update scope"
-                >
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={scope === "all" ? "default" : "outline"}
-                    onClick={() => setScope("all")}
-                  >
-                    All packages
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={scope === "selected" ? "default" : "outline"}
-                    onClick={() => setScope("selected")}
-                  >
-                    Selected packages
-                  </Button>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  Preview the current inventory before starting a serialized
-                  update job.
-                </span>
-              </div>
-
-              <UpdatePackageTable
-                packages={status.packages}
-                selected={selectedWithDeps}
-                onToggle={handleToggle}
-                selectable={scope === "selected"}
-              />
-
-              {scope === "selected" && selectedWithDeps.length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  Select at least one advisory to install selected updates.
-                  Dependent packages in the same advisory are auto-selected and
-                  cannot be toggled individually.
-                </p>
-              )}
-              <p className="text-xs text-muted-foreground">
-                {status.backend} · {status.contract}{" "}
-                {status.lastChecked
-                  ? `· ${formatLastChecked(status.lastChecked)}`
-                  : ""}
-              </p>
-            </>
-          )}
+        <CardContent>
+          <UpdatePackageTable packages={status.packages} />
         </CardContent>
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {pendingPreview?.allowed
-                ? "Confirm updates"
+              {preview?.allowed
+                ? "Confirm full-system update"
                 : "Update cannot start"}
             </DialogTitle>
             <DialogDescription>
-              {pendingPreview?.allowed
-                ? "Review the preview and confirm to start the update job."
-                : "The preview indicates the operation cannot proceed."}
+              {preview?.reason ||
+                `${preview?.changes.length ?? 0} planned changes`}
             </DialogDescription>
-            <div className="space-y-2 pt-2 text-sm">
-              {previewRequest.isPending ? (
-                <p>Loading preview…</p>
-              ) : pendingPreview ? (
-                <>
-                  <p>
-                    {pendingPreview.reason ||
-                      pendingPreview.changes.join(", ") ||
-                      `Update ${pendingPreview.selected.length} package${pendingPreview.selected.length === 1 ? "" : "s"}`}
-                  </p>
-                  {pendingPreview.warnings.length > 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      {pendingPreview.warnings.join(" ")}
-                    </p>
-                  )}
-                  {pendingPreview.stale && (
-                    <p className="text-destructive text-xs">
-                      Inventory changed; refresh before applying.
-                    </p>
-                  )}
-                  {pendingPreview.selected.length > 0 && (
-                    <div className="rounded-md border bg-muted/20 p-2 max-h-40 overflow-auto text-xs">
-                      {pendingPreview.selected.map((p) => (
-                        <div
-                          key={p.name}
-                          className="flex justify-between gap-2"
-                        >
-                          <span className="font-medium">{p.name}</span>
-                          <span className="text-muted-foreground truncate">
-                            {p.candidateVersion}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : null}
-            </div>
           </DialogHeader>
+          <div className="max-h-64 overflow-auto text-sm">
+            {preview?.changes.map((change) => (
+              <p key={`${change.action}:${change.name}`}>
+                {change.action}: {change.name} {change.currentVersion || ""}{" "}
+                {change.candidateVersion ? `→ ${change.candidateVersion}` : ""}
+              </p>
+            ))}
+          </div>
+          {preview?.requiresRiskConfirmation && (
+            <label className="flex gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={riskAccepted}
+                onChange={(event) => setRiskAccepted(event.target.checked)}
+              />
+              I accept removals, downgrades, replacements, repository changes,
+              or vendor changes shown above.
+            </label>
+          )}
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDialogOpen(false)}
-              disabled={applyRequest.isPending}
-            >
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>
               Cancel
             </Button>
             <Button
               disabled={
-                !pendingPreview?.allowed ||
-                applyRequest.isPending ||
-                !session.data?.csrfToken
+                !preview?.allowed ||
+                (preview.requiresRiskConfirmation && !riskAccepted) ||
+                apply.isPending
               }
-              onClick={handleConfirm}
+              onClick={() =>
+                preview &&
+                apply.mutate({
+                  expectedFingerprint: preview.fingerprint,
+                  confirmed: true,
+                  riskAccepted,
+                })
+              }
             >
-              {applyRequest.isPending ? "Starting…" : "Confirm and install"}
+              Apply full update
             </Button>
           </DialogFooter>
-          {!session.data?.csrfToken && (
-            <p className="text-xs text-muted-foreground text-right">
-              Sign-in required to apply updates.
-            </p>
-          )}
         </DialogContent>
       </Dialog>
 
-      <UpdateHistoryCard enabled={!automatic.data?.enabled} />
+      <UpdateHistoryCard enabled />
     </div>
-  )
-}
-
-function RestartServiceButton({
-  unit,
-  csrfToken,
-  disabled,
-}: {
-  unit: string
-  csrfToken: string
-  disabled?: boolean
-}) {
-  const [confirmOpen, setConfirmOpen] = React.useState(false)
-  const restart = useMutation({
-    mutationFn: () =>
-      api(`/services/system/${encodeURIComponent(unit)}/actions`, {
-        method: "POST",
-        headers: { "X-CSRF-Token": csrfToken },
-        body: JSON.stringify({ action: "restart" }),
-      }),
-    onSettled: () => setConfirmOpen(false),
-  })
-
-  return (
-    <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={disabled || restart.isPending}
-        onClick={() => setConfirmOpen(true)}
-      >
-        {restart.isPending
-          ? "Restarting…"
-          : `Restart ${unit.replace(/\.service$/, "")}`}
-      </Button>
-      <DialogContent className="sm:max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Restart {unit}?</DialogTitle>
-          <DialogDescription>
-            The service will briefly stop accepting work while it loads the
-            updated libraries.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setConfirmOpen(false)}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => restart.mutate()}
-          >
-            Restart service
-          </Button>
-        </DialogFooter>
-        {restart.error && (
-          <p className="text-destructive text-xs">
-            {restart.error.message || "The service action failed."}
-          </p>
-        )}
-      </DialogContent>
-    </Dialog>
   )
 }

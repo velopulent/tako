@@ -16,10 +16,10 @@ export function UpdateJobProgress({
   canceling: boolean
   onCancel: () => void
 }) {
-  const live = observation?.live
+  const progress = observation?.progress
   const percent =
-    live?.active && live.percentage >= 0 && live.percentage <= 100
-      ? live.percentage
+    progress?.active && progress.percent >= 0 && progress.percent <= 100
+      ? progress.percent
       : job.progress
 
   return (
@@ -34,16 +34,16 @@ export function UpdateJobProgress({
       />
       {activeUpdateJobStates.has(job.state) ? (
         <>
-          {live?.active ? (
+          {progress?.active ? (
             <UpdateLivePanel
-              observation={observation ?? { live, log: [] }}
+              observation={observation ?? { progress, output: [] }}
               canceling={canceling}
               onCancel={onCancel}
             />
           ) : (
             <p className="text-sm text-muted-foreground">{job.message}</p>
           )}
-          {(!live?.active || !live.allowCancel) && (
+          {!progress?.active && (
             <Button
               variant="outline"
               size="sm"

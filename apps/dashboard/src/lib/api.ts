@@ -734,29 +734,35 @@ export type UpdateRecovery = {
   reason?: string
 }
 export type UpdateOperation = {
-  scope: "all" | "selected"
-  packages?: string[]
-  expectedFingerprint?: string
-  confirmation?: string
-  preview?: boolean
+  expectedFingerprint: string
+  confirmed: boolean
+  riskAccepted?: boolean
+}
+export type UpdateChange = {
+  action: "install" | "upgrade" | "remove" | "downgrade" | "replace" | string
+  name: string
+  architecture?: string
+  currentVersion?: string
+  candidateVersion?: string
+  currentRepository?: string
+  targetRepository?: string
+  currentVendor?: string
+  targetVendor?: string
 }
 export type UpdatePreview = {
-  operation: UpdateOperation
   current: UpdateStatus
-  selected: UpdatePackage[]
-  changes: string[]
+  changes: UpdateChange[]
   warnings: string[]
   fingerprint: string
   stale: boolean
   allowed: boolean
   requiresConfirmation: boolean
+  requiresRiskConfirmation: boolean
   reason?: string
 }
 export type UpdateResult = {
   backend: string
-  scope: "all" | "selected"
-  packages: string[]
-  updated: UpdatePackage[]
+  changes: UpdateChange[]
   verified: boolean
   message: string
   fingerprint: string
@@ -780,49 +786,34 @@ export type UpdatePackage = {
   markdown?: boolean
   groupKey?: string
   dependencies?: string[]
-  packageId?: string
 }
 export type UpdateHistoryEntry = {
   time: number
   packages: Record<string, string>
 }
-export type UpdateActionLogEntry = {
-  status: number
-  statusLabel: string
-  packageId: string
-  timestamp?: string
-}
-export type UpdateLive = {
+export type UpdateProgress = {
+  sequence: number
+  jobId?: string
   active: boolean
-  source?: string
-  percentage: number
-  allowCancel: boolean
-  status?: string
-  currentPackage?: string
-  remainingSeconds?: number
-  transactionPath?: string
+  phase: string
+  package?: string
+  current: number
+  total: number
+  percent: number
+  message: string
+  cancelable: boolean
+  timestamp: string
+}
+export type UpdateOutput = {
+  sequence: number
+  jobId?: string
+  stream: "stdout" | "stderr" | string
+  line: string
+  timestamp: string
 }
 export type UpdateObservation = {
-  live: UpdateLive
-  log: UpdateActionLogEntry[]
-}
-export type AutoUpdatesConfig = {
-  available: boolean
-  supported: boolean
-  installed: boolean
-  enabled: boolean
-  type: "all" | "security"
-  day: "" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
-  time: string
-  provider?: string
-  packageName?: string
-  reason?: string
-}
-export type AutoUpdatesOperation = {
-  enabled?: boolean
-  type?: "all" | "security"
-  day?: "" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
-  time?: string
+  progress: UpdateProgress
+  output: UpdateOutput[]
 }
 export type KpatchStatus = {
   supported: boolean

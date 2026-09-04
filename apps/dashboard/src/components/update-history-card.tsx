@@ -21,8 +21,7 @@ import { api, type UpdateHistoryEntry } from "@/lib/api"
 const maxShownEntries = 3
 const mergeWindowMs = 10 * 60 * 1000
 
-// Some PackageKit transactions come in pairs with identical package lists;
-// merge them for presentation.
+// Native manager histories can contain adjacent duplicate transactions.
 function mergeHistory(entries: UpdateHistoryEntry[]): UpdateHistoryEntry[] {
   const merged: UpdateHistoryEntry[] = []
   for (const entry of entries.slice(0, 20)) {
@@ -71,8 +70,7 @@ export function UpdateHistoryCard({ enabled }: { enabled: boolean }) {
     staleTime: 5 * 60 * 1000,
   })
 
-  // Hidden entirely while automatic updates are enabled or unavailable:
-  // auto-updates keep their own records.
+  // Parent hides history when its provider is unavailable.
   if (!enabled || !query.data?.available) return null
 
   const history = mergeHistory(query.data.items ?? [])

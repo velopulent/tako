@@ -3,7 +3,6 @@ import * as React from "react"
 import { AdvisoryMarkdown } from "@/components/advisory-markdown"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import {
   Tooltip,
   TooltipContent,
@@ -83,17 +82,10 @@ function buildGroups(packages: UpdatePackage[]): AdvisoryGroup[] {
 
 export function UpdatePackageTable({
   packages,
-  selected,
-  onToggle,
-  selectable = true,
 }: {
   packages: UpdatePackage[]
-  selected: string[]
-  onToggle: (name: string) => void
-  selectable?: boolean
 }) {
   const groups = React.useMemo(() => buildGroups(packages), [packages])
-  const selectedSet = React.useMemo(() => new Set(selected), [selected])
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
 
   const toggleExpanded = (key: string) =>
@@ -104,41 +96,6 @@ export function UpdatePackageTable({
       return next
     })
 
-  const allSelected =
-    groups.length > 0 &&
-    groups.every((g) => g.packages.every((p) => selectedSet.has(p.name)))
-  const headerChecked = allSelected
-
-  const handleGroupToggle = (group: AdvisoryGroup) => {
-    const every = group.packages.every((p) => selectedSet.has(p.name))
-    // toggle whole group atomically: if every selected -> deselect all, else select all (including dependencies)
-    if (every) {
-      for (const pkg of group.packages) {
-        if (selectedSet.has(pkg.name)) onToggle(pkg.name)
-      }
-    } else {
-      for (const pkg of group.packages) {
-        if (!selectedSet.has(pkg.name)) onToggle(pkg.name)
-      }
-    }
-  }
-
-  const handleHeaderToggle = () => {
-    if (allSelected) {
-      for (const g of groups) {
-        for (const p of g.packages) {
-          if (selectedSet.has(p.name)) onToggle(p.name)
-        }
-      }
-    } else {
-      for (const g of groups) {
-        for (const p of g.packages) {
-          if (!selectedSet.has(p.name)) onToggle(p.name)
-        }
-      }
-    }
-  }
-
   return (
     <div className="overflow-hidden rounded-md border">
       <div className="overflow-x-auto">
@@ -148,15 +105,6 @@ export function UpdatePackageTable({
               <th className="w-8 px-2 py-2">
                 <span className="sr-only">Expand</span>
               </th>
-              {selectable && (
-                <th className="w-10 px-2 py-2">
-                  <Checkbox
-                    aria-label="Select all"
-                    checked={headerChecked}
-                    onCheckedChange={handleHeaderToggle}
-                  />
-                </th>
-              )}
               <th className="px-3 py-2 font-medium w-[40%]">Name</th>
               <th className="px-3 py-2 font-medium w-[15%]">Version</th>
               <th className="px-3 py-2 font-medium w-[15%]">Severity</th>
@@ -183,9 +131,6 @@ export function UpdatePackageTable({
                   : group.severity === "bugfix"
                     ? bugCount || group.packages.length
                     : 0
-              const isGroupSelected = group.packages.every((p) =>
-                selectedSet.has(p.name)
-              )
               const isSecurity = group.severity === "security"
 
               // special package detection like kpatch handled via badge maybe not needed
@@ -213,15 +158,6 @@ export function UpdatePackageTable({
                         )}
                       </Button>
                     </td>
-                    {selectable && (
-                      <td className="px-2 py-2">
-                        <Checkbox
-                          aria-label={`Select ${pkgNames.join(", ")}`}
-                          checked={isGroupSelected}
-                          onCheckedChange={() => handleGroupToggle(group)}
-                        />
-                      </td>
-                    )}
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-1">
                         {displayNames.map((name, index) => {
@@ -302,7 +238,7 @@ export function UpdatePackageTable({
                   </tr>
                   {isExpanded && (
                     <tr className="bg-muted/10">
-                      <td colSpan={selectable ? 6 : 5} className="p-0">
+                      <td colSpan={5} className="p-0">
                         <div className="grid gap-4 p-4 md:grid-cols-[280px_1fr]">
                           <dl className="space-y-3 text-sm">
                             <div>
