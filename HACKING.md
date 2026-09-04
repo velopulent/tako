@@ -28,10 +28,11 @@ This installs the `tako-session` group (`sysusers.d`), PAM, systemd units,
 `/etc/tako/config.toml`, and a copy of `bin/tako` at `/usr/local/libexec/tako`
 (file context `bin_t`). The gateway runs as a systemd `DynamicUser`
 (`tako-gateway`) with primary group `tako-session`. Dashboard assets are
-**copied** to `/run/tako/dashboard` (not bind-mounted from `/home`) so SELinux
-sees `var_run_t` rather than `user_home_t`. While `bun run dev` is running, a
-user-space watcher recopies `dist/` after Vite rebuilds (systemd does not
-inotify `/home`).
+**copied** to `/run/tako/dashboard`, and branding assets from
+`apps/backend/packaging/branding` are copied to `/run/tako/branding` (not
+bind-mounted from `/home`) so SELinux sees `var_run_t` rather than
+`user_home_t`. While `bun run dev` is running, a user-space watcher recopies
+both asset trees after Vite rebuilds (systemd does not inotify `/home`).
 
 Day-to-day UI work:
 
@@ -86,8 +87,9 @@ A confined `tako_t` domain belongs with distro packaging. Until then, default
 Gateway serves SPA files from `$TAKO_DASHBOARD_DIR` when set, else
 `/run/tako/dashboard` when that path has `index.html`, else the embedded
 `go:embed` assets. Host-dev units set `TAKO_DASHBOARD_DIR=/run/tako/dashboard`
-and bind-mount the checkout `dist` there so Vite watch updates appear without
-restarting the gateway.
+and `TAKO_BRANDING_DIR=/run/tako/branding`; the overlay helper copies the
+checkout `dist/` and `apps/backend/packaging/branding/` trees there so Vite
+watch updates appear without restarting the gateway.
 
 ## UI-only lane (not the product)
 
