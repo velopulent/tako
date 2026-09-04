@@ -10,7 +10,6 @@ import (
 
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/metrics"
-	"github.com/velopulent/tako/internal/packagekit"
 	"github.com/velopulent/tako/internal/platform"
 )
 
@@ -36,10 +35,9 @@ type IdentityReadOperation struct{}
 type StorageReadOperation struct{}
 type NetworkReadOperation struct{}
 type UpdateReadOperation struct{}
+type UpdatePreviewOperation struct{ Operation platform.UpdateOperation }
 type UpdateHistoryReadOperation struct{}
 type UpdateLiveReadOperation struct{}
-type UpdateCancelOperation struct{}
-type AutoUpdatesReadOperation struct{}
 type KpatchReadOperation struct{}
 type CapabilitiesReadOperation struct{}
 
@@ -65,12 +63,7 @@ type MetricsFollowOperation struct {
 	Interval time.Duration `json:"interval,omitempty"`
 }
 
-// UpdateObservation is the bounded live update payload shared by the gateway
-// and sessiond. PackageKit clients and signal watchers live only in sessiond.
-type UpdateObservation struct {
-	Live platform.UpdateLive         `json:"live"`
-	Log  []packagekit.ActionLogEntry `json:"log"`
-}
+type UpdateObservation = platform.UpdateObservation
 
 func readHostResponse(ctx context.Context, path string, credentials HostReadCredentials, operation string, payload any, timeout time.Duration, limit int64) (Response, error) {
 	request := Request{Operation: operation, Token: credentials.Token, AdminToken: credentials.AdminToken}
@@ -97,16 +90,14 @@ func readHostResponse(ctx context.Context, path string, credentials HostReadCred
 		request.NetworkRead = value
 	case *UpdateReadOperation:
 		request.UpdateRead = value
+	case *UpdatePreviewOperation:
+		request.UpdatePreview = &value.Operation
 	case *UpdateRefreshOperation:
 		request.UpdateRefresh = value
 	case *UpdateHistoryReadOperation:
 		request.UpdateHistoryRead = value
 	case *UpdateLiveReadOperation:
 		request.UpdateLiveRead = value
-	case *UpdateCancelOperation:
-		request.UpdateCancel = value
-	case *AutoUpdatesReadOperation:
-		request.AutoUpdatesRead = value
 	case *KpatchReadOperation:
 		request.KpatchRead = value
 	case *CapabilitiesReadOperation:
@@ -341,6 +332,17 @@ func ReadUpdateStatus(ctx context.Context, path string, credentials HostReadCred
 	return *response.UpdateStatus, nil
 }
 
+func PreviewUpdates(ctx context.Context, path string, credentials HostReadCredentials, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
+	response, err := readHostResponse(ctx, path, credentials, "updates.preview", &UpdatePreviewOperation{Operation: operation}, 2*time.Minute, 8<<20)
+	if err != nil {
+		return platform.UpdatePreview{}, err
+	}
+	if response.UpdatePreview == nil {
+		return platform.UpdatePreview{}, ErrServiceUnavailable
+	}
+	return *response.UpdatePreview, nil
+}
+
 func RefreshUpdates(ctx context.Context, path string, adminToken string, force bool) (platform.UpdateStatus, error) {
 	operation := UpdateRefreshOperation{Force: force}
 	response, err := readHostResponse(ctx, path, HostReadCredentials{AdminToken: adminToken}, "updates.refresh", &operation, 5*time.Minute, 8<<20)
@@ -365,7 +367,7 @@ func ReadUpdateHistory(ctx context.Context, path string, credentials HostReadCre
 }
 
 func ReadUpdateObservation(ctx context.Context, path string, credentials HostReadCredentials) (UpdateObservation, error) {
-	response, err := readHostResponse(ctx, path, credentials, "updates.live", &UpdateLiveReadOperation{}, 10*time.Second, 512<<10)
+	response, err := readHostResponse(ctx, path, credentials, "updates.live", &UpdateLiveReadOperation{}, 10*time.Second, 2<<20)
 	if err != nil {
 		return UpdateObservation{}, err
 	}
@@ -373,28 +375,6 @@ func ReadUpdateObservation(ctx context.Context, path string, credentials HostRea
 		return UpdateObservation{}, ErrServiceUnavailable
 	}
 	return *response.UpdateObservation, nil
-}
-
-func CancelUpdate(ctx context.Context, path string, adminToken string) (bool, error) {
-	response, err := readHostResponse(ctx, path, HostReadCredentials{AdminToken: adminToken}, "updates.cancel", &UpdateCancelOperation{}, 15*time.Second, 128<<10)
-	if err != nil {
-		return false, err
-	}
-	if response.UpdateCanceled == nil {
-		return false, ErrServiceUnavailable
-	}
-	return *response.UpdateCanceled, nil
-}
-
-func ReadAutoUpdatesStatus(ctx context.Context, path string, credentials HostReadCredentials) (platform.AutoUpdatesConfig, error) {
-	response, err := readHostResponse(ctx, path, credentials, "updates.automatic.read", &AutoUpdatesReadOperation{}, 20*time.Second, 512<<10)
-	if err != nil {
-		return platform.AutoUpdatesConfig{}, err
-	}
-	if response.AutoUpdatesConfig == nil {
-		return platform.AutoUpdatesConfig{}, ErrServiceUnavailable
-	}
-	return *response.AutoUpdatesConfig, nil
 }
 
 func ReadKpatch(ctx context.Context, path string, credentials HostReadCredentials) (platform.KpatchStatus, platform.KpatchSettingsStatus, error) {

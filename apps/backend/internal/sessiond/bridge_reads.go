@@ -99,12 +99,6 @@ func (process *userBridgeProcess) readUpdateObservation(ctx context.Context) (au
 	return result, err
 }
 
-func (process *userBridgeProcess) readAutoUpdatesStatus(ctx context.Context) (platform.AutoUpdatesConfig, error) {
-	var result platform.AutoUpdatesConfig
-	err := process.decode(ctx, "updates-automatic", "updates.automatic.read", struct{}{}, &result)
-	return result, err
-}
-
 func (process *userBridgeProcess) readKpatch(ctx context.Context) (platform.KpatchStatus, platform.KpatchSettingsStatus, error) {
 	var result struct {
 		Status   platform.KpatchStatus         `json:"status"`

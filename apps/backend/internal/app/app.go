@@ -72,8 +72,6 @@ type Server struct {
 	readUpdatesFn          func(context.Context) (platform.UpdateStatus, error)
 	previewUpdatesFn       func(context.Context, platform.UpdateOperation) (platform.UpdatePreview, error)
 	applyUpdatesFn         func(context.Context, auth.UpdateRequest) (platform.UpdateResult, error)
-	autoUpdatesFn          func(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error)
-	autoUpdatesStatusFn    func(context.Context) platform.AutoUpdatesConfig
 	kpatchSettingsFn       func(context.Context, auth.KpatchRequest) (platform.KpatchSettingsStatus, error)
 	updateTokensMu         sync.Mutex
 	updateTokens           map[string]string
@@ -90,7 +88,6 @@ type Server struct {
 	readUpdateHistoryFn    func(context.Context) ([]platform.UpdateHistoryEntry, error)
 	readUpdateLiveFn       func(context.Context) (auth.UpdateObservation, error)
 	refreshUpdatesFn       func(context.Context, bool) (platform.UpdateStatus, error)
-	cancelUpdateFn         func(context.Context) (bool, error)
 	applyTimer             func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride          func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	previewAccountFn       func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
@@ -180,13 +177,6 @@ func New(cfg config.Config) (*Server, error) {
 		applyUpdatesFn: func(ctx context.Context, request auth.UpdateRequest) (platform.UpdateResult, error) {
 			return server.hostBroker().ApplyUpdates(ctx, request)
 		},
-		autoUpdatesFn: func(ctx context.Context, request auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
-			return server.hostBroker().ApplyAutoUpdates(ctx, request)
-		},
-		autoUpdatesStatusFn: func(ctx context.Context) platform.AutoUpdatesConfig {
-			status, _ := server.hostBroker().ReadAutoUpdatesStatus(ctx, credentialsFromContext(ctx))
-			return status
-		},
 		kpatchSettingsFn: func(ctx context.Context, request auth.KpatchRequest) (platform.KpatchSettingsStatus, error) {
 			return server.hostBroker().ApplyKpatch(ctx, request)
 		},
@@ -263,10 +253,6 @@ func New(cfg config.Config) (*Server, error) {
 	server.refreshUpdatesFn = func(ctx context.Context, force bool) (platform.UpdateStatus, error) {
 		current, _ := ctx.Value(sessionKey{}).(session.Session)
 		return server.hostBroker().RefreshUpdates(ctx, current.Identity.AdminToken, force)
-	}
-	server.cancelUpdateFn = func(ctx context.Context) (bool, error) {
-		current, _ := ctx.Value(sessionKey{}).(session.Session)
-		return server.hostBroker().CancelUpdate(ctx, current.Identity.AdminToken)
 	}
 	server.detectCapabilities = func(ctx context.Context) []platform.Capability {
 		capabilities, _ := server.hostBroker().ReadCapabilities(ctx, credentialsFromContext(ctx))
@@ -489,9 +475,6 @@ func (server *Server) routes() http.Handler {
 			router.Get("/updates/live", server.updateLiveStatus)
 			router.Get("/updates/kpatch", server.kpatchStatus)
 			router.With(server.requireCSRF).Put("/updates/kpatch", server.applyKpatchSettings)
-			router.Get("/updates/automatic", server.automaticUpdatesStatus)
-			router.With(server.requireCSRF).Post("/updates/cancel", server.cancelRunningUpdate)
-			router.With(server.requireCSRF).Put("/updates/automatic", server.applyAutomaticUpdates)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)
 			router.Get("/services/{scope}/{unit}/configuration", server.serviceConfiguration)

@@ -247,7 +247,7 @@ func TestCapabilitiesExposeRuntimeContractsAndGuidance(t *testing.T) {
 		return []platform.Capability{
 			{ID: "services", State: platform.StateReady, Backend: "systemd", Version: "systemd 257", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "dbus"},
 			{ID: "network", State: platform.StateConflicted, Backend: "NetworkManager+networkd", Readable: true, ReadAuthority: "session", MutationAuthority: "none", Contract: "conflicted-read-only", Reason: "Multiple managers are active", SetupGuidance: "Choose one network manager."},
-			{ID: "updates", State: platform.StateReady, Backend: "apt-get", Version: "apt 3.0", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "bounded-command", Reason: "apt-get command path in use; PackageKit is unavailable", SetupGuidance: "Install and start PackageKit for richer advisory metadata, update history, and live transaction progress."},
+			{ID: "updates", State: platform.StateReady, Backend: "apt", Version: "apt 3.0", Readable: true, Mutable: true, ReadAuthority: "session", MutationAuthority: "administrative", Contract: "native-distro-provider"},
 		}
 	}
 	cookie, _ := loginForTest(t, server.routes())

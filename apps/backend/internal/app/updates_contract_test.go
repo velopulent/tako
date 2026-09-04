@@ -24,7 +24,7 @@ func TestUpdateHandlersEmitEmptyArraysNotNull(t *testing.T) {
 		return platform.UpdateStatus{Available: true, Backend: "test", Contract: "test"}, nil
 	}
 	server.previewUpdatesFn = func(_ context.Context, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
-		return platform.UpdatePreview{Operation: operation}, nil
+		return platform.UpdatePreview{}, nil
 	}
 	server.readUpdateHistoryFn = func(context.Context) ([]platform.UpdateHistoryEntry, error) {
 		return nil, nil
@@ -59,7 +59,7 @@ func TestUpdateHandlersEmitEmptyArraysNotNull(t *testing.T) {
 		t.Fatalf("updates contains null packages: %s", statusBody)
 	}
 
-	previewRequest := httptest.NewRequest(http.MethodPost, "/api/v1/updates/preview", strings.NewReader(`{"scope":"all"}`))
+	previewRequest := httptest.NewRequest(http.MethodPost, "/api/v1/updates/preview", strings.NewReader(`{"expectedFingerprint":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","confirmed":false}`))
 	previewRequest.AddCookie(cookie)
 	previewRecorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(previewRecorder, previewRequest)
@@ -67,7 +67,7 @@ func TestUpdateHandlersEmitEmptyArraysNotNull(t *testing.T) {
 		t.Fatalf("preview returned %d: %s", previewRecorder.Code, previewRecorder.Body.String())
 	}
 	previewBody := previewRecorder.Body.String()
-	for _, key := range []string{`"selected":[]`, `"changes":[]`, `"warnings":[]`} {
+	for _, key := range []string{`"changes":[]`, `"warnings":[]`} {
 		if !strings.Contains(previewBody, key) {
 			t.Fatalf("preview missing %s: %s", key, previewBody)
 		}
@@ -78,8 +78,31 @@ func TestUpdateHandlersEmitEmptyArraysNotNull(t *testing.T) {
 		t.Fatalf("history missing empty items: %s", historyBody)
 	}
 
-	liveBody := get("/api/v1/updates/live")
-	if !strings.Contains(liveBody, `"log":[]`) {
-		t.Fatalf("live missing empty log: %s", liveBody)
+	liveContext, cancelLive := context.WithCancel(context.Background())
+	cancelLive()
+	liveRequest := httptest.NewRequest(http.MethodGet, "/api/v1/updates/live", nil).WithContext(liveContext)
+	liveRequest.AddCookie(cookie)
+	liveRecorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(liveRecorder, liveRequest)
+	if liveRecorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(liveRecorder.Body.String(), "event: progress") {
+		t.Fatalf("live endpoint is not SSE: %s", liveRecorder.Body.String())
+	}
+
+	server.readUpdateLiveFn = func(context.Context) (auth.UpdateObservation, error) {
+		return auth.UpdateObservation{
+			Progress: platform.UpdateProgress{Sequence: 2, Phase: "applying", Percent: -1},
+			Events: []platform.UpdateStreamEvent{
+				{Kind: "output", Output: platform.UpdateOutput{Sequence: 1, Stream: "stdout", Line: "old"}},
+				{Kind: "output", Output: platform.UpdateOutput{Sequence: 2, Stream: "stdout", Line: "new"}},
+			},
+		}, nil
+	}
+	replayRequest := httptest.NewRequest(http.MethodGet, "/api/v1/updates/live", nil).WithContext(liveContext)
+	replayRequest.Header.Set("Last-Event-ID", "1")
+	replayRequest.AddCookie(cookie)
+	replayRecorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(replayRecorder, replayRequest)
+	if strings.Contains(replayRecorder.Body.String(), "data: {\"sequence\":1") || !strings.Contains(replayRecorder.Body.String(), "id: 2") {
+		t.Fatalf("SSE replay did not honor Last-Event-ID: %s", replayRecorder.Body.String())
 	}
 }

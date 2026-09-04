@@ -12,22 +12,13 @@ type updateBackend interface {
 	Apply(context.Context, platform.UpdateOperation, auth.Identity) (platform.UpdateResult, error)
 }
 
-type systemUpdateBackend struct{}
+type systemUpdateBackend struct{ service *platform.UpdateService }
 
-func (systemUpdateBackend) Apply(ctx context.Context, operation platform.UpdateOperation, _ auth.Identity) (platform.UpdateResult, error) {
-	return platform.ApplyUpdates(ctx, operation)
-}
-
-// autoUpdatesBackend isolates automatic-update configuration so tests can
-// record operations instead of touching the host.
-type autoUpdatesBackend interface {
-	Apply(context.Context, platform.AutoUpdatesOperation, auth.Identity) (platform.AutoUpdatesConfig, error)
-}
-
-type systemAutoUpdatesBackend struct{}
-
-func (systemAutoUpdatesBackend) Apply(ctx context.Context, operation platform.AutoUpdatesOperation, _ auth.Identity) (platform.AutoUpdatesConfig, error) {
-	return platform.ApplyAutoUpdates(ctx, operation)
+func (backend systemUpdateBackend) Apply(ctx context.Context, operation platform.UpdateOperation, _ auth.Identity) (platform.UpdateResult, error) {
+	if backend.service == nil {
+		return platform.UpdateResult{}, platform.ErrUpdateUnavailable
+	}
+	return backend.service.Apply(ctx, operation)
 }
 
 // kpatchBackend isolates kernel live-patch configuration for testing.
@@ -57,16 +48,5 @@ func updateErrorCode(err error) string {
 		return "update-apply-failed"
 	default:
 		return "update-unavailable"
-	}
-}
-
-func autoUpdatesErrorCode(err error) string {
-	switch {
-	case errors.Is(err, platform.ErrInvalidAutoUpdatesOperation):
-		return "invalid-auto-updates-operation"
-	case errors.Is(err, platform.ErrAutoUpdatesUnavailable):
-		return "auto-updates-unavailable"
-	default:
-		return "auto-updates-apply-failed"
 	}
 }

@@ -33,7 +33,6 @@ type userHostReader interface {
 	readUpdateStatus(context.Context) (platform.UpdateStatus, error)
 	readUpdateHistory(context.Context) ([]platform.UpdateHistoryEntry, error)
 	readUpdateObservation(context.Context) (auth.UpdateObservation, error)
-	readAutoUpdatesStatus(context.Context) (platform.AutoUpdatesConfig, error)
 	readKpatch(context.Context) (platform.KpatchStatus, platform.KpatchSettingsStatus, error)
 	readCapabilities(context.Context) ([]platform.Capability, error)
 	readLoginHistory(context.Context, auth.LoginHistoryReadOperation) (platform.LoginHistoryPage, error)
@@ -110,7 +109,7 @@ func handleHostOperation(conn net.Conn, encoder *json.Encoder, request auth.Requ
 
 func isHostOperation(operation string) bool {
 	switch operation {
-	case "services.read", "services.list", "services.detail", "services.configuration", "services.action", "host.info", "host.configuration.read", "certificate.read", "host.power.read", "processes.list", "processes.detail", "processes.signal-preview", "processes.signal", "identities.read", "storage.read", "network.read", "updates.read", "updates.status", "updates.refresh", "updates.history", "updates.live", "updates.cancel", "updates.automatic.read", "updates.kpatch.read", "capabilities.read", "login-history.read", "local-group.preview", "local-group.apply", "metrics.history", "metrics.follow":
+	case "services.read", "services.list", "services.detail", "services.configuration", "services.action", "host.info", "host.configuration.read", "certificate.read", "host.power.read", "processes.list", "processes.detail", "processes.signal-preview", "processes.signal", "identities.read", "storage.read", "network.read", "updates.read", "updates.status", "updates.preview", "updates.refresh", "updates.history", "updates.live", "updates.kpatch.read", "capabilities.read", "login-history.read", "local-group.preview", "local-group.apply", "metrics.history", "metrics.follow":
 		return true
 	default:
 		return false
@@ -172,6 +171,10 @@ func validHostRequest(request auth.Request) bool {
 		if request.UpdateRead != nil {
 			payloads++
 		}
+	case "updates.preview":
+		if request.UpdatePreview != nil {
+			payloads++
+		}
 	case "updates.refresh":
 		if request.UpdateRefresh != nil {
 			payloads++
@@ -182,14 +185,6 @@ func validHostRequest(request auth.Request) bool {
 		}
 	case "updates.live":
 		if request.UpdateLiveRead != nil {
-			payloads++
-		}
-	case "updates.cancel":
-		if request.UpdateCancel != nil {
-			payloads++
-		}
-	case "updates.automatic.read":
-		if request.AutoUpdatesRead != nil {
 			payloads++
 		}
 	case "updates.kpatch.read":
@@ -226,8 +221,8 @@ func validHostRequest(request auth.Request) bool {
 		request.ServiceAction != nil,
 		request.CertificateRead != nil, request.PowerRead != nil, request.ProcessRead != nil,
 		request.IdentityRead != nil, request.StorageRead != nil, request.NetworkRead != nil,
-		request.UpdateRead != nil, request.UpdateRefresh != nil, request.UpdateHistoryRead != nil,
-		request.UpdateLiveRead != nil, request.UpdateCancel != nil, request.AutoUpdatesRead != nil,
+		request.UpdateRead != nil, request.UpdatePreview != nil, request.UpdateRefresh != nil, request.UpdateHistoryRead != nil,
+		request.UpdateLiveRead != nil,
 		request.KpatchRead != nil, request.CapabilitiesRead != nil, request.LoginHistoryRead != nil,
 		request.SignalPreview != nil, request.SignalApply != nil, request.LocalGroup != nil, request.MetricsHistory != nil,
 		request.MetricsFollow != nil,
@@ -239,7 +234,7 @@ func validHostRequest(request auth.Request) bool {
 	if totalTypedPayloads != 1 || totalTypedPayloads != payloads {
 		return false
 	}
-	return request.Username == "" && request.Password == "" && request.ConversationID == "" && len(request.Responses) == 0 && request.Columns == 0 && request.Rows == 0 && request.Action == "" && request.Unit == "" && request.Scope == "" && request.Hostname == "" && request.Timezone == "" && !request.NTPEnabled && request.ExpectedFingerprint == "" && request.PowerAction == "" && request.PowerConfirmation == "" && request.Timer == nil && request.Override == nil && request.Signal == nil && request.Account == nil && request.GroupMembership == nil && request.AdminRole == nil && request.PasswordChange == nil && request.SSHKeys == nil && request.Updates == nil && request.AutoUpdates == nil && request.Kpatch == nil && request.File == nil && request.Journal == nil && request.Network == nil && request.Firewall == nil && request.Security == nil && request.SupportReport == nil
+	return request.Username == "" && request.Password == "" && request.ConversationID == "" && len(request.Responses) == 0 && request.Columns == 0 && request.Rows == 0 && request.Action == "" && request.Unit == "" && request.Scope == "" && request.Hostname == "" && request.Timezone == "" && !request.NTPEnabled && request.ExpectedFingerprint == "" && request.PowerAction == "" && request.PowerConfirmation == "" && request.Timer == nil && request.Override == nil && request.Signal == nil && request.Account == nil && request.GroupMembership == nil && request.AdminRole == nil && request.PasswordChange == nil && request.SSHKeys == nil && request.Updates == nil && request.Kpatch == nil && request.File == nil && request.Journal == nil && request.Network == nil && request.Firewall == nil && request.Security == nil && request.SupportReport == nil
 }
 
 func dispatchHostOperation(ctx context.Context, request auth.Request, grants *grantStore, runtime *hostRuntime) (hostDispatchResult, error) {
@@ -416,49 +411,30 @@ func dispatchHostOperation(ctx context.Context, request auth.Request, grants *gr
 		}
 		result.response.NetworkSnapshot = &item
 	case "updates.read", "updates.status":
-		if administrative {
-			status := platform.Updates(ctx)
-			result.response.UpdateStatus = &status
-		} else {
-			status, readErr := reader.readUpdateStatus(ctx)
-			result.response.UpdateStatus, err = &status, readErr
-		}
+		result.lane = "root-sessiond"
+		status := runtime.updates.Status(ctx)
+		result.response.UpdateStatus = &status
+	case "updates.preview":
+		result.lane = "root-sessiond"
+		item, previewErr := runtime.updates.Preview(ctx, *request.UpdatePreview)
+		result.response.UpdatePreview, err = &item, previewErr
 	case "updates.refresh":
 		if !administrative {
 			return result, errors.New("permission-denied")
 		}
 		operation := *request.UpdateRefresh
-		err = platform.RefreshUpdatesCache(ctx, operation.Force)
+		err = runtime.updates.Refresh(ctx, operation.Force)
 		if err == nil {
-			status := platform.Updates(ctx)
+			status := runtime.updates.Status(ctx)
 			result.response.UpdateStatus = &status
 		}
 	case "updates.history":
-		if administrative {
-			result.response.UpdateHistory, err = platform.UpdateHistory(ctx)
-		} else {
-			result.response.UpdateHistory, err = reader.readUpdateHistory(ctx)
-		}
+		result.lane = "root-sessiond"
+		result.response.UpdateHistory, err = runtime.updates.History(ctx)
 	case "updates.live":
-		// PackageKit observation and the transaction watcher are sessiond-owned
-		// even for an ordinary authenticated reader. This avoids one D-Bus
-		// client per HTTP request and gives all clients the same live view.
+		result.lane = "root-sessiond"
+		// Update observation is sessiond-owned so every client sees one stream.
 		result.response.UpdateObservation = observationPointer(runtime.updateObservation(ctx))
-	case "updates.cancel":
-		if !administrative {
-			return result, errors.New("permission-denied")
-		}
-		found, cancelErr := cancelUpdate(ctx, runtime)
-		err = cancelErr
-		result.response.UpdateCanceled = &found
-	case "updates.automatic.read":
-		if administrative {
-			status := platform.AutoUpdatesStatus(ctx)
-			result.response.AutoUpdatesConfig = &status
-		} else {
-			status, readErr := reader.readAutoUpdatesStatus(ctx)
-			result.response.AutoUpdatesConfig, err = &status, readErr
-		}
 	case "updates.kpatch.read":
 		if administrative {
 			status := platform.InspectKpatchStatus(ctx)
@@ -472,11 +448,8 @@ func dispatchHostOperation(ctx context.Context, request auth.Request, grants *gr
 			err = readErr
 		}
 	case "capabilities.read":
-		if administrative {
-			result.response.Capabilities = platform.Detect(ctx)
-		} else {
-			result.response.Capabilities, err = reader.readCapabilities(ctx)
-		}
+		result.lane = "root-sessiond"
+		result.response.Capabilities = platform.Detect(ctx, runtime.updates)
 	case "login-history.read":
 		operation := *request.LoginHistoryRead
 		if !administrative && operation.Query.Username != identity.Username {
@@ -588,15 +561,6 @@ func runUserServiceAction(backend userServiceActioner, operation platform.Servic
 		return hostOperationErrorCode(err)
 	}
 	return ""
-}
-
-func cancelUpdate(ctx context.Context, runtime *hostRuntime) (bool, error) {
-	if client := runtime.updateClientFor(ctx); client != nil {
-		cancelContext, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		return client.CancelActiveUpdate(cancelContext)
-	}
-	return false, platform.ErrUpdateUnavailable
 }
 
 func handleMetricsFollow(conn net.Conn, encoder *json.Encoder, request auth.Request, grants *grantStore, runtime *hostRuntime, logger *zap.Logger) {

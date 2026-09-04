@@ -109,11 +109,6 @@ func (bridge *recordingUserBridge) readUpdateObservation(context.Context) (auth.
 	return auth.UpdateObservation{}, nil
 }
 
-func (bridge *recordingUserBridge) readAutoUpdatesStatus(context.Context) (platform.AutoUpdatesConfig, error) {
-	bridge.record("updates.automatic.read")
-	return platform.AutoUpdatesConfig{}, nil
-}
-
 func (bridge *recordingUserBridge) readKpatch(context.Context) (platform.KpatchStatus, platform.KpatchSettingsStatus, error) {
 	bridge.record("updates.kpatch.read")
 	return platform.KpatchStatus{}, platform.KpatchSettingsStatus{}, nil
@@ -161,7 +156,7 @@ func TestHostOperationUsesAuthenticatedUserBridge(t *testing.T) {
 	}
 }
 
-func TestUpdateStatusOperationReachesUserBridge(t *testing.T) {
+func TestUpdateStatusOperationUsesSharedSessiondProvider(t *testing.T) {
 	bridge := &recordingUserBridge{}
 	store, token := newReadTestStore(bridge)
 	runtime := newHostRuntime()
@@ -179,12 +174,12 @@ func TestUpdateStatusOperationReachesUserBridge(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", operation, err)
 		}
-		if result.lane != "user-bridge" || result.response.UpdateStatus == nil {
-			t.Fatalf("%s: unexpected user-lane result: %+v", operation, result)
+		if result.lane != "root-sessiond" || result.response.UpdateStatus == nil {
+			t.Fatalf("%s: unexpected sessiond result: %+v", operation, result)
 		}
 	}
-	if !bridge.saw("updates.read") {
-		t.Fatal("update status bypassed authenticated user bridge")
+	if bridge.saw("updates.read") {
+		t.Fatal("update status should not start a per-user package-manager read")
 	}
 }
 

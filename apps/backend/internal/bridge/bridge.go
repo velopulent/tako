@@ -29,7 +29,11 @@ type frame struct {
 }
 
 // Run serves framed bridge RPC until input closes or an I/O error occurs.
-func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
+func Run(input io.Reader, output io.Writer, errorOutput io.Writer, services ...*platform.UpdateService) error {
+	var updates *platform.UpdateService
+	if len(services) > 0 {
+		updates = services[0]
+	}
 	logger, err := logging.NewWithOutput("bridge", errorOutput)
 	if err != nil {
 		return err
@@ -49,7 +53,7 @@ func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
 			return err
 		}
 		response := frame{ID: message.ID, Error: "unsupported-method"}
-		if payload, handled, err := handleHostRead(message.Method, message.Payload); handled {
+		if payload, handled, err := handleHostRead(message.Method, message.Payload, updates); handled {
 			if err == nil {
 				response.Error = ""
 				response.Payload, _ = json.Marshal(payload)
