@@ -10,7 +10,7 @@
       "executor": "nx:run-commands",
       "continuous": true,
       "options": {
-        "command": "go run ./cmd/tako serve --dev",
+        "command": "../../tools/tako-go.sh run ./cmd/tako serve --dev",
         "cwd": "apps/backend",
         "env": {
           "GOCACHE": "/tmp/tako-go-cache",
@@ -28,7 +28,7 @@
       "options": {
         "commands": [
           "mkdir -p ../../bin",
-          "go build -buildvcs=false -trimpath -ldflags='-s -w' -o ../../bin/tako ./cmd/tako"
+          "../../tools/tako-go.sh build -buildvcs=false -trimpath -ldflags='-s -w' -o ../../bin/tako ./cmd/tako"
         ],
         "cwd": "apps/backend",
         "env": {
@@ -43,7 +43,7 @@
       "cache": true,
       "inputs": ["default", "^production"],
       "options": {
-        "command": "go test ./...",
+        "command": "../../tools/tako-go.sh test ./...",
         "cwd": "apps/backend",
         "env": {
           "GOCACHE": "/tmp/tako-go-cache",
@@ -56,7 +56,7 @@
       "cache": true,
       "inputs": ["default", "^production"],
       "options": {
-        "command": "go test -race ./...",
+        "command": "../../tools/tako-go.sh test -race ./...",
         "cwd": "apps/backend",
         "env": {
           "GOCACHE": "/tmp/tako-go-cache",
@@ -69,7 +69,7 @@
       "cache": true,
       "inputs": ["default", "^production"],
       "options": {
-        "command": "go vet ./...",
+        "command": "../../tools/tako-go.sh vet ./...",
         "cwd": "apps/backend",
         "env": {
           "GOCACHE": "/tmp/tako-go-cache",
