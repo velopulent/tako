@@ -16,6 +16,7 @@ const (
 type hostRuntime struct {
 	sampler         *metrics.Sampler
 	processTracker  *platform.ProcessTracker
+	network         *networkCoordinator
 	certificatePath string
 	updates         *platform.UpdateService
 }
@@ -34,7 +35,7 @@ func newHostRuntime(settings ...time.Duration) *hostRuntime {
 	}
 	sampler := metrics.NewSampler(capacity)
 	sampler.Configure(defaultInterval, retention)
-	return &hostRuntime{sampler: sampler, processTracker: platform.NewProcessTracker()}
+	return &hostRuntime{sampler: sampler, processTracker: platform.NewProcessTracker(), network: newNetworkCoordinator()}
 }
 
 func (runtime *hostRuntime) run(ctx context.Context) {
@@ -43,7 +44,11 @@ func (runtime *hostRuntime) run(ctx context.Context) {
 	}
 	runtime.sampler.Run(ctx, 0)
 }
-func (runtime *hostRuntime) close() {}
+func (runtime *hostRuntime) close() {
+	if runtime != nil && runtime.network != nil {
+		runtime.network.Close()
+	}
+}
 func (runtime *hostRuntime) updateObservation(_ context.Context) platform.UpdateObservation {
 	if runtime == nil || runtime.updates == nil {
 		return platform.UpdateObservation{Progress: platform.UpdateProgress{Phase: "idle", Percent: -1, Message: "No update is running."}, Output: []platform.UpdateOutput{}}

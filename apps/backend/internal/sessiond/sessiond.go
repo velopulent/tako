@@ -1069,6 +1069,8 @@ func handleWithAllBackendsAndUpdatesRuntime(conn net.Conn, service auth.PAMAuthe
 		var operationErr error
 		if operation.Action == "preview" {
 			state, operationErr = platform.PreviewNetworkOperation(networkCtx, operation)
+		} else if runtime != nil && runtime.network != nil {
+			state, operationErr = runtime.network.Apply(networkCtx, operation)
 		} else {
 			state, operationErr = platform.ApplyNetworkOperation(networkCtx, operation)
 		}

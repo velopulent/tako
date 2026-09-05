@@ -13,16 +13,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
-const maxNetworkOutput = 2 << 20
+const (
+	maxNetworkOutput     = 2 << 20
+	networkCheckpointTTL = 120 * time.Second
+)
 
 var (
 	ErrInvalidNetworkOperation = errors.New("invalid network operation")
 	ErrNetworkConflict         = errors.New("network state changed")
 	ErrNetworkOwnership        = errors.New("network ownership is conflicted")
 	ErrNetworkUnavailable      = errors.New("network adapter unavailable")
+	ErrNetworkCheckpoint       = errors.New("network checkpoint is invalid or expired")
 )
 
 type NetworkAddress struct {
@@ -61,10 +66,17 @@ type NetworkOperation struct {
 	Interface           string   `json:"interface,omitempty"`
 	Connection          string   `json:"connection,omitempty"`
 	Address             string   `json:"address,omitempty"`
+	Addresses           []string `json:"addresses,omitempty"`
 	Gateway             string   `json:"gateway,omitempty"`
 	DNS                 []string `json:"dns,omitempty"`
 	Route               string   `json:"route,omitempty"`
 	Metric              int      `json:"metric,omitempty"`
+	IPv4Method          string   `json:"ipv4Method,omitempty"`
+	IPv4Address         string   `json:"ipv4Address,omitempty"`
+	IPv4Gateway         string   `json:"ipv4Gateway,omitempty"`
+	IPv6Method          string   `json:"ipv6Method,omitempty"`
+	IPv6Address         string   `json:"ipv6Address,omitempty"`
+	IPv6Gateway         string   `json:"ipv6Gateway,omitempty"`
 	ExpectedFingerprint string   `json:"expectedFingerprint,omitempty"`
 	Confirmation        string   `json:"confirmation,omitempty"`
 	ReconnectToken      string   `json:"reconnectToken,omitempty"`
@@ -72,12 +84,39 @@ type NetworkOperation struct {
 }
 
 type NetworkState struct {
-	Snapshot   NetworkSnapshot `json:"snapshot"`
-	Action     string          `json:"action"`
-	Checkpoint string          `json:"checkpoint,omitempty"`
-	Committed  bool            `json:"committed"`
-	Rollback   bool            `json:"rollback"`
-	Warning    string          `json:"warning,omitempty"`
+	Snapshot          NetworkSnapshot `json:"snapshot"`
+	Action            string          `json:"action"`
+	Checkpoint        string          `json:"checkpoint,omitempty"`
+	Committed         bool            `json:"committed"`
+	Rollback          bool            `json:"rollback"`
+	ReconnectRequired bool            `json:"reconnectRequired,omitempty"`
+	ReconnectToken    string          `json:"reconnectToken,omitempty"`
+	RollbackDeadline  time.Time       `json:"rollbackDeadline,omitempty"`
+	Warning           string          `json:"warning,omitempty"`
+}
+
+type networkCommandFunc func(context.Context, string, ...string) ([]byte, error)
+
+var (
+	networkCommandMu sync.RWMutex
+	networkRunner    networkCommandFunc = execNetworkCommand
+)
+
+// setNetworkCommandRunner is package-private so platform tests can install a
+// bounded command fake without changing production command execution.
+func setNetworkCommandRunner(runner networkCommandFunc) func() {
+	networkCommandMu.Lock()
+	previous := networkRunner
+	if runner == nil {
+		runner = execNetworkCommand
+	}
+	networkRunner = runner
+	networkCommandMu.Unlock()
+	return func() {
+		networkCommandMu.Lock()
+		networkRunner = previous
+		networkCommandMu.Unlock()
+	}
 }
 
 func NetworkSnapshotRead(ctx context.Context) (NetworkSnapshot, error) {
@@ -137,6 +176,13 @@ func NetworkSnapshotRead(ctx context.Context) (NetworkSnapshot, error) {
 }
 
 func networkCommand(ctx context.Context, name string, arguments ...string) ([]byte, error) {
+	networkCommandMu.RLock()
+	runner := networkRunner
+	networkCommandMu.RUnlock()
+	return runner(ctx, name, arguments...)
+}
+
+func execNetworkCommand(ctx context.Context, name string, arguments ...string) ([]byte, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, name, arguments...)
@@ -214,32 +260,74 @@ func detectNetworkOwnership() NetworkOwnership {
 }
 
 func networkFingerprint(snapshot NetworkSnapshot) string {
+	type device struct {
+		Name     string
+		Hardware string
+		MTU      int
+		Manager  string
+	}
+	devices := make([]device, 0, len(snapshot.Interfaces))
+	for _, item := range snapshot.Interfaces {
+		devices = append(devices, device{item.Name, item.Hardware, item.MTU, item.Manager})
+	}
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
+	addresses := append([]NetworkAddress(nil), snapshot.Addresses...)
+	sort.Slice(addresses, func(i, j int) bool {
+		return addresses[i].Interface+addresses[i].Address < addresses[j].Interface+addresses[j].Address
+	})
+	routes := append([]NetworkRoute(nil), snapshot.Routes...)
+	sort.Slice(routes, func(i, j int) bool {
+		a, _ := json.Marshal(routes[i])
+		b, _ := json.Marshal(routes[j])
+		return string(a) < string(b)
+	})
 	payload, _ := json.Marshal(struct {
-		Interfaces []Interface
-		Addresses  []NetworkAddress
-		Routes     []NetworkRoute
-		DNS        []string
-		Ownership  NetworkOwnership
-	}{snapshot.Interfaces, snapshot.Addresses, snapshot.Routes, snapshot.DNS, snapshot.Ownership})
+		Devices   []device
+		Addresses []NetworkAddress
+		Routes    []NetworkRoute
+		DNS       []string
+		Ownership NetworkOwnership
+	}{devices, addresses, routes, snapshot.DNS, snapshot.Ownership})
 	return fingerprintBytes(payload)
 }
 
 func ValidateNetworkOperation(operation NetworkOperation) error {
-	validBackends := map[string]bool{"NetworkManager": true, "Netplan": true, "systemd-networkd": true}
+	validBackends := map[string]bool{"NetworkManager": true, "Netplan": true, "systemd-networkd": true, "ifupdown": true}
 	validActions := map[string]bool{"preview": true, "dhcp": true, "static": true, "dns": true, "route-add": true, "route-remove": true, "checkpoint": true, "commit": true, "rollback": true}
-	if !validBackends[operation.Backend] || !validActions[operation.Action] || len(operation.Interface) > 256 || len(operation.Connection) > 256 || len(operation.Address) > 128 || len(operation.Gateway) > 128 || len(operation.Route) > 128 || len(operation.ReconnectToken) > 256 || len(operation.ExpectedFingerprint) > 128 || strings.ContainsAny(operation.Interface+operation.Connection+operation.Address+operation.Gateway+operation.Route, "\x00\r\n") {
+	joined := operation.Interface + operation.Connection + operation.Address + operation.Gateway + operation.Route + operation.IPv4Address + operation.IPv4Gateway + operation.IPv6Address + operation.IPv6Gateway + operation.Checkpoint + operation.ReconnectToken + operation.ExpectedFingerprint
+	if !validBackends[operation.Backend] || !validActions[operation.Action] || len(joined) > 4096 || len(operation.Interface) > 256 || len(operation.Connection) > 256 || len(operation.Address) > 128 || len(operation.Gateway) > 128 || len(operation.Route) > 128 || len(operation.Checkpoint) > 256 || len(operation.ReconnectToken) > 256 || len(operation.ExpectedFingerprint) > 128 || strings.ContainsAny(joined, "\x00\r\n") {
 		return ErrInvalidNetworkOperation
 	}
-	if operation.Action != "preview" && operation.Action != "checkpoint" && operation.ExpectedFingerprint == "" {
+	if operation.Action != "preview" && operation.Action != "checkpoint" && operation.Action != "commit" && operation.Action != "rollback" && operation.ExpectedFingerprint == "" {
+		return ErrInvalidNetworkOperation
+	}
+	if operation.Action != "preview" && operation.Action != "commit" && operation.Action != "rollback" && !validNetworkInterface(operation.Interface) {
+		return ErrInvalidNetworkOperation
+	}
+	if operation.Connection != "" && !validNetworkConnection(operation.Connection) {
 		return ErrInvalidNetworkOperation
 	}
 	if operation.Action == "static" {
-		if _, _, err := net.ParseCIDR(operation.Address); err != nil {
+		addresses := networkOperationAddresses(operation)
+		if len(addresses) == 0 {
 			return ErrInvalidNetworkOperation
 		}
+		for _, address := range addresses {
+			if _, _, err := net.ParseCIDR(address); err != nil {
+				return ErrInvalidNetworkOperation
+			}
+		}
 	}
-	if operation.Gateway != "" && net.ParseIP(operation.Gateway) == nil {
+	if operation.IPv4Method != "" && !validNetworkMethod(operation.IPv4Method) {
 		return ErrInvalidNetworkOperation
+	}
+	if operation.IPv6Method != "" && !validNetworkMethod(operation.IPv6Method) {
+		return ErrInvalidNetworkOperation
+	}
+	for _, gateway := range []string{operation.Gateway, operation.IPv4Gateway, operation.IPv6Gateway} {
+		if gateway != "" && net.ParseIP(gateway) == nil {
+			return ErrInvalidNetworkOperation
+		}
 	}
 	if operation.Action == "dns" && (len(operation.DNS) == 0 || len(operation.DNS) > 8) {
 		return ErrInvalidNetworkOperation
@@ -250,14 +338,19 @@ func ValidateNetworkOperation(operation NetworkOperation) error {
 		}
 	}
 	if operation.Action == "route-add" || operation.Action == "route-remove" {
-		if _, _, err := net.ParseCIDR(operation.Route); err != nil {
+		if operation.Route != "default" {
+			if _, _, err := net.ParseCIDR(operation.Route); err != nil {
+				return ErrInvalidNetworkOperation
+			}
+		}
+		if operation.Metric < 0 || operation.Metric > 65535 {
 			return ErrInvalidNetworkOperation
 		}
 	}
-	if operation.Action != "preview" && operation.Confirmation != "CONFIRM NETWORK CHANGE" {
+	if operation.Action != "preview" && operation.Confirmation != "CONFIRM NETWORK CHANGE" && operation.Confirmation != "CONFIRM NETWORK RECONNECT" {
 		return ErrInvalidNetworkOperation
 	}
-	if (operation.Action == "commit" || operation.Action == "rollback") && operation.Checkpoint == "" {
+	if (operation.Action == "commit" || operation.Action == "rollback") && (operation.Checkpoint == "" || operation.ReconnectToken == "") {
 		return ErrInvalidNetworkOperation
 	}
 	return nil
@@ -276,6 +369,10 @@ func PreviewNetworkOperation(ctx context.Context, operation NetworkOperation) (N
 }
 
 func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (NetworkState, error) {
+	// File-backed adapters remain disabled until ownership and rollback validation is complete.
+	if operation.Backend != "NetworkManager" {
+		return NetworkState{}, ErrNetworkUnavailable
+	}
 	if err := ValidateNetworkOperation(operation); err != nil {
 		return NetworkState{}, err
 	}
@@ -283,85 +380,66 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 	if err != nil {
 		return NetworkState{}, err
 	}
-	if snapshot.Ownership.Conflicted || snapshot.Ownership.ActiveOwner != operation.Backend {
+	if snapshot.Ownership.Conflicted || !networkBackendOwnsSnapshot(operation.Backend, snapshot.Ownership) {
 		return NetworkState{}, ErrNetworkOwnership
 	}
 	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != snapshot.Fingerprint {
 		return NetworkState{}, ErrNetworkConflict
 	}
-	if operation.Backend == "Netplan" {
-		return applyNetplanOperation(ctx, operation, snapshot)
-	}
-	if operation.Backend != "NetworkManager" {
-		return NetworkState{}, ErrNetworkUnavailable
-	}
 	if operation.Action == "checkpoint" {
-		payload, checkpointErr := networkCommand(ctx, "nmcli", "device", "checkpoint", operation.Interface, "--timeout", "120", "--persist", "no")
+		checkpoint, checkpointErr := beginNetworkCheckpoint(ctx, operation)
 		if checkpointErr != nil {
 			return NetworkState{}, checkpointErr
 		}
-		checkpoint := firstLine(string(payload))
-		return NetworkState{Snapshot: snapshot, Action: "checkpoint", Checkpoint: checkpoint, Rollback: checkpoint != "", Warning: "Checkpoint expires automatically; commit only after a fresh connection is verified."}, nil
+		token := operation.ReconnectToken
+		if token == "" {
+			token = newNetworkToken("reconnect")
+		}
+		return NetworkState{Snapshot: snapshot, Action: "checkpoint", Checkpoint: checkpoint, Rollback: checkpoint != "", ReconnectRequired: checkpoint != "", ReconnectToken: token, RollbackDeadline: time.Now().UTC().Add(networkCheckpointTTL), Warning: "Checkpoint expires automatically; commit only after a fresh connection is verified."}, nil
 	}
 	if operation.Action == "commit" || operation.Action == "rollback" {
-		argument := "--" + operation.Action
-		if _, commandErr := networkCommand(ctx, "nmcli", "device", "checkpoint", operation.Checkpoint, argument); commandErr != nil {
+		if operation.Backend != "NetworkManager" {
+			return completeFileNetworkCheckpoint(ctx, operation, snapshot)
+		}
+		var commandErr error
+		if operation.Action == "commit" {
+			commandErr = networkManagerCheckpointDestroy(ctx, operation.Checkpoint)
+		} else {
+			commandErr = networkManagerCheckpointRollback(ctx, operation.Checkpoint)
+		}
+		if commandErr != nil {
 			return NetworkState{}, commandErr
 		}
 		updated, readErr := NetworkSnapshotRead(ctx)
 		if readErr != nil {
 			return NetworkState{}, readErr
 		}
-		return NetworkState{Snapshot: updated, Action: operation.Action, Committed: operation.Action == "commit", Rollback: operation.Action == "rollback", Checkpoint: operation.Checkpoint}, nil
+		warning := "The network change was rolled back."
+		if operation.Action == "commit" {
+			warning = "The network change was committed after reconnect confirmation."
+		}
+		return NetworkState{Snapshot: updated, Action: operation.Action, Committed: operation.Action == "commit", Rollback: operation.Action == "rollback", Checkpoint: operation.Checkpoint, ReconnectToken: operation.ReconnectToken, Warning: warning}, nil
 	}
-	checkpointPayload, checkpointErr := networkCommand(ctx, "nmcli", "device", "checkpoint", operation.Interface, "--timeout", "120", "--persist", "no")
+	checkpoint, checkpointErr := beginNetworkCheckpoint(ctx, operation)
 	if checkpointErr != nil {
 		return NetworkState{}, checkpointErr
 	}
-	checkpoint := firstLine(string(checkpointPayload))
-	arguments := []string{"device"}
-	switch operation.Action {
-	case "dhcp":
-		arguments = append(arguments, "modify", operation.Interface, "ipv4.method", "auto", "ipv4.addresses", "", "ipv4.gateway", "", "ipv4.dns", "")
-	case "static":
-		arguments = append(arguments, "modify", operation.Interface, "ipv4.method", "manual", "ipv4.addresses", operation.Address, "ipv4.gateway", operation.Gateway)
-	case "dns":
-		arguments = append(arguments, "modify", operation.Interface, "ipv4.dns", strings.Join(operation.DNS, ","))
-	case "route-add":
-		arguments = append(arguments, "modify", operation.Interface, "+ipv4.routes", operation.Route)
-	case "route-remove":
-		arguments = append(arguments, "modify", operation.Interface, "-ipv4.routes", operation.Route)
-	case "commit":
-		arguments = append(arguments, "connect", operation.Interface)
-	case "rollback", "checkpoint":
-		return NetworkState{}, ErrNetworkUnavailable
-	default:
-		return NetworkState{}, ErrInvalidNetworkOperation
-	}
-	if _, err := networkCommand(ctx, "nmcli", arguments...); err != nil {
+	if err := applyNetworkMutation(ctx, operation); err != nil {
 		if checkpoint != "" {
-			_, _ = networkCommand(ctx, "nmcli", "device", "checkpoint", checkpoint, "--rollback")
+			_ = rollbackNetworkCheckpoint(ctx, operation.Backend, checkpoint)
 		}
 		return NetworkState{}, err
-	}
-	if operation.Action == "commit" || operation.Action == "dhcp" || operation.Action == "static" || operation.Action == "dns" || strings.HasPrefix(operation.Action, "route-") {
-		if _, err := networkCommand(ctx, "nmcli", "device", "connect", operation.Interface); err != nil {
-			if checkpoint != "" {
-				_, _ = networkCommand(ctx, "nmcli", "device", "checkpoint", checkpoint, "--rollback")
-			}
-			return NetworkState{}, err
-		}
 	}
 	updated, err := NetworkSnapshotRead(ctx)
 	if err != nil {
+		_ = rollbackNetworkCheckpoint(ctx, operation.Backend, checkpoint)
 		return NetworkState{}, err
 	}
-	if checkpoint != "" {
-		if _, commitErr := networkCommand(ctx, "nmcli", "device", "checkpoint", checkpoint, "--commit"); commitErr != nil {
-			return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: checkpoint, Committed: false, Rollback: true, Warning: "The change applied but checkpoint commit needs explicit operator verification."}, commitErr
-		}
+	token := operation.ReconnectToken
+	if token == "" {
+		token = newNetworkToken("reconnect")
 	}
-	return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: checkpoint, Committed: true, Rollback: false, Warning: "Reconnect verification completed before checkpoint commit."}, nil
+	return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: checkpoint, Rollback: true, ReconnectRequired: true, ReconnectToken: token, RollbackDeadline: time.Now().UTC().Add(networkCheckpointTTL), Warning: "The profile was persisted and activated under a bounded rollback checkpoint; reconnect and confirm before committing."}, nil
 }
 
 func applyNetplanOperation(ctx context.Context, operation NetworkOperation, snapshot NetworkSnapshot) (NetworkState, error) {
