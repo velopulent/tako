@@ -1,0 +1,61 @@
+#!/usr/bin/env bun
+
+const output = process.argv[2] ?? "dependency-inventory.json";
+const run = (command, cwd = ".") => {
+  const result = Bun.spawnSync({ cmd: command, cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`${command.join(" ")} failed: ${result.stderr.toString()}`);
+  return result.stdout.toString();
+};
+
+const moduleText = run(["go", "list", "-m", "-json", "all"], "apps/backend");
+const moduleRecords = [];
+let start = -1;
+let depth = 0;
+let quoted = false;
+let escaped = false;
+for (let index = 0; index < moduleText.length; index += 1) {
+  const character = moduleText[index];
+  if (quoted) {
+    if (escaped) escaped = false;
+    else if (character === "\\") escaped = true;
+    else if (character === '"') quoted = false;
+    continue;
+  }
+  if (character === '"') {
+    quoted = true;
+    continue;
+  }
+  if (character === "{") {
+    if (depth === 0) start = index;
+    depth += 1;
+  } else if (character === "}") {
+    depth -= 1;
+    if (depth === 0 && start >= 0) {
+      moduleRecords.push(JSON.parse(moduleText.slice(start, index + 1)));
+      start = -1;
+    }
+  }
+}
+const modules = moduleRecords
+  .map(({ Path, Version, Sum, GoMod, GoModSum, Main }) => ({
+    path: Path,
+    version: Version ?? null,
+    sum: Sum ?? null,
+    go_mod: GoMod ?? null,
+    go_mod_sum: GoModSum ?? null,
+    main: Boolean(Main),
+  }));
+
+const lockfile = Bun.file("bun.lock");
+const lockBytes = await lockfile.arrayBuffer();
+const lockHash = new Bun.CryptoHasher("sha256").update(lockBytes).digest("hex");
+const goVersion = run(["go", "version"]).trim();
+const inventory = {
+  schema: 1,
+  generated_at: new Date().toISOString(),
+  commit: process.env.GITHUB_SHA ?? null,
+  go: { version: goVersion, modules },
+  javascript: { lockfile: "bun.lock", lockfile_sha256: lockHash },
+};
+await Bun.write(output, `${JSON.stringify(inventory, null, 2)}\n`);
+console.log(`dependency inventory written to ${output}`);

@@ -1,0 +1,76 @@
+name: Packaging VM validation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  manifest:
+    name: Expand VM target manifest
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - id: targets
+        run: |
+          matrix=$(bun -e '
+            const manifest = await Bun.file("apps/backend/packaging/targets.json").json();
+            console.log(JSON.stringify({include: manifest.targets.map((target) => ({
+              id: target.id,
+              arch: target.arch,
+              format: target.package_format,
+              vm_label: target.vm_label,
+            }))}));
+          ')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: ${{ matrix.id }} disposable VM
+    needs: manifest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
+    # These labels are an explicit operator prerequisite. A beta release stays
+    # blocked while a target VM runner is missing or offline.
+    runs-on: [self-hosted, linux, "${{ matrix.vm_label }}"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download native package
+        uses: actions/download-artifact@v4
+        with:
+          name: package-${{ matrix.id }}
+          path: package
+      - name: Run installed-system smoke validation
+        env:
+          TARGET_ID: ${{ matrix.id }}
+          PACKAGE_FORMAT: ${{ matrix.format }}
+        run: |
+          case "$PACKAGE_FORMAT" in
+            deb) package=$(find package -type f -name '*.deb' -print -quit) ;;
+            rpm) package=$(find package -type f -name '*.rpm' -print -quit) ;;
+            archlinux) package=$(find package -type f -name '*.pkg.tar.zst' -print -quit) ;;
+            *) echo "unknown package format: $PACKAGE_FORMAT" >&2; exit 2 ;;
+          esac
+          test -n "$package"
+          sudo env \
+            GITHUB_SHA="$GITHUB_SHA" \
+            TAKO_VM_TARGET="$TARGET_ID" \
+            TAKO_VM_PACKAGE="$GITHUB_WORKSPACE/$package" \
+            TAKO_VM_EVIDENCE_DIR="$GITHUB_WORKSPACE/vm-evidence" \
+            TAKO_VM_MANIFEST="$GITHUB_WORKSPACE/apps/backend/packaging/targets.json" \
+            "$GITHUB_WORKSPACE/apps/backend/packaging/vm-test.sh"
+      - name: Upload VM evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-evidence-${{ matrix.id }}
+          path: vm-evidence/
+          if-no-files-found: error
+          retention-days: 30

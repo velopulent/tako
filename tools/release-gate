@@ -1,0 +1,58 @@
+#!/usr/bin/env bun
+
+const manifestPath = process.env.TAKO_RELEASE_MANIFEST ?? "apps/backend/packaging/targets.json";
+const evidenceDir = process.argv[2] ?? process.env.TAKO_VM_EVIDENCE_DIR ?? "vm-evidence";
+const packageDir = process.argv[3] ?? process.env.TAKO_RELEASE_PACKAGE_DIR ?? "";
+const expectedCommit = process.argv[4] ?? process.env.TAKO_VM_COMMIT ?? process.env.GITHUB_SHA ?? "";
+
+const fail = (message) => {
+  console.error(`release gate: ${message}`);
+  process.exit(1);
+};
+
+const manifest = await Bun.file(manifestPath).json().catch(() => null);
+if (!manifest || !Array.isArray(manifest.targets) || manifest.targets.length === 0) fail(`cannot read targets from ${manifestPath}`);
+
+const targetIds = new Set();
+for (const target of manifest.targets) {
+  if (typeof target.id !== "string" || target.id === "" || targetIds.has(target.id)) fail(`manifest contains an invalid or duplicate target id: ${target.id}`);
+  targetIds.add(target.id);
+}
+
+if ((await Bun.$`test -d ${evidenceDir}`.quiet().nothrow()).exitCode !== 0) fail(`evidence directory does not exist: ${evidenceDir}`);
+if (packageDir && (await Bun.$`test -d ${packageDir}`.quiet().nothrow()).exitCode !== 0) fail(`package directory does not exist: ${packageDir}`);
+
+const evidence = new Map();
+for await (const path of new Bun.Glob("**/*.json").scan({ cwd: evidenceDir, absolute: true })) {
+  const value = await Bun.file(path).json().catch(() => null);
+  if (!value || typeof value.target !== "string") continue;
+  if (evidence.has(value.target)) fail(`duplicate evidence for ${value.target}`);
+  evidence.set(value.target, value);
+}
+
+for (const target of manifest.targets) {
+  const value = evidence.get(target.id);
+  if (!value) fail(`missing VM evidence for ${target.id}`);
+  if (value.status !== "passed") fail(`${target.id} did not pass (${value.status ?? "missing status"})`);
+  if (value.exit_code !== 0) fail(`${target.id} reported exit code ${value.exit_code}`);
+  if (expectedCommit && value.commit !== expectedCommit) fail(`${target.id} evidence is for ${value.commit ?? "an unknown commit"}, expected ${expectedCommit}`);
+  if (!value.package?.new_sha256) fail(`${target.id} evidence does not identify the tested package digest`);
+  if (packageDir) {
+    const suffix = {
+      deb: ".deb",
+      rpm: ".rpm",
+      archlinux: ".pkg.tar.zst",
+    }[target.package_format];
+    const candidates = [];
+    for await (const path of new Bun.Glob("**/*").scan({ cwd: packageDir, absolute: true, onlyFiles: true })) {
+      if (path.endsWith(`_${target.package_name}${suffix}`)) candidates.push(path);
+    }
+    if (candidates.length !== 1) fail(`${target.id} has ${candidates.length} assembled package candidates`);
+    const hash = new Bun.CryptoHasher("sha256").update(await Bun.file(candidates[0]).arrayBuffer()).digest("hex");
+    if (hash !== value.package.new_sha256) fail(`${target.id} evidence digest does not match the assembled package`);
+  }
+}
+
+for (const [target] of evidence) if (!targetIds.has(target)) fail(`evidence contains an unknown target: ${target}`);
+
+console.log(`release gate passed: ${targetIds.size} manifest targets have passing VM evidence`);

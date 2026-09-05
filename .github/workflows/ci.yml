@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.4.0
+  GO_VERSION: 1.26.7
+
+jobs:
+  unit:
+    name: Go and dashboard unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun nx run-many -t test,typecheck --projects=backend,dashboard --parallel=2
+
+  race:
+    name: Go race tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun nx race backend
+
+  lint:
+    name: Go vet and dashboard lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun nx lint backend
+      - run: bun nx lint dashboard
+
+  packaging-static:
+    name: Packaging manifest and hook checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: sudo apt-get update
+      - run: sudo apt-get install --yes --no-install-recommends gcc libpam0g-dev libsystemd-dev systemd
+      - name: Install GoReleaser for static configuration checks
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "$GOBIN"
+          go install github.com/goreleaser/goreleaser/v2@v${{ vars.GORELEASER_VERSION || '2.18.0' }}
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - run: bun run package:check
+      - run: bun run test:packaging

@@ -1,0 +1,27 @@
+#!/usr/bin/env bun
+
+const incoming = process.argv[2] ?? "incoming";
+const releaseDir = process.argv[3] ?? "release";
+const manifest = await Bun.file("apps/backend/packaging/targets.json").json();
+await Bun.$`mkdir -p ${releaseDir}`;
+
+const files = [];
+for await (const path of new Bun.Glob("**/*").scan({ cwd: incoming, absolute: true, onlyFiles: true })) files.push(path);
+const used = new Set();
+const copied = [];
+const extension = (format) => ({ deb: ".deb", rpm: ".rpm", archlinux: ".pkg.tar.zst" })[format];
+
+for (const target of manifest.targets) {
+  const suffix = `_${target.package_name}${extension(target.package_format)}`;
+  const candidates = files.filter((path) => path.endsWith(suffix));
+  if (candidates.length !== 1) throw new Error(`${target.id}: expected one package ending in ${suffix}, found ${candidates.length}`);
+  const source = candidates[0];
+  if (used.has(source)) throw new Error(`${target.id}: package artifact was already selected`);
+  used.add(source);
+  const destination = `${releaseDir}/${source.split("/").pop()}`;
+  await Bun.write(destination, Bun.file(source));
+  copied.push({ target: target.id, file: destination.split("/").pop(), format: target.package_format });
+}
+
+await Bun.write(`${releaseDir}/target-index.json`, `${JSON.stringify({ schema: 1, targets: copied }, null, 2)}\n`);
+console.log(`assembled ${copied.length} manifest packages in ${releaseDir}`);
