@@ -110,6 +110,8 @@ deb_postrm="$scripts_dir/deb/postrm.sh"
 rpm_post="$scripts_dir/rpm/post.sh"
 rpm_preun="$scripts_dir/rpm/preun.sh"
 rpm_postun="$scripts_dir/rpm/postun.sh"
+arch_post="$scripts_dir/arch/post.sh"
+arch_preun="$scripts_dir/arch/preun.sh"
 
 # Debian fresh install: repair old helper mask, enable through helper state,
 # then start private socket before public socket.
@@ -225,5 +227,31 @@ for count in 1 2; do
 done
 run_script "$rpm_postun" 0
 assert_has "systemctl daemon-reload"
+
+# Arch package hooks use pacman's install/upgrade action and preserve the same
+# socket ordering and administrator state as the RPM path.
+run_script "$arch_post" install
+assert_before "systemctl start tako-sessiond.socket" "systemctl start tako.socket"
+assert_has "systemctl enable tako-sessiond.socket"
+assert_has "systemctl enable tako.socket"
+
+MOCK_ACTIVE_UNITS="tako-sessiond.socket tako.socket tako-sessiond.service tako.service" run_script "$arch_post" upgrade
+assert_before "systemctl stop tako.service" "systemctl restart tako-sessiond.socket"
+assert_before "systemctl reset-failed" "systemctl restart tako-sessiond.socket"
+assert_before "systemctl restart tako-sessiond.socket" "systemctl restart tako.socket"
+assert_has "systemctl start tako-sessiond.service"
+assert_has "systemctl start tako.service"
+
+run_script "$arch_post" upgrade
+assert_lacks "systemctl restart"
+assert_lacks "systemctl start"
+assert_lacks "systemctl enable"
+MOCK_FAILED_UNITS="tako.socket" run_script "$arch_post" upgrade
+assert_has "systemctl restart tako.socket"
+
+run_script "$arch_preun" remove
+assert_has "systemctl stop tako.service tako-sessiond.service tako.socket tako-sessiond.socket"
+assert_has "systemctl disable tako-sessiond.socket tako.socket"
+assert_lacks "mask"
 
 echo "Maintainer script tests passed"

@@ -8,7 +8,7 @@ before:
 
 builds:
   - &distro_build
-    id: debian
+    id: debian13-amd64
     dir: apps/backend
     main: ./cmd/tako
     binary: tako
@@ -19,25 +19,52 @@ builds:
     tags: [debian]
     ldflags: ["-s -w -X github.com/velopulent/tako/internal/version.Value={{ .Version }}"]
   - <<: *distro_build
-    id: ubuntu
+    id: debian13-arm64
+    goarch: [arm64]
+  - <<: *distro_build
+    id: ubuntu2604-amd64
     tags: [ubuntu]
   - <<: *distro_build
-    id: fedora
+    id: ubuntu2604-arm64
+    goarch: [arm64]
+    tags: [ubuntu]
+  - <<: *distro_build
+    id: fedora44-amd64
     tags: [fedora]
   - <<: *distro_build
-    id: rhel
+    id: fedora44-arm64
+    goarch: [arm64]
+    tags: [fedora]
+  - <<: *distro_build
+    id: rhel102-amd64
     tags: [rhel]
   - <<: *distro_build
-    id: rocky
+    id: rhel102-arm64
+    goarch: [arm64]
+    tags: [rhel]
+  - <<: *distro_build
+    id: rocky102-amd64
     tags: [rocky]
   - <<: *distro_build
-    id: almalinux
+    id: rocky102-arm64
+    goarch: [arm64]
+    tags: [rocky]
+  - <<: *distro_build
+    id: almalinux102-amd64
     tags: [almalinux]
   - <<: *distro_build
-    id: archlinux
+    id: almalinux102-arm64
+    goarch: [arm64]
+    tags: [almalinux]
+  - <<: *distro_build
+    id: arch-rolling-amd64
     tags: [archlinux]
   - <<: *distro_build
-    id: opensuse
+    id: opensuse160-amd64
+    tags: [opensuse]
+  - <<: *distro_build
+    id: opensuse160-arm64
+    goarch: [arm64]
     tags: [opensuse]
 
 archives:
@@ -53,7 +80,7 @@ checksum:
 nfpms:
   - &debian_package
     id: debian-package
-    ids: [debian]
+    ids: [debian13-amd64, debian13-arm64]
     package_name: tako
     formats: [deb]
     file_name_template: "tako_{{ .Version }}_debian_{{ .Arch }}"
@@ -84,7 +111,7 @@ nfpms:
 
   - <<: *debian_package
     id: ubuntu-package
-    ids: [ubuntu]
+    ids: [ubuntu2604-amd64, ubuntu2604-arm64]
     file_name_template: "tako_{{ .Version }}_ubuntu_{{ .Arch }}"
     contents:
       - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
@@ -100,7 +127,7 @@ nfpms:
 
   - &fedora_package
     id: fedora-package
-    ids: [fedora]
+    ids: [fedora44-amd64, fedora44-arm64]
     package_name: tako
     formats: [rpm]
     file_name_template: "tako_{{ .Version }}_fedora_{{ .Arch }}"
@@ -131,7 +158,7 @@ nfpms:
 
   - <<: *fedora_package
     id: rhel-package
-    ids: [rhel]
+    ids: [rhel102-amd64, rhel102-arm64]
     file_name_template: "tako_{{ .Version }}_rhel_{{ .Arch }}"
     contents:
       - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
@@ -147,7 +174,7 @@ nfpms:
 
   - <<: *fedora_package
     id: rocky-package
-    ids: [rocky]
+    ids: [rocky102-amd64, rocky102-arm64]
     file_name_template: "tako_{{ .Version }}_rocky_{{ .Arch }}"
     contents:
       - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
@@ -163,7 +190,7 @@ nfpms:
 
   - <<: *fedora_package
     id: almalinux-package
-    ids: [almalinux]
+    ids: [almalinux102-amd64, almalinux102-arm64]
     file_name_template: "tako_{{ .Version }}_almalinux_{{ .Arch }}"
     contents:
       - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
@@ -179,7 +206,7 @@ nfpms:
 
   - <<: *fedora_package
     id: opensuse-package
-    ids: [opensuse]
+    ids: [opensuse160-amd64, opensuse160-arm64]
     file_name_template: "tako_{{ .Version }}_opensuse_{{ .Arch }}"
     dependencies: [systemd, pam, dbus-1, polkit, zypper]
     contents:
@@ -191,11 +218,11 @@ nfpms:
       - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
       - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
       - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
-      - { src: apps/backend/packaging/pam/tako.redhat, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/pam/tako.opensuse, dst: /etc/pam.d/tako, type: "config|noreplace" }
       - { src: apps/backend/packaging/branding/opensuse.png, dst: /usr/share/tako/branding/opensuse.png }
 
   - id: arch-package
-    ids: [archlinux]
+    ids: [arch-rolling-amd64]
     package_name: tako
     formats: [archlinux]
     file_name_template: "tako_{{ .Version }}_archlinux_{{ .Arch }}"
@@ -208,6 +235,9 @@ nfpms:
     section: admin
     priority: optional
     dependencies: [systemd, pam, dbus, polkit, pacman, pacman-contrib]
+    scripts:
+      postinstall: apps/backend/packaging/scripts/arch/post.sh
+      preremove: apps/backend/packaging/scripts/arch/preun.sh
     contents:
       - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
       - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }

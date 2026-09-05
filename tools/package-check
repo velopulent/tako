@@ -15,8 +15,8 @@ done
 
 [ "$(uname -s)" = Linux ] || fail "packaging supports Linux hosts only"
 case "$(uname -m)" in
-    x86_64|amd64) ;;
-    *) fail "packaging currently supports amd64 hosts only" ;;
+    x86_64|amd64|aarch64|arm64) ;;
+    *) fail "packaging requires an amd64 or arm64 host" ;;
 esac
 [ "$(go env CGO_ENABLED)" = 1 ] || fail "CGO must be enabled"
 
@@ -24,17 +24,69 @@ probe_dir=$(mktemp -d)
 trap 'rm -rf "$probe_dir"' EXIT HUP INT TERM
 if ! printf '%s\n' '#include <security/pam_appl.h>' 'int main(void) { return PAM_SUCCESS; }' \
     | cc -x c - -lpam -o "$probe_dir/pam-probe" >/dev/null 2>&1; then
-    fail "PAM headers or libpam linker files missing; install host PAM development package"
+    fail "PAM headers or libpam linker files missing; install the host PAM development package"
 fi
 
 goreleaser check
 
 for script in apps/backend/packaging/scripts/deb/*.sh \
     apps/backend/packaging/scripts/rpm/*.sh \
+    apps/backend/packaging/scripts/arch/*.sh \
     apps/backend/packaging/smoke-test.sh \
     apps/backend/packaging/lifecycle-test.sh; do
     sh -n "$script"
 done
+
+bun -e '
+const manifestPath = "apps/backend/packaging/targets.json";
+const manifest = await Bun.file(manifestPath).json();
+const targets = manifest.targets;
+if (!Array.isArray(targets) || targets.length === 0) throw new Error("targets manifest is empty");
+const required = manifest.build?.required_files;
+if (!Array.isArray(required) || new Set(required).size !== required.length) throw new Error("required package paths must be unique");
+const ids = new Set();
+const buildIds = new Set();
+const config = Bun.YAML.parse(await Bun.file(".goreleaser.yaml").text());
+const builds = new Map((config.builds ?? []).map((build) => [build.id, build]));
+const packageIds = new Set((config.nfpms ?? []).map((pkg) => pkg.id));
+for (const target of targets) {
+  for (const key of ["id", "distribution", "release", "image", "arch", "goarch", "build_tag", "build_id", "package_id", "package_format", "package_name", "pam_source", "branding", "vm_label"]) {
+    if (typeof target[key] !== "string" || target[key] === "") throw new Error(`${target.id ?? "target"} is missing ${key}`);
+  }
+  if (ids.has(target.id)) throw new Error(`duplicate target id: ${target.id}`);
+  if (buildIds.has(target.build_id)) throw new Error(`duplicate build id: ${target.build_id}`);
+  ids.add(target.id);
+  buildIds.add(target.build_id);
+  if (target.arch !== target.goarch) throw new Error(`${target.id} has inconsistent arch/goarch`);
+  if (!builds.has(target.build_id)) throw new Error(`${target.id} has no GoReleaser build`);
+  const build = builds.get(target.build_id);
+  if (build.goos?.length !== 1 || build.goos[0] !== "linux") throw new Error(`${target.id} must build for Linux`);
+  if (build.goarch?.length !== 1 || build.goarch[0] !== target.goarch) throw new Error(`${target.id} has the wrong GoReleaser architecture`);
+  if (!build.tags?.includes(target.build_tag)) throw new Error(`${target.id} has no matching Go build tag`);
+  if (!packageIds.has(target.package_id)) throw new Error(`${target.id} has no matching nFPM package`);
+  const pkg = config.nfpms.find((value) => value.id === target.package_id);
+  if (!pkg.ids?.includes(target.build_id)) throw new Error(`${target.id} is not attached to its package`);
+  if (pkg.formats?.length !== 1 || pkg.formats[0] !== target.package_format) throw new Error(`${target.id} has the wrong package format`);
+  const pam = pkg.contents?.find((file) => file.dst === manifest.build.pam_destination);
+  if (!pam || !pam.src.endsWith(`/pam/${target.pam_source}`)) throw new Error(`${target.id} has the wrong PAM policy`);
+  const branding = pkg.contents?.filter((file) => file.dst?.startsWith(`${manifest.build.branding_directory}/`));
+  if (branding?.length !== 1 || branding[0].dst !== `${manifest.build.branding_directory}/${target.branding}.png`) throw new Error(`${target.id} has the wrong branding asset`);
+  if (!(await Bun.file(pam.src).exists())) throw new Error(`${target.id} references missing PAM source ${pam.src}`);
+  if (!(await Bun.file(`apps/backend/packaging/branding/${target.branding}.png`).exists())) throw new Error(`${target.id} references missing branding source`);
+}
+const configuredBuildIds = new Set([...builds.keys()]);
+if (configuredBuildIds.size !== buildIds.size || [...configuredBuildIds].some((id) => !buildIds.has(id))) throw new Error("GoReleaser has a build missing from the target manifest");
+if (process.env.TAKO_PACKAGE_TARGET) {
+  const target = targets.find((value) => value.id === process.env.TAKO_PACKAGE_TARGET);
+  if (!target) throw new Error(`unknown TAKO_PACKAGE_TARGET: ${process.env.TAKO_PACKAGE_TARGET}`);
+  const actualGoarch = (await Bun.$`go env GOARCH`.text()).trim();
+  const release = Object.fromEntries((await Bun.file("/etc/os-release").text()).split("\n").filter(line=>line.includes("=")).map(line=>{const at=line.indexOf("=");return [line.slice(0,at),line.slice(at+1).replaceAll("\"","")]}));
+  const distro=({arch:"archlinux","opensuse-leap":"opensuse"})[release.ID] ?? release.ID;
+  if(distro!==target.distribution || (target.release!=="rolling" && release.VERSION_ID!==target.release && !release.VERSION_ID?.startsWith(target.release+"."))) throw new Error(`${target.id} requires its matching native distro release`);
+  if (actualGoarch !== target.goarch) throw new Error(`${target.id} needs GOARCH=${target.goarch}, host has ${actualGoarch}`);
+}
+console.log(`validated ${targets.length} packaging targets from ${manifestPath}`);
+'
 
 verify_log="$probe_dir/systemd-analyze.log"
 if ! systemd-analyze verify \

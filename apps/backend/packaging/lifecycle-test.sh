@@ -31,8 +31,14 @@ case "$new_package" in
     remove_package() { rpm --erase tako; }
     purge_package() { rpm --erase tako >/dev/null 2>&1 || true; }
     ;;
+  *.pkg.tar.zst)
+    [[ "$old_package" == *.pkg.tar.zst ]] || { echo "Both packages must be Arch package files." >&2; exit 2; }
+    install_package() { pacman --noconfirm --upgrade "$1"; }
+    remove_package() { pacman --noconfirm --remove tako; }
+    purge_package() { pacman --noconfirm --remove tako >/dev/null 2>&1 || true; }
+    ;;
   *)
-    echo "NEW_PACKAGE must end in .deb or .rpm." >&2
+    echo "NEW_PACKAGE must end in .deb, .rpm, or .pkg.tar.zst." >&2
     exit 2
     ;;
 esac

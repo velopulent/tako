@@ -1,0 +1,5 @@
+# openSUSE Leap package variant. Install as /etc/pam.d/tako.
+# Leap's generated default stacks are exposed as common-* files.
+auth    include common-auth
+account include common-account
+session include common-session
