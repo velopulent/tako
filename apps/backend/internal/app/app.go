@@ -734,7 +734,6 @@ func (server *Server) logRequest(next http.Handler) http.Handler {
 			zap.String("request_id", middleware.GetReqID(request.Context())),
 			zap.String("method", request.Method),
 			zap.String("path", request.URL.Path),
-			zap.String("query", request.URL.RawQuery),
 			zap.Int("status", wrapped.Status()),
 			zap.Int("bytes", wrapped.BytesWritten()),
 			zap.String("remote_ip", request.RemoteAddr),
@@ -1420,7 +1419,17 @@ func writeSecurityOperationError(writer http.ResponseWriter, err error) {
 }
 
 func (server *Server) filesList(writer http.ResponseWriter, request *http.Request) {
-	operation := platform.FileOperation{Action: "list", Path: request.URL.Query().Get("path"), ShowHidden: request.URL.Query().Get("hidden") == "true"}
+	operation := platform.FileOperation{Action: "list", Path: request.URL.Query().Get("path"), ShowHidden: request.URL.Query().Get("hidden") == "true", ExpectedFingerprint: request.URL.Query().Get("fingerprint")}
+	for name, target := range map[string]*int64{"offset": &operation.Offset, "limit": &operation.Limit} {
+		if raw := request.URL.Query().Get(name); raw != "" {
+			value, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || value < 0 {
+				problem(writer, http.StatusBadRequest, "invalid-file-range", "Directory page is invalid")
+				return
+			}
+			*target = value
+		}
+	}
 	if operation.Path == "" {
 		operation.Path = "."
 	}
@@ -1613,9 +1622,37 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 		}
 		writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", result.Offset, end, result.Total))
 	}
-	writer.Header().Set("Content-Length", strconv.Itoa(len(result.Content)))
+	fullDownload := status == http.StatusOK && request.URL.Query().Get("offset") == "" && request.URL.Query().Get("limit") == ""
+	length := int64(len(result.Content))
+	if fullDownload {
+		length = result.Total
+	}
+	writer.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 	writer.WriteHeader(status)
-	_, _ = writer.Write(result.Content)
+	if _, err := writer.Write(result.Content); err != nil {
+		return
+	}
+	for next := int64(len(result.Content)); fullDownload && next < result.Total; {
+		current, exists := request.Context().Value(sessionKey{}).(session.Session)
+		if !exists {
+			return
+		}
+		operation := platform.FileOperation{Action: "read", Path: path, Offset: next, Limit: platform.MaxFileChunk, ExpectedFingerprint: result.Fingerprint, Scope: request.URL.Query().Get("scope")}
+		fileRequest := auth.FileRequest{Operation: operation, Token: current.Identity.BridgeToken}
+		if operation.Scope == "system" {
+			fileRequest.Token = ""
+			fileRequest.Administrative = true
+			fileRequest.AdminToken = current.Identity.AdminToken
+		}
+		chunk, err := server.hostBroker().ApplyFileOperation(request.Context(), fileRequest)
+		if err != nil || len(chunk.Content) == 0 {
+			return
+		}
+		if _, err := writer.Write(chunk.Content); err != nil {
+			return
+		}
+		next += int64(len(chunk.Content))
+	}
 }
 
 func (server *Server) fileTextWindow(writer http.ResponseWriter, request *http.Request) {
@@ -1673,7 +1710,7 @@ func (server *Server) fileUpload(writer http.ResponseWriter, request *http.Reque
 	if raw := request.URL.Query().Get("total"); raw != "" && err == nil {
 		total, err = strconv.ParseInt(raw, 10, 64)
 	}
-	if err != nil || offset < 0 || total < 0 || (total > 0 && offset > total) {
+	if err != nil || offset < 0 || total <= 0 || total > 1<<40 || offset > total {
 		problem(writer, http.StatusBadRequest, "invalid-file-range", "The resumable upload range is invalid")
 		return
 	}
@@ -1683,8 +1720,12 @@ func (server *Server) fileUpload(writer http.ResponseWriter, request *http.Reque
 		problem(writer, http.StatusRequestEntityTooLarge, "file-chunk-too-large", "Upload chunks are bounded to 4 MiB")
 		return
 	}
+	if int64(len(content)) > total-offset || len(content) == 0 {
+		problem(writer, http.StatusBadRequest, "invalid-file-range", "Chunk exceeds declared upload size")
+		return
+	}
 	checksum := request.Header.Get("X-Content-SHA256")
-	operation := platform.FileOperation{Action: "write-chunk", Path: path, Offset: offset, TotalSize: total, Content: content, ContentSHA256: checksum}
+	operation := platform.FileOperation{Action: "write-chunk", Path: path, Offset: offset, TotalSize: total, Content: content, ContentSHA256: checksum, UploadID: request.URL.Query().Get("uploadId"), ExpectedFingerprint: request.Header.Get("X-File-Fingerprint")}
 	result, ok := server.applyFileOperation(writer, request, operation)
 	if ok {
 		writer.Header().Set("Upload-Offset", strconv.FormatInt(result.Offset, 10))
@@ -1699,7 +1740,19 @@ func (server *Server) applyFileOperation(writer http.ResponseWriter, request *ht
 		return platform.FileResult{}, false
 	}
 	fileRequest := auth.FileRequest{Operation: operation}
-	administrative := current.Identity.AdminToken != "" && time.Now().Before(current.AdminUntil)
+	if operation.Scope == "" {
+		operation.Scope = request.URL.Query().Get("scope")
+	}
+	if operation.Scope != "" && operation.Scope != "home" && operation.Scope != "system" {
+		problem(writer, http.StatusBadRequest, "invalid-file-scope", "File scope is invalid")
+		return platform.FileResult{}, false
+	}
+	fileRequest.Operation = operation
+	administrative := operation.Scope == "system"
+	if administrative && (current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil)) {
+		problem(writer, http.StatusForbidden, "elevation-required", "Elevate before opening system files")
+		return platform.FileResult{}, false
+	}
 	if administrative {
 		fileRequest.AdminToken = current.Identity.AdminToken
 		fileRequest.Administrative = true
@@ -1715,6 +1768,32 @@ func (server *Server) applyFileOperation(writer http.ResponseWriter, request *ht
 		writeFileOperationError(writer, err)
 		server.recordOperation(request.Context(), current.Identity.Username, "file/"+operation.Action, startedAt, "failed", err.Error(), administrative)
 		return platform.FileResult{}, false
+	}
+	if administrative {
+		absolutePath := func(path string) string {
+			if path == "." {
+				return "/"
+			}
+			return "/" + strings.TrimPrefix(path, "/")
+		}
+		absolute := func(entry *platform.FileEntry) {
+			if entry != nil {
+				entry.Path = absolutePath(entry.Path)
+			}
+		}
+		absolute(result.Entry)
+		if result.Directory != nil {
+			result.Directory.Path = absolutePath(result.Directory.Path)
+			result.Directory.Parent = absolutePath(result.Directory.Parent)
+			for i := range result.Directory.Entries {
+				absolute(&result.Directory.Entries[i])
+			}
+		}
+		if result.Search != nil {
+			for i := range result.Search.Entries {
+				absolute(&result.Search.Entries[i])
+			}
+		}
 	}
 	if operation.Action != "list" && operation.Action != "stat" && operation.Action != "read" && operation.Action != "read-window" && operation.Action != "search" {
 		server.recordOperation(request.Context(), current.Identity.Username, "file/"+operation.Action, startedAt, "succeeded", "", administrative)
@@ -2606,10 +2685,11 @@ type loginAttempt struct {
 }
 
 type loginLimiter struct {
-	mu       sync.Mutex
-	limit    int
-	window   time.Duration
-	attempts map[string]loginAttempt
+	mu        sync.Mutex
+	limit     int
+	window    time.Duration
+	attempts  map[string]loginAttempt
+	nextSweep time.Time
 }
 
 func newLoginLimiter(limit int, window time.Duration) *loginLimiter {
@@ -2624,6 +2704,17 @@ func (limiter *loginLimiter) Allow(address string) bool {
 	now := time.Now()
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
+	if now.After(limiter.nextSweep) {
+		for key, value := range limiter.attempts {
+			if now.After(value.until) {
+				delete(limiter.attempts, key)
+			}
+		}
+		limiter.nextSweep = now.Add(time.Minute)
+	}
+	if _, exists := limiter.attempts[host]; !exists && len(limiter.attempts) >= 8192 {
+		return false
+	}
 	attempt := limiter.attempts[host]
 	if now.After(attempt.until) {
 		attempt = loginAttempt{until: now.Add(limiter.window)}
