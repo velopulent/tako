@@ -11,7 +11,10 @@ function FilesPage() {
   })
   return (
     <Page description="Browse, preview, and manage files under authenticated UNIX authority.">
-      <FileBrowser csrfToken={session.data?.csrfToken ?? ""} />
+      <FileBrowser
+        csrfToken={session.data?.csrfToken ?? ""}
+        administrative={session.data?.administrative}
+      />
     </Page>
   )
 }

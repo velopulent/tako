@@ -40,7 +40,11 @@ export type FileEntry = {
 }
 
 export type FileResult = {
+  uploadId?: string
   directory?: {
+    parent?: string
+    nextOffset?: number
+    hasMore?: boolean
     path: string
     entries: FileEntry[]
     showHidden: boolean
