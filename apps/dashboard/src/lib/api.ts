@@ -667,6 +667,7 @@ export type UnitConfiguration = {
   truncated: boolean
 }
 export type LogEntry = {
+  id?: string
   timestamp: string
   priority: string
   unit: string
