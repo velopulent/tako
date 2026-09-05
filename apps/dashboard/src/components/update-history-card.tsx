@@ -17,6 +17,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { api, type UpdateHistoryEntry } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 const maxShownEntries = 3
 const mergeWindowMs = 10 * 60 * 1000
@@ -78,9 +79,9 @@ export function UpdateHistoryCard({ enabled }: { enabled: boolean }) {
 
   return (
     <Card id="update-history">
-      <CardHeader>
+      <CardHeader className="gap-2">
         <CardTitle className="flex items-center gap-2 text-lg">
-          <History className="size-4 text-muted-foreground" />
+          <History className="text-muted-foreground" />
           Update history
         </CardTitle>
         <CardDescription>
@@ -97,7 +98,7 @@ export function UpdateHistoryCard({ enabled }: { enabled: boolean }) {
               open={isOpen}
               onOpenChange={(open) => setExpanded(open ? entry.time : null)}
             >
-              <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
+              <div className="flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <CollapsibleTrigger
                     render={
@@ -109,18 +110,17 @@ export function UpdateHistoryCard({ enabled }: { enabled: boolean }) {
                     }
                   >
                     <ChevronRight
-                      className={
-                        isOpen
-                          ? "rotate-90 transition-transform"
-                          : "transition-transform"
-                      }
+                      className={cn(
+                        "transition-transform",
+                        isOpen && "rotate-90"
+                      )}
                     />
                   </CollapsibleTrigger>
-                  <span className="truncate text-sm">
+                  <span className="min-w-0 truncate text-sm">
                     {formatTime(entry.time)}
                   </span>
                 </div>
-                <Badge variant="secondary">
+                <Badge variant="secondary" className="shrink-0">
                   {names.length} package{names.length === 1 ? "" : "s"}
                 </Badge>
               </div>
