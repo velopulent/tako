@@ -5,12 +5,14 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"os"
 	"os/user"
@@ -63,6 +65,9 @@ type FileEntry struct {
 }
 
 type FileDirectory struct {
+	Parent      string      `json:"parent"`
+	NextOffset  int64       `json:"nextOffset,omitempty"`
+	HasMore     bool        `json:"hasMore"`
 	Path        string      `json:"path"`
 	Entries     []FileEntry `json:"entries"`
 	ShowHidden  bool        `json:"showHidden"`
@@ -89,6 +94,7 @@ type FileResult struct {
 	Warnings    []string          `json:"warnings,omitempty"`
 	Message     string            `json:"message,omitempty"`
 	Fingerprint string            `json:"fingerprint,omitempty"`
+	UploadID    string            `json:"uploadId,omitempty"`
 }
 
 // FileOperation is the narrow wire contract shared by the gateway, sessiond,
@@ -97,6 +103,8 @@ type FileResult struct {
 // system locations and operation-specific limits.
 type FileOperation struct {
 	Action              string  `json:"action"`
+	Scope               string  `json:"scope,omitempty"`
+	UploadID            string  `json:"uploadId,omitempty"`
 	Path                string  `json:"path,omitempty"`
 	Destination         string  `json:"destination,omitempty"`
 	Kind                string  `json:"kind,omitempty"`
@@ -121,7 +129,7 @@ type FileOperation struct {
 }
 
 func ValidateFileOperation(operation FileOperation) error {
-	validActions := map[string]bool{"list": true, "stat": true, "read": true, "read-window": true, "write": true, "write-text": true, "write-chunk": true, "create": true, "rename": true, "move": true, "copy": true, "trash": true, "delete": true, "search": true, "archive": true, "extract": true, "metadata": true}
+	validActions := map[string]bool{"list": true, "stat": true, "read": true, "read-window": true, "write": true, "write-text": true, "write-chunk": true, "create": true, "rename": true, "move": true, "copy": true, "trash": true, "delete": true, "search": true, "archive": true, "extract": true, "metadata": true, "cancel-upload": true, "restore": true}
 	if !validActions[operation.Action] || len(operation.Path) > MaxFilePath || len(operation.Destination) > MaxFilePath || len(operation.ArchivePath) > MaxFilePath || strings.ContainsAny(operation.Path+operation.Destination+operation.ArchivePath, "\x00\r\n") {
 		return ErrInvalidFileOperation
 	}
@@ -131,6 +139,18 @@ func ValidateFileOperation(operation FileOperation) error {
 	contentLimit := MaxFileChunk
 	if operation.Action == "write-text" {
 		contentLimit = MaxTextFile
+	}
+	if operation.Scope != "" && operation.Scope != "home" && operation.Scope != "system" {
+		return ErrInvalidFileOperation
+	}
+	if operation.UploadID != "" && (len(operation.UploadID) != 32 || !isHex(operation.UploadID)) {
+		return ErrInvalidFileOperation
+	}
+	if operation.Action == "write-chunk" && (operation.TotalSize <= 0 || operation.Offset > operation.TotalSize || int64(len(operation.Content)) > operation.TotalSize-operation.Offset || len(operation.Content) == 0 || operation.ContentSHA256 == "") {
+		return ErrInvalidFileOperation
+	}
+	if operation.Action == "list" && operation.Limit > MaxFileEntries {
+		return ErrInvalidFileOperation
 	}
 	if operation.Offset < 0 || operation.Limit < 0 || operation.Limit > MaxFileChunk || len(operation.Content) > contentLimit {
 		return ErrInvalidFileOperation
@@ -163,7 +183,7 @@ func ValidateFileOperation(operation FileOperation) error {
 			return ErrInvalidFileOperation
 		}
 	}
-	if (operation.Action == "write" || operation.Action == "write-text" || operation.Action == "write-chunk") && operation.Limit == 0 && len(operation.Content) == 0 {
+	if (operation.Action == "write" || operation.Action == "write-text") && operation.Offset != 0 {
 		return ErrInvalidFileOperation
 	}
 	if operation.Action == "rename" || operation.Action == "move" || operation.Action == "copy" {
@@ -207,16 +227,44 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 	if err := ctx.Err(); err != nil {
 		return FileResult{}, err
 	}
-	resolve := func(value string) (string, error) { return resolveFilePath(root, value, privileged) }
-	path, err := resolve(operation.Path)
-	if operation.Action == "archive" && operation.Path == "" {
-		path = root
-	}
+	tree, err := openFileRoot(root)
 	if err != nil {
 		return FileResult{}, err
 	}
+	defer tree.Close()
+	f := fileTree{root: tree}
+	resolve := func(value string) (string, error) {
+		if value == "" {
+			value = "."
+		}
+		if filepath.IsAbs(value) {
+			if !privileged {
+				return "", ErrFilePermission
+			}
+			value = strings.TrimPrefix(filepath.Clean(value), "/")
+			if value == "" {
+				value = "."
+			}
+		}
+		value = filepath.Clean(value)
+		if !filepath.IsLocal(value) {
+			return "", ErrFilePermission
+		}
+		if privileged && (value == "proc" || strings.HasPrefix(value, "proc/") || value == "sys" || strings.HasPrefix(value, "sys/") || value == "dev" || strings.HasPrefix(value, "dev/")) {
+			return "", ErrFilePermission
+		}
+		return value, nil
+	}
+	path, err := resolve(operation.Path)
+	if err != nil {
+		return FileResult{}, err
+	}
+	if path == "." && operation.Action != "list" && operation.Action != "stat" && operation.Action != "search" && operation.Action != "archive" {
+		return FileResult{}, ErrFilePermission
+	}
+
 	if operation.ExpectedFingerprint != "" && (operation.Action == "read" || operation.Action == "read-window" || operation.Action == "stat") {
-		info, statErr := os.Stat(path)
+		info, statErr := f.root.Stat(path)
 		if errors.Is(statErr, os.ErrNotExist) {
 			return FileResult{}, ErrFileNotFound
 		}
@@ -229,51 +277,55 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 	}
 	switch operation.Action {
 	case "list":
-		return listDirectory(path, operation.Path, operation.ShowHidden)
+		return f.listDirectory(path, operation)
 	case "stat":
-		entry, err := fileEntry(path, operation.Path)
+		entry, err := f.entry(path, operation.Path)
 		return FileResult{Entry: &entry}, err
 	case "read":
-		return readFile(path, operation.Offset, operation.Limit)
+		return f.readFile(path, operation.Offset, operation.Limit, operation.ExpectedFingerprint)
 	case "read-window":
-		return ReadTextWindow(path, operation.LineOffset, operation.LineLimit)
+		return f.readTextWindow(path, operation.LineOffset, operation.LineLimit)
 	case "write":
-		return writeFile(path, operation)
+		return f.writeFile(path, operation)
 	case "write-text":
 		if len(operation.Content) > MaxTextFile {
 			return FileResult{}, ErrFileTooLarge
 		}
-		return writeFile(path, operation)
+		return f.writeFile(path, operation)
 	case "write-chunk":
-		return writeChunk(path, operation)
+		return f.writeChunk(path, operation)
+	case "cancel-upload":
+		return f.cancelUpload(path, operation)
 	case "create":
-		return createFile(path, operation)
+		return f.createFile(path, operation)
 	case "rename", "move", "copy":
 		destination, resolveErr := resolve(operation.Destination)
 		if resolveErr != nil {
 			return FileResult{}, resolveErr
 		}
-		return transferFile(operation.Action, path, destination, operation)
+		return f.transferFile(operation.Action, path, destination, operation)
 	case "trash":
-		return trashFile(path, root, operation)
+		return f.trashFile(path, ".", operation)
+	case "restore":
+		return f.restoreFile(path, operation)
 	case "delete":
-		return deleteFile(path, operation)
+		return f.deleteFile(path, operation)
 	case "search":
-		return searchFiles(ctx, path, operation)
+		return f.searchFiles(ctx, path, operation)
 	case "archive":
 		archive, resolveErr := resolve(operation.ArchivePath)
 		if resolveErr != nil {
 			return FileResult{}, resolveErr
 		}
-		return createArchive(ctx, path, archive, operation)
+		return f.createArchive(ctx, path, archive, operation)
 	case "extract":
 		archive, resolveErr := resolve(operation.ArchivePath)
 		if resolveErr != nil {
 			return FileResult{}, resolveErr
 		}
-		return extractArchive(ctx, archive, path, operation)
+		return f.extractArchive(ctx, archive, path, operation)
 	case "metadata":
-		return updateMetadata(path, operation, privileged)
+		return f.updateMetadata(path, operation, privileged)
 	default:
 		return FileResult{}, ErrInvalidFileOperation
 	}
@@ -315,43 +367,71 @@ func resolveFilePath(root, value string, privileged bool) (string, error) {
 	return path, nil
 }
 
-func listDirectory(path, displayPath string, showHidden bool) (FileResult, error) {
-	entries, err := os.ReadDir(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return FileResult{}, ErrFileNotFound
-	}
-	if errors.Is(err, os.ErrPermission) {
-		return FileResult{}, ErrFilePermission
-	}
+func (f fileTree) listDirectory(path string, operation FileOperation) (FileResult, error) {
+	directory, err := f.root.Open(path)
 	if err != nil {
 		return FileResult{}, err
 	}
-	if len(entries) > MaxFileEntries {
-		entries = entries[:MaxFileEntries]
+	defer directory.Close()
+	info, err := directory.Stat()
+	if err != nil {
+		return FileResult{}, err
 	}
-	result := make([]FileEntry, 0, len(entries))
-	for _, item := range entries {
-		if !showHidden && strings.HasPrefix(item.Name(), ".") {
-			continue
-		}
-		entry, entryErr := fileEntry(filepath.Join(path, item.Name()), filepath.Join(displayPath, item.Name()))
-		if entryErr != nil {
-			if errors.Is(entryErr, os.ErrPermission) {
-				result = append(result, FileEntry{Name: item.Name(), Path: filepath.Join(displayPath, item.Name()), Hidden: strings.HasPrefix(item.Name(), "."), PermissionDenied: true, Reason: "metadata is not readable"})
-				continue
+	if operation.ExpectedFingerprint != "" && statFingerprint(info) != operation.ExpectedFingerprint {
+		return FileResult{}, ErrFileConflict
+	}
+	limit := int(operation.Limit)
+	if limit == 0 {
+		limit = 200
+	}
+	result := FileDirectory{Path: path, Parent: filepath.Dir(path), Entries: []FileEntry{}, ShowHidden: operation.ShowHidden, Fingerprint: statFingerprint(info)}
+	var offset int64
+	for offset < operation.Offset {
+		n := min(int64(256), operation.Offset-offset)
+		entries, err := directory.ReadDir(int(n))
+		offset += int64(len(entries))
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return FileResult{Directory: &result}, nil
 			}
+			return FileResult{}, err
+		}
+	}
+	for scanned := 0; scanned < 100000; scanned++ {
+		entries, readErr := directory.ReadDir(1)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return FileResult{}, readErr
+		}
+		item := entries[0]
+		offset++
+		if scanned == 99999 {
+			result.HasMore = true
+			result.NextOffset = offset
+		}
+		if !operation.ShowHidden && strings.HasPrefix(item.Name(), ".") {
 			continue
 		}
-		result = append(result, entry)
-	}
-	sort.Slice(result, func(left, right int) bool {
-		if result[left].Kind != result[right].Kind {
-			return result[left].Kind == "directory"
+		if len(result.Entries) == limit {
+			result.HasMore = true
+			result.NextOffset = offset - 1
+			break
 		}
-		return strings.ToLower(result[left].Name) < strings.ToLower(result[right].Name)
+		entry, entryErr := f.entry(filepath.Join(path, item.Name()), filepath.Join(path, item.Name()))
+		if entryErr == nil {
+			result.Entries = append(result.Entries, entry)
+		}
+	}
+	sort.Slice(result.Entries, func(i, j int) bool {
+		a, b := result.Entries[i], result.Entries[j]
+		if (a.Kind == "directory") != (b.Kind == "directory") {
+			return a.Kind == "directory"
+		}
+		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 	})
-	stat, _ := os.Stat(path)
-	return FileResult{Directory: &FileDirectory{Path: displayPath, Entries: result, ShowHidden: showHidden, Fingerprint: statFingerprint(stat)}}, nil
+	return FileResult{Directory: &result}, nil
 }
 
 func fileEntry(path, displayPath string) (FileEntry, error) {
@@ -380,34 +460,73 @@ func fileEntry(path, displayPath string) (FileEntry, error) {
 	return entry, nil
 }
 
+func (f fileTree) entry(path, displayPath string) (FileEntry, error) {
+	info, err := f.root.Lstat(path)
+	if err != nil {
+		return FileEntry{}, err
+	}
+	kind := "file"
+	if info.IsDir() {
+		kind = "directory"
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		kind = "symlink"
+	}
+	entry := FileEntry{Name: filepath.Base(path), Path: displayPath, Kind: kind, Size: info.Size(), Mode: uint32(info.Mode().Perm()), ModifiedAt: info.ModTime().UTC(), Fingerprint: statFingerprint(info), Hidden: strings.HasPrefix(filepath.Base(path), "."), Readable: info.Mode().Perm()&0o444 != 0, Writable: info.Mode().Perm()&0o222 != 0}
+	if kind == "file" {
+		entry.Mime = mime.TypeByExtension(filepath.Ext(path))
+		if entry.Mime == "" {
+			entry.Mime = "application/octet-stream"
+		}
+	}
+	if kind == "symlink" {
+		if target, readErr := f.root.Readlink(path); readErr == nil && len(target) <= MaxFilePath {
+			entry.SymlinkTarget = target
+		}
+	}
+	return entry, nil
+}
+
 func statFingerprint(info os.FileInfo) string {
 	if info == nil {
 		return ""
 	}
 	value := fmt.Sprintf("%s:%d:%d:%o", info.Mode().String(), info.Size(), info.ModTime().UnixNano(), info.Mode().Perm())
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		value += fmt.Sprintf(":%d:%d:%d:%d:%d:%d", stat.Dev, stat.Ino, stat.Uid, stat.Gid, stat.Ctim.Sec, stat.Ctim.Nsec)
+	}
 	hash := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(hash[:])
 }
 
-func readFile(path string, offset, limit int64) (FileResult, error) {
-	info, err := os.Stat(path)
+func (f fileTree) readFile(path string, offset, limit int64, expected string) (FileResult, error) {
+	info, err := f.root.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return FileResult{}, ErrFileNotFound
 	}
 	if err != nil {
 		return FileResult{}, err
 	}
-	if info.IsDir() || info.Size() > MaxFileChunk*1024 {
+	if !info.Mode().IsRegular() {
 		return FileResult{}, ErrFileTooLarge
 	}
 	if limit == 0 {
 		limit = MaxFileChunk
 	}
-	file, err := os.Open(path)
+	file, err := f.root.Open(path)
 	if err != nil {
 		return FileResult{}, err
 	}
 	defer file.Close()
+	info, err = file.Stat()
+	if err != nil {
+		return FileResult{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return FileResult{}, ErrFilePermission
+	}
+	if expected != "" && statFingerprint(info) != expected {
+		return FileResult{}, ErrFileConflict
+	}
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		return FileResult{}, err
 	}
@@ -418,29 +537,29 @@ func readFile(path string, offset, limit int64) (FileResult, error) {
 	return FileResult{Content: content, Offset: offset, Total: info.Size(), EOF: offset+int64(len(content)) >= info.Size(), Mime: mime.TypeByExtension(filepath.Ext(path)), Fingerprint: statFingerprint(info)}, nil
 }
 
-func readText(path string, offset, limit int64) (FileResult, error) {
-	info, err := os.Stat(path)
+func (f fileTree) readText(path string, offset, limit int64) (FileResult, error) {
+	info, err := f.root.Stat(path)
 	if err != nil {
 		return FileResult{}, err
 	}
 	if info.Size() > MaxTextFile {
 		return FileResult{}, ErrFileTooLarge
 	}
-	result, err := readFile(path, offset, limit)
+	result, err := f.readFile(path, offset, limit, "")
 	if err == nil {
 		result.Mime = "text/plain"
 	}
 	return result, err
 }
 
-func writeFile(path string, operation FileOperation) (FileResult, error) {
+func (f fileTree) writeFile(path string, operation FileOperation) (FileResult, error) {
 	if operation.ContentSHA256 != "" {
 		digest := sha256.Sum256(operation.Content)
 		if !strings.EqualFold(hex.EncodeToString(digest[:]), operation.ContentSHA256) {
 			return FileResult{}, ErrFileConflict
 		}
 	}
-	info, err := os.Stat(path)
+	info, err := f.root.Stat(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return FileResult{}, err
 	}
@@ -448,7 +567,7 @@ func writeFile(path string, operation FileOperation) (FileResult, error) {
 		return FileResult{}, ErrFileConflict
 	}
 	if operation.Offset > 0 {
-		file, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
+		file, openErr := f.root.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
 		if openErr != nil {
 			return FileResult{}, openErr
 		}
@@ -461,12 +580,12 @@ func writeFile(path string, operation FileOperation) (FileResult, error) {
 		}
 		_ = file.Sync()
 	} else {
-		temporary, createErr := os.CreateTemp(filepath.Dir(path), ".tako-write-*")
+		temporary, createErr := f.temporary(filepath.Dir(path))
 		if createErr != nil {
 			return FileResult{}, createErr
 		}
-		temporaryName := temporary.Name()
-		defer os.Remove(temporaryName)
+		temporaryName := filepath.Join(filepath.Dir(path), filepath.Base(temporary.Name()))
+		defer f.root.Remove(temporaryName)
 		if _, createErr = temporary.Write(operation.Content); createErr == nil {
 			createErr = temporary.Sync()
 		}
@@ -474,66 +593,42 @@ func writeFile(path string, operation FileOperation) (FileResult, error) {
 			createErr = closeErr
 		}
 		if createErr == nil {
-			if info != nil {
-				_ = os.Chmod(temporaryName, info.Mode().Perm())
+			if current, e := f.root.Stat(path); operation.ExpectedFingerprint != "" && (e != nil || statFingerprint(current) != operation.ExpectedFingerprint) {
+				return FileResult{}, ErrFileConflict
 			}
-			createErr = os.Rename(temporaryName, path)
+			if info != nil {
+				if modeErr := f.preserveMetadata(temporaryName, info); modeErr != nil {
+					return FileResult{}, modeErr
+				}
+			}
+			createErr = f.root.Rename(temporaryName, path)
 		}
 		if createErr != nil {
 			return FileResult{}, createErr
 		}
 	}
-	entry, err := fileEntry(path, path)
+	entry, err := f.entry(path, path)
 	return FileResult{Entry: &entry, Fingerprint: entry.Fingerprint}, err
 }
 
-func writeChunk(path string, operation FileOperation) (FileResult, error) {
-	if operation.ContentSHA256 != "" {
-		digest := sha256.Sum256(operation.Content)
-		if !strings.EqualFold(hex.EncodeToString(digest[:]), operation.ContentSHA256) {
-			return FileResult{}, ErrFileConflict
-		}
-	}
-	if info, statErr := os.Stat(path); statErr == nil && operation.ExpectedFingerprint != "" && statFingerprint(info) != operation.ExpectedFingerprint {
-		return FileResult{}, ErrFileConflict
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return FileResult{}, err
-	}
-	defer file.Close()
-	if _, err := file.Seek(operation.Offset, io.SeekStart); err != nil {
-		return FileResult{}, err
-	}
-	if _, err := file.Write(operation.Content); err != nil {
-		return FileResult{}, err
-	}
-	if err := file.Sync(); err != nil {
-		return FileResult{}, err
-	}
-	entry, err := fileEntry(path, path)
-	next := operation.Offset + int64(len(operation.Content))
-	return FileResult{Entry: &entry, Offset: next, Total: entry.Size, EOF: operation.TotalSize > 0 && next >= operation.TotalSize, Fingerprint: entry.Fingerprint}, err
-}
-
-func createFile(path string, operation FileOperation) (FileResult, error) {
+func (f fileTree) createFile(path string, operation FileOperation) (FileResult, error) {
 	if operation.Kind == "directory" {
-		if err := os.Mkdir(path, 0o755); err != nil {
+		if err := f.root.Mkdir(path, 0o755); err != nil {
 			return FileResult{}, err
 		}
 	} else {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err := f.root.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return FileResult{}, err
 		}
 		_ = file.Close()
 	}
-	entry, err := fileEntry(path, path)
+	entry, err := f.entry(path, path)
 	return FileResult{Entry: &entry}, err
 }
 
-func transferFile(action, source, destination string, operation FileOperation) (FileResult, error) {
-	info, err := os.Lstat(source)
+func (f fileTree) transferFile(action, source, destination string, operation FileOperation) (FileResult, error) {
+	info, err := f.root.Lstat(source)
 	if err != nil {
 		return FileResult{}, err
 	}
@@ -547,11 +642,11 @@ func transferFile(action, source, destination string, operation FileOperation) (
 		if info.IsDir() {
 			return FileResult{}, errors.New("directory copy requires archive or recursive operation")
 		}
-		input, openErr := os.Open(source)
+		input, openErr := f.root.Open(source)
 		if openErr != nil {
 			return FileResult{}, openErr
 		}
-		output, createErr := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+		output, createErr := f.root.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
 		if createErr != nil {
 			_ = input.Close()
 			return FileResult{}, createErr
@@ -560,46 +655,115 @@ func transferFile(action, source, destination string, operation FileOperation) (
 		_ = input.Close()
 		_ = output.Close()
 		if copyErr == nil || written > MaxArchiveBytes {
-			_ = os.Remove(destination)
+			_ = f.root.Remove(destination)
 			return FileResult{}, ErrFileTooLarge
 		}
 		if copyErr != nil && !errors.Is(copyErr, io.EOF) {
-			_ = os.Remove(destination)
+			_ = f.root.Remove(destination)
 			return FileResult{}, copyErr
 		}
-	} else if err := os.Rename(source, destination); err != nil {
+	} else if err := f.root.rename(source, destination, true); err != nil {
 		if errors.Is(err, syscall.EXDEV) && action == "move" {
-			if _, copyErr := transferFile("copy", source, destination, operation); copyErr != nil {
+			if _, copyErr := f.transferFile("copy", source, destination, operation); copyErr != nil {
 				return FileResult{}, copyErr
 			}
-			if removeErr := os.Remove(source); removeErr != nil {
+			if removeErr := f.root.Remove(source); removeErr != nil {
 				return FileResult{}, removeErr
 			}
 		} else {
 			return FileResult{}, err
 		}
 	}
-	entry, err := fileEntry(destination, destination)
+	entry, err := f.entry(destination, destination)
 	return FileResult{Entry: &entry}, err
 }
 
-func trashFile(path, root string, operation FileOperation) (FileResult, error) {
+func (f fileTree) trashFile(path, root string, operation FileOperation) (FileResult, error) {
 	if operation.Permanent {
-		return deleteFile(path, operation)
+		return f.deleteFile(path, operation)
 	}
-	trashRoot := filepath.Join(root, ".local", "share", "Trash", "files")
-	if err := os.MkdirAll(trashRoot, 0o700); err != nil {
+	info, err := f.root.Lstat(path)
+	if err != nil {
 		return FileResult{}, err
 	}
-	destination := filepath.Join(trashRoot, filepath.Base(path)+"-"+fmt.Sprintf("%d", time.Now().UnixNano()))
-	if err := os.Rename(path, destination); err != nil {
-		return FileResult{Warnings: []string{"Trash is unavailable across filesystems; the item was not removed."}}, err
+	if operation.ExpectedFingerprint != "" && statFingerprint(info) != operation.ExpectedFingerprint {
+		return FileResult{}, ErrFileConflict
 	}
-	return FileResult{Message: "Item moved to the user trash."}, nil
+	trashRoot := filepath.Join(root, ".local", "share", "Trash")
+	if strings.HasPrefix(path, trashRoot+"/") {
+		return FileResult{}, ErrInvalidFileOperation
+	}
+	if err := f.root.MkdirAll(filepath.Join(trashRoot, "files"), 0700); err != nil {
+		return FileResult{}, err
+	}
+	if err := f.root.MkdirAll(filepath.Join(trashRoot, "info"), 0700); err != nil {
+		return FileResult{}, err
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return FileResult{}, err
+	}
+	name := filepath.Base(path) + "-" + hex.EncodeToString(random[:])
+	destination := filepath.Join(trashRoot, "files", name)
+	recordPath := filepath.Join(trashRoot, "info", name+".json")
+	record, err := f.root.OpenFile(recordPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return FileResult{}, err
+	}
+	err = json.NewEncoder(record).Encode(struct {
+		Path string `json:"path"`
+	}{path})
+	if err == nil {
+		err = record.Sync()
+	}
+	record.Close()
+	if err != nil {
+		f.root.Remove(recordPath)
+		return FileResult{}, err
+	}
+	if err := f.root.rename(path, destination, true); err != nil {
+		f.root.Remove(recordPath)
+		return FileResult{}, err
+	}
+	entry, err := f.entry(destination, destination)
+	return FileResult{Entry: &entry, Message: "Item moved to trash."}, err
 }
 
-func deleteFile(path string, operation FileOperation) (FileResult, error) {
-	info, err := os.Lstat(path)
+func (f fileTree) restoreFile(path string, operation FileOperation) (FileResult, error) {
+	const directory = ".local/share/Trash/files/"
+	if !strings.HasPrefix(path, directory) || strings.Contains(strings.TrimPrefix(path, directory), "/") {
+		return FileResult{}, ErrInvalidFileOperation
+	}
+	info, err := f.root.Lstat(path)
+	if err != nil {
+		return FileResult{}, err
+	}
+	if operation.ExpectedFingerprint != "" && statFingerprint(info) != operation.ExpectedFingerprint {
+		return FileResult{}, ErrFileConflict
+	}
+	recordPath := filepath.Join(".local/share/Trash/info", filepath.Base(path)+".json")
+	record, err := f.root.Open(recordPath)
+	if err != nil {
+		return FileResult{}, err
+	}
+	var original struct {
+		Path string `json:"path"`
+	}
+	err = json.NewDecoder(io.LimitReader(record, MaxFilePath+128)).Decode(&original)
+	record.Close()
+	if err != nil || !filepath.IsLocal(original.Path) || original.Path == "." {
+		return FileResult{}, ErrInvalidFileOperation
+	}
+	if err := f.root.rename(path, original.Path, true); err != nil {
+		return FileResult{}, err
+	}
+	f.root.Remove(recordPath)
+	entry, err := f.entry(original.Path, original.Path)
+	return FileResult{Entry: &entry, Message: "Item restored."}, err
+}
+
+func (f fileTree) deleteFile(path string, operation FileOperation) (FileResult, error) {
+	info, err := f.root.Lstat(path)
 	if err != nil {
 		return FileResult{}, err
 	}
@@ -610,23 +774,30 @@ func deleteFile(path string, operation FileOperation) (FileResult, error) {
 		if !operation.Recursive {
 			return FileResult{}, errors.New("directory deletion requires recursive confirmation")
 		}
-		err = os.RemoveAll(path)
+		err = f.root.RemoveAll(path)
 	} else {
-		err = os.Remove(path)
+		err = f.root.Remove(path)
 	}
 	return FileResult{Message: "Item deleted."}, err
 }
 
-func searchFiles(ctx context.Context, path string, operation FileOperation) (FileResult, error) {
+func (f fileTree) searchFiles(ctx context.Context, path string, operation FileOperation) (FileResult, error) {
 	maxEntries := operation.MaxEntries
 	if maxEntries == 0 {
 		maxEntries = 1000
 	}
 	result := FileSearchResult{Root: path, Query: operation.Query, Entries: []FileEntry{}}
 	count := 0
-	err := filepath.WalkDir(path, func(current string, item os.DirEntry, walkErr error) error {
+	visited := 0
+	needle := strings.ToLower(operation.Query)
+	err := f.walk(ctx, path, func(current string, item os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		visited++
+		if visited > MaxSearchEntries || strings.Count(current, "/")-strings.Count(path, "/") > MaxArchiveDepth {
+			result.Limited = true
+			return fs.SkipAll
 		}
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrPermission) {
@@ -634,8 +805,8 @@ func searchFiles(ctx context.Context, path string, operation FileOperation) (Fil
 			}
 			return nil
 		}
-		if current != path && strings.Contains(strings.ToLower(item.Name()), strings.ToLower(operation.Query)) {
-			entry, entryErr := fileEntry(current, current)
+		if current != path && strings.Contains(strings.ToLower(item.Name()), needle) {
+			entry, entryErr := f.entry(current, current)
 			if entryErr == nil {
 				result.Entries = append(result.Entries, entry)
 				count++
@@ -647,19 +818,23 @@ func searchFiles(ctx context.Context, path string, operation FileOperation) (Fil
 		}
 		return nil
 	})
+	if errors.Is(err, ErrArchiveLimit) {
+		result.Limited = true
+		err = nil
+	}
 	if err != nil && err.Error() != "search limit" {
 		return FileResult{}, err
 	}
 	return FileResult{Search: &result}, nil
 }
 
-func createArchive(ctx context.Context, source, destination string, operation FileOperation) (FileResult, error) {
+func (f fileTree) createArchive(ctx context.Context, source, destination string, operation FileOperation) (FileResult, error) {
 	sourceAbs, sourceErr := filepath.Abs(source)
 	destinationAbs, destinationErr := filepath.Abs(destination)
 	if sourceErr != nil || destinationErr != nil || pathWithin(sourceAbs, destinationAbs) {
 		return FileResult{}, ErrInvalidFileOperation
 	}
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	output, err := f.root.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return FileResult{}, err
 	}
@@ -667,14 +842,18 @@ func createArchive(ctx context.Context, source, destination string, operation Fi
 	removePartial := true
 	defer func() {
 		if removePartial {
-			_ = os.Remove(destination)
+			_ = f.root.Remove(destination)
 		}
 	}()
 	gzipWriter := gzip.NewWriter(output)
 	tarWriter := tar.NewWriter(gzipWriter)
 	entries := 0
 	bytesWritten := int64(0)
-	err = filepath.Walk(source, func(path string, info os.FileInfo, walkErr error) error {
+	err = f.walk(ctx, source, func(path string, item fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, walkErr := item.Info()
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -703,7 +882,7 @@ func createArchive(ctx context.Context, source, destination string, operation Fi
 			if info.Size() > MaxArchiveEntryBytes || bytesWritten+info.Size() > MaxArchiveBytes {
 				return ErrArchiveLimit
 			}
-			input, openErr := os.Open(path)
+			input, openErr := f.root.Open(path)
 			if openErr != nil {
 				return openErr
 			}
@@ -726,8 +905,13 @@ func createArchive(ctx context.Context, source, destination string, operation Fi
 	return FileResult{Message: fmt.Sprintf("Archive created with %d entries.", entries)}, nil
 }
 
-func extractArchive(ctx context.Context, archivePath, destination string, operation FileOperation) (FileResult, error) {
-	input, err := os.Open(archivePath)
+func (f fileTree) extractArchive(ctx context.Context, archivePath, destination string, operation FileOperation) (FileResult, error) {
+	destinationRoot, err := f.root.OpenRoot(destination)
+	if err != nil {
+		return FileResult{}, err
+	}
+	defer destinationRoot.Close()
+	input, err := f.root.Open(archivePath)
 	if err != nil {
 		return FileResult{}, err
 	}
@@ -758,23 +942,23 @@ func extractArchive(ctx context.Context, archivePath, destination string, operat
 		if !safeArchiveName(header.Name) || strings.Count(filepath.ToSlash(header.Name), "/") > MaxArchiveDepth {
 			return FileResult{}, ErrUnsafeArchive
 		}
-		target := filepath.Join(destination, filepath.FromSlash(header.Name))
-		if !filePathWithin(destination, target) {
+		target := filepath.FromSlash(header.Name)
+		if !filepath.IsLocal(target) {
 			return FileResult{}, ErrUnsafeArchive
 		}
 		if header.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := destinationRoot.MkdirAll(target, 0o755); err != nil {
 				return FileResult{}, err
 			}
 			continue
 		}
-		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
 			return FileResult{}, ErrUnsafeArchive
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := destinationRoot.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return FileResult{}, err
 		}
-		output, createErr := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_EXCL, 0o600)
+		output, createErr := destinationRoot.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_EXCL, 0o600)
 		if createErr != nil {
 			return FileResult{}, createErr
 		}
@@ -790,7 +974,7 @@ func extractArchive(ctx context.Context, archivePath, destination string, operat
 
 func safeArchiveName(name string) bool {
 	name = filepath.ToSlash(name)
-	return name != "" && !strings.HasPrefix(name, "/") && name != "." && !strings.HasPrefix(name, "../") && !strings.Contains(name, "/../") && !strings.ContainsRune(name, '\x00')
+	return name != "" && !strings.HasPrefix(name, "/") && name != "." && name != ".." && !strings.HasPrefix(name, "../") && !strings.Contains(name, "/../") && !strings.ContainsRune(name, '\x00')
 }
 
 func filePathWithin(root, path string) bool {
@@ -798,11 +982,11 @@ func filePathWithin(root, path string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-func updateMetadata(path string, operation FileOperation, privileged bool) (FileResult, error) {
+func (f fileTree) updateMetadata(path string, operation FileOperation, privileged bool) (FileResult, error) {
 	if !privileged {
 		return FileResult{}, ErrFilePermission
 	}
-	info, err := os.Lstat(path)
+	info, err := f.root.Lstat(path)
 	if err != nil {
 		return FileResult{}, err
 	}
@@ -810,7 +994,7 @@ func updateMetadata(path string, operation FileOperation, privileged bool) (File
 		return FileResult{}, ErrFileConflict
 	}
 	if operation.Mode != nil {
-		if err := os.Chmod(path, os.FileMode(*operation.Mode)&os.ModePerm); err != nil {
+		if err := f.chmod(path, os.FileMode(*operation.Mode)&os.ModePerm); err != nil {
 			return FileResult{}, err
 		}
 	}
@@ -838,21 +1022,21 @@ func updateMetadata(path string, operation FileOperation, privileged bool) (File
 			}
 			gid = parsed
 		}
-		if err := os.Chown(path, uid, gid); err != nil {
+		if err := f.chown(path, uid, gid); err != nil {
 			return FileResult{}, err
 		}
 	}
-	entry, err := fileEntry(path, path)
+	entry, err := f.entry(path, path)
 	return FileResult{Entry: &entry, Message: "File metadata updated."}, err
 }
 
 // ReadTextWindow exposes bounded line windows without loading a large file in
 // the browser or gateway. Offset is a zero-based line number for text clients.
-func ReadTextWindow(path string, lineOffset, lineLimit int) (FileResult, error) {
+func (f fileTree) readTextWindow(path string, lineOffset, lineLimit int) (FileResult, error) {
 	if lineOffset < 0 || lineLimit < 1 || lineLimit > 1000 {
 		return FileResult{}, ErrInvalidFileOperation
 	}
-	file, err := os.Open(path)
+	file, err := f.root.Open(path)
 	if err != nil {
 		return FileResult{}, err
 	}
@@ -875,6 +1059,41 @@ func ReadTextWindow(path string, lineOffset, lineLimit int) (FileResult, error) 
 		return FileResult{}, err
 	}
 	payload, _ := json.Marshal(lines)
-	info, _ := os.Stat(path)
+	info, _ := f.root.Stat(path)
 	return FileResult{Content: payload, Offset: int64(lineOffset), Total: int64(line), EOF: line < lineOffset+lineLimit, Mime: "application/json", Fingerprint: statFingerprint(info)}, nil
+}
+
+// fileTree anchors every operation to an open directory rather than a checked pathname.
+type fileTree struct{ root *fileRoot }
+
+func (f fileTree) temporary(directory string) (*os.File, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return nil, err
+	}
+	return f.root.OpenFile(filepath.Join(directory, ".tako-write-"+hex.EncodeToString(value[:])), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+}
+func (f fileTree) chmod(path string, mode os.FileMode) error {
+	file, err := f.root.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Chmod(mode)
+}
+func (f fileTree) chown(path string, uid, gid int) error {
+	file, err := f.root.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Chown(uid, gid)
+}
+func (f fileTree) preserveMetadata(path string, info os.FileInfo) error {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && os.Geteuid() == 0 {
+		if err := f.chown(path, int(stat.Uid), int(stat.Gid)); err != nil {
+			return err
+		}
+	}
+	return f.chmod(path, info.Mode().Perm())
 }
