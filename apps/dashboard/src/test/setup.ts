@@ -13,6 +13,10 @@ class ResizeObserverStub implements ResizeObserver {
 
 globalThis.ResizeObserver = ResizeObserverStub
 
+if (!Element.prototype.getAnimations) {
+  Element.prototype.getAnimations = () => [] as Animation[]
+}
+
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false
   Element.prototype.setPointerCapture = () => {}
