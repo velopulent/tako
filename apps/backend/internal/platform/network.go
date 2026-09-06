@@ -169,6 +169,9 @@ func NetworkSnapshotRead(ctx context.Context) (NetworkSnapshot, error) {
 	for index := range snapshot.Interfaces {
 		if snapshot.Ownership.ActiveOwner != "" {
 			snapshot.Interfaces[index].Manager = snapshot.Ownership.ActiveOwner
+			snapshot.Interfaces[index].Owner = snapshot.Ownership.ActiveOwner
+			snapshot.Interfaces[index].Conflict = snapshot.Ownership.Conflicted
+			snapshot.Interfaces[index].Reason = snapshot.Ownership.Reason
 		}
 	}
 	snapshot.Fingerprint = networkFingerprint(snapshot)
@@ -226,11 +229,14 @@ func readDNSConfiguration() []string {
 
 func detectNetworkOwnership() NetworkOwnership {
 	detected := []string{}
+	runtime := []string{}
 	if fileExists("/run/NetworkManager") || fileExists("/run/NetworkManager/nm-dhcp-client.action") {
 		detected = append(detected, "NetworkManager")
+		runtime = append(runtime, "NetworkManager")
 	}
 	if fileExists("/run/systemd/netif") || fileExists("/run/systemd/system/systemd-networkd.service") {
 		detected = append(detected, "systemd-networkd")
+		runtime = append(runtime, "systemd-networkd")
 	}
 	if fileExists("/etc/netplan") {
 		if entries, err := filepath.Glob("/etc/netplan/*.yaml"); err == nil && len(entries) > 0 {
@@ -241,20 +247,26 @@ func detectNetworkOwnership() NetworkOwnership {
 		detected = append(detected, "ifupdown")
 	}
 	sort.Strings(detected)
-	active := append([]string(nil), detected...)
-	if len(active) > 1 && contains(active, "Netplan") {
-		active = removeString(active, "Netplan")
-	}
 	ownership := NetworkOwnership{Detected: detected}
-	if len(active) == 1 {
-		ownership.ActiveOwner = active[0]
-	} else if len(active) > 1 {
+	sort.Strings(runtime)
+	if len(runtime) == 1 {
+		ownership.ActiveOwner = runtime[0]
+	} else if len(runtime) > 1 {
 		ownership.Conflicted = true
 		ownership.Reason = "Multiple active network owners were detected; configuration mutations are disabled."
-	} else if len(detected) == 1 {
-		ownership.ActiveOwner = detected[0]
 	} else {
-		ownership.ActiveOwner = "kernel"
+		configured := append([]string(nil), detected...)
+		configured = removeString(configured, "Netplan")
+		if len(configured) == 0 && contains(detected, "Netplan") {
+			ownership.ActiveOwner = "Netplan"
+		} else if len(configured) == 1 {
+			ownership.ActiveOwner = configured[0]
+		} else if len(configured) > 1 {
+			ownership.Conflicted = true
+			ownership.Reason = "Multiple configured network owners were detected without a running manager; configuration mutations are disabled."
+		} else {
+			ownership.ActiveOwner = "kernel"
+		}
 	}
 	return ownership
 }
@@ -294,7 +306,7 @@ func networkFingerprint(snapshot NetworkSnapshot) string {
 func ValidateNetworkOperation(operation NetworkOperation) error {
 	validBackends := map[string]bool{"NetworkManager": true, "Netplan": true, "systemd-networkd": true, "ifupdown": true}
 	validActions := map[string]bool{"preview": true, "dhcp": true, "static": true, "dns": true, "route-add": true, "route-remove": true, "checkpoint": true, "commit": true, "rollback": true}
-	joined := operation.Interface + operation.Connection + operation.Address + operation.Gateway + operation.Route + operation.IPv4Address + operation.IPv4Gateway + operation.IPv6Address + operation.IPv6Gateway + operation.Checkpoint + operation.ReconnectToken + operation.ExpectedFingerprint
+	joined := operation.Interface + operation.Connection + operation.Address + strings.Join(operation.Addresses, ",") + operation.Gateway + operation.Route + strings.Join(operation.DNS, ",") + operation.IPv4Method + operation.IPv4Address + operation.IPv4Gateway + operation.IPv6Method + operation.IPv6Address + operation.IPv6Gateway + operation.Checkpoint + operation.ReconnectToken + operation.ExpectedFingerprint + operation.Confirmation
 	if !validBackends[operation.Backend] || !validActions[operation.Action] || len(joined) > 4096 || len(operation.Interface) > 256 || len(operation.Connection) > 256 || len(operation.Address) > 128 || len(operation.Gateway) > 128 || len(operation.Route) > 128 || len(operation.Checkpoint) > 256 || len(operation.ReconnectToken) > 256 || len(operation.ExpectedFingerprint) > 128 || strings.ContainsAny(joined, "\x00\r\n") {
 		return ErrInvalidNetworkOperation
 	}
@@ -365,14 +377,10 @@ func PreviewNetworkOperation(ctx context.Context, operation NetworkOperation) (N
 	if err != nil {
 		return NetworkState{}, err
 	}
-	return NetworkState{Snapshot: snapshot, Action: "preview", Rollback: snapshot.Ownership.ActiveOwner == "NetworkManager" && !snapshot.Ownership.Conflicted}, nil
+	return NetworkState{Snapshot: snapshot, Action: "preview", Rollback: networkBackendOwnsSnapshot(operation.Backend, snapshot.Ownership) && !snapshot.Ownership.Conflicted}, nil
 }
 
 func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (NetworkState, error) {
-	// File-backed adapters remain disabled until ownership and rollback validation is complete.
-	if operation.Backend != "NetworkManager" {
-		return NetworkState{}, ErrNetworkUnavailable
-	}
 	if err := ValidateNetworkOperation(operation); err != nil {
 		return NetworkState{}, err
 	}
@@ -387,14 +395,14 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 		return NetworkState{}, ErrNetworkConflict
 	}
 	if operation.Action == "checkpoint" {
+		if operation.ReconnectToken == "" {
+			operation.ReconnectToken = newNetworkToken("reconnect")
+		}
 		checkpoint, checkpointErr := beginNetworkCheckpoint(ctx, operation)
 		if checkpointErr != nil {
 			return NetworkState{}, checkpointErr
 		}
 		token := operation.ReconnectToken
-		if token == "" {
-			token = newNetworkToken("reconnect")
-		}
 		return NetworkState{Snapshot: snapshot, Action: "checkpoint", Checkpoint: checkpoint, Rollback: checkpoint != "", ReconnectRequired: checkpoint != "", ReconnectToken: token, RollbackDeadline: time.Now().UTC().Add(networkCheckpointTTL), Warning: "Checkpoint expires automatically; commit only after a fresh connection is verified."}, nil
 	}
 	if operation.Action == "commit" || operation.Action == "rollback" {
@@ -420,19 +428,22 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 		}
 		return NetworkState{Snapshot: updated, Action: operation.Action, Committed: operation.Action == "commit", Rollback: operation.Action == "rollback", Checkpoint: operation.Checkpoint, ReconnectToken: operation.ReconnectToken, Warning: warning}, nil
 	}
+	if operation.ReconnectToken == "" {
+		operation.ReconnectToken = newNetworkToken("reconnect")
+	}
 	checkpoint, checkpointErr := beginNetworkCheckpoint(ctx, operation)
 	if checkpointErr != nil {
 		return NetworkState{}, checkpointErr
 	}
 	if err := applyNetworkMutation(ctx, operation); err != nil {
 		if checkpoint != "" {
-			_ = rollbackNetworkCheckpoint(ctx, operation.Backend, checkpoint)
+			_ = rollbackNetworkCheckpoint(ctx, operation.Backend, checkpoint, operation.ReconnectToken)
 		}
 		return NetworkState{}, err
 	}
 	updated, err := NetworkSnapshotRead(ctx)
 	if err != nil {
-		_ = rollbackNetworkCheckpoint(ctx, operation.Backend, checkpoint)
+		_ = rollbackNetworkCheckpoint(ctx, operation.Backend, checkpoint, operation.ReconnectToken)
 		return NetworkState{}, err
 	}
 	token := operation.ReconnectToken
@@ -440,43 +451,6 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 		token = newNetworkToken("reconnect")
 	}
 	return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: checkpoint, Rollback: true, ReconnectRequired: true, ReconnectToken: token, RollbackDeadline: time.Now().UTC().Add(networkCheckpointTTL), Warning: "The profile was persisted and activated under a bounded rollback checkpoint; reconnect and confirm before committing."}, nil
-}
-
-func applyNetplanOperation(ctx context.Context, operation NetworkOperation, snapshot NetworkSnapshot) (NetworkState, error) {
-	if operation.Interface == "" || strings.ContainsAny(operation.Interface, "./\\") {
-		return NetworkState{}, ErrInvalidNetworkOperation
-	}
-	key := "ethernets." + operation.Interface
-	arguments := []string{"set"}
-	switch operation.Action {
-	case "dhcp":
-		arguments = append(arguments, key+".dhcp4=true")
-	case "static":
-		arguments = append(arguments, key+".dhcp4=false", key+".addresses=["+operation.Address+"]")
-		if operation.Gateway != "" {
-			arguments = append(arguments, key+".routes=[{to=default,via="+operation.Gateway+"}]")
-		}
-	case "dns":
-		arguments = append(arguments, key+".nameservers.addresses=["+strings.Join(operation.DNS, ",")+"]")
-	default:
-		return NetworkState{}, ErrNetworkUnavailable
-	}
-	if _, err := networkCommand(ctx, "netplan", arguments...); err != nil {
-		return NetworkState{}, err
-	}
-	if _, err := networkCommand(ctx, "netplan", "try", "--timeout", "30"); err != nil {
-		_, _ = networkCommand(ctx, "netplan", "rollback")
-		return NetworkState{}, err
-	}
-	if _, err := networkCommand(ctx, "netplan", "apply"); err != nil {
-		_, _ = networkCommand(ctx, "netplan", "rollback")
-		return NetworkState{}, err
-	}
-	updated, err := NetworkSnapshotRead(ctx)
-	if err != nil {
-		return NetworkState{}, err
-	}
-	return NetworkState{Snapshot: updated, Action: operation.Action, Committed: true, Rollback: false, Warning: "Netplan try completed and runtime state was re-read before reporting success."}, nil
 }
 
 func contains(values []string, value string) bool {

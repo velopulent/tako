@@ -103,6 +103,9 @@ func (coordinator *networkCoordinator) takePending(token, checkpoint, backend st
 		}
 	}
 	coordinator.mu.Unlock()
+	if !ok && backend != "NetworkManager" && checkpoint != "" && platform.RecoverNetworkFileCheckpoint(backend, checkpoint, token) {
+		return networkPendingTransaction{backend: backend, checkpoint: checkpoint, token: token, deadline: coordinator.now().Add(coordinator.deadline)}, true
+	}
 	return pending, ok
 }
 

@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // networkConfigRoot is empty on a host and may be set by package tests to a
@@ -27,8 +29,11 @@ type networkFileBackup struct {
 }
 
 type networkFileCheckpoint struct {
-	backend string
-	files   []networkFileBackup
+	backend       string
+	interfaceName string
+	token         string
+	expiresAt     time.Time
+	files         []networkFileBackup
 }
 
 type desiredNetworkState struct {
@@ -44,6 +49,23 @@ var networkFileCheckpoints = struct {
 	sync.Mutex
 	values map[string]networkFileCheckpoint
 }{values: make(map[string]networkFileCheckpoint)}
+
+var networkCheckpointRoot = "/run/tako/network-checkpoints"
+
+type networkFileCheckpointDisk struct {
+	Backend       string                  `json:"backend"`
+	InterfaceName string                  `json:"interface"`
+	Token         string                  `json:"token"`
+	ExpiresAt     time.Time               `json:"expiresAt"`
+	Files         []networkFileBackupDisk `json:"files"`
+}
+
+type networkFileBackupDisk struct {
+	Path    string      `json:"path"`
+	Data    []byte      `json:"data,omitempty"`
+	Mode    os.FileMode `json:"mode"`
+	Existed bool        `json:"existed"`
+}
 
 func beginNetworkCheckpoint(ctx context.Context, operation NetworkOperation) (string, error) {
 	if operation.Interface == "" || !validNetworkInterface(operation.Interface) {
@@ -79,8 +101,12 @@ func beginNetworkCheckpoint(ctx context.Context, operation NetworkOperation) (st
 		}
 		backups = append(backups, backup)
 	}
+	entry := networkFileCheckpoint{backend: operation.Backend, interfaceName: operation.Interface, token: operation.ReconnectToken, expiresAt: time.Now().UTC().Add(networkCheckpointTTL), files: backups}
+	if err := persistNetworkFileCheckpoint(checkpoint, entry); err != nil {
+		return "", err
+	}
 	networkFileCheckpoints.Lock()
-	networkFileCheckpoints.values[checkpoint] = networkFileCheckpoint{backend: operation.Backend, files: backups}
+	networkFileCheckpoints.values[checkpoint] = entry
 	networkFileCheckpoints.Unlock()
 	return checkpoint, nil
 }
@@ -100,32 +126,45 @@ func applyNetworkMutation(ctx context.Context, operation NetworkOperation) error
 	}
 }
 
-func commitNetworkCheckpoint(ctx context.Context, backend, checkpoint string) error {
+func commitNetworkCheckpoint(ctx context.Context, backend, checkpoint, token string) error {
 	if backend == "NetworkManager" {
 		return networkManagerCheckpointDestroy(ctx, checkpoint)
 	}
-	networkFileCheckpoints.Lock()
-	entry, ok := networkFileCheckpoints.values[checkpoint]
-	if ok {
-		delete(networkFileCheckpoints.values, checkpoint)
+	entry, ok := loadNetworkFileCheckpoint(checkpoint)
+	if !ok || entry.backend != backend || entry.token != token {
+		return ErrNetworkCheckpoint
 	}
-	networkFileCheckpoints.Unlock()
+	entry, ok = takeNetworkFileCheckpoint(checkpoint)
+	if ok {
+		if entry.backend != backend {
+			return ErrNetworkCheckpoint
+		}
+		return removeNetworkFileCheckpoint(checkpoint)
+	}
+	entry, ok = loadNetworkFileCheckpoint(checkpoint)
 	if !ok || entry.backend != backend {
 		return ErrNetworkCheckpoint
 	}
-	return nil
+	return removeNetworkFileCheckpoint(checkpoint)
 }
 
-func rollbackNetworkCheckpoint(ctx context.Context, backend, checkpoint string) error {
+func rollbackNetworkCheckpoint(ctx context.Context, backend, checkpoint, token string) error {
 	if backend == "NetworkManager" {
 		return networkManagerCheckpointRollback(ctx, checkpoint)
 	}
-	networkFileCheckpoints.Lock()
-	entry, ok := networkFileCheckpoints.values[checkpoint]
-	if ok {
-		delete(networkFileCheckpoints.values, checkpoint)
+	entry, ok := loadNetworkFileCheckpoint(checkpoint)
+	if !ok || entry.backend != backend || entry.token != token {
+		return ErrNetworkCheckpoint
 	}
-	networkFileCheckpoints.Unlock()
+	entry, ok = takeNetworkFileCheckpoint(checkpoint)
+	if ok {
+		if entry.backend != backend {
+			return ErrNetworkCheckpoint
+		}
+	}
+	if !ok {
+		entry, ok = loadNetworkFileCheckpoint(checkpoint)
+	}
 	if !ok || entry.backend != backend {
 		return ErrNetworkCheckpoint
 	}
@@ -134,15 +173,18 @@ func rollbackNetworkCheckpoint(ctx context.Context, backend, checkpoint string) 
 			return err
 		}
 	}
-	return applyFileNetworkBackend(ctx, backend, "")
+	if err := applyFileNetworkBackend(ctx, backend, entry.interfaceName); err != nil {
+		return err
+	}
+	return removeNetworkFileCheckpoint(checkpoint)
 }
 
 func completeFileNetworkCheckpoint(ctx context.Context, operation NetworkOperation, snapshot NetworkSnapshot) (NetworkState, error) {
 	var err error
 	if operation.Action == "commit" {
-		err = commitNetworkCheckpoint(ctx, operation.Backend, operation.Checkpoint)
+		err = commitNetworkCheckpoint(ctx, operation.Backend, operation.Checkpoint, operation.ReconnectToken)
 	} else {
-		err = rollbackNetworkCheckpoint(ctx, operation.Backend, operation.Checkpoint)
+		err = rollbackNetworkCheckpoint(ctx, operation.Backend, operation.Checkpoint, operation.ReconnectToken)
 	}
 	if err != nil {
 		return NetworkState{}, err
@@ -155,7 +197,7 @@ func completeFileNetworkCheckpoint(ctx context.Context, operation NetworkOperati
 	if operation.Action == "commit" {
 		warning = "The network change was committed after reconnect confirmation."
 	}
-	return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: operation.Checkpoint, Committed: operation.Action == "commit", Rollback: operation.Action == "rollback", ReconnectToken: operation.ReconnectToken, Warning: warning}, nil
+	return NetworkState{Snapshot: updated, Action: operation.Action, Checkpoint: operation.Checkpoint, Committed: operation.Action == "commit", Rollback: operation.Action == "rollback", ReconnectToken: operation.ReconnectToken, RollbackDeadline: time.Now().UTC().Add(networkCheckpointTTL), Warning: warning}, nil
 }
 
 func applyNetplanPersistent(ctx context.Context, operation NetworkOperation) error {
@@ -295,6 +337,102 @@ func networkConfigPath(path string) string {
 	return filepath.Join(networkConfigRoot, strings.TrimPrefix(path, string(filepath.Separator)))
 }
 
+func networkCheckpointPath(checkpoint string) string {
+	if !validNetworkToken(checkpoint) {
+		return ""
+	}
+	return filepath.Join(networkCheckpointRoot, checkpoint+".json")
+}
+
+func persistNetworkFileCheckpoint(checkpoint string, entry networkFileCheckpoint) error {
+	path := networkCheckpointPath(checkpoint)
+	if path == "" {
+		return ErrNetworkCheckpoint
+	}
+	if err := os.MkdirAll(networkCheckpointRoot, 0o700); err != nil {
+		return err
+	}
+	disk := networkFileCheckpointDisk{Backend: entry.backend, InterfaceName: entry.interfaceName, Token: entry.token, ExpiresAt: entry.expiresAt, Files: make([]networkFileBackupDisk, 0, len(entry.files))}
+	for _, backup := range entry.files {
+		disk.Files = append(disk.Files, networkFileBackupDisk{Path: backup.path, Data: backup.data, Mode: backup.mode, Existed: backup.existed})
+	}
+	data, err := json.Marshal(disk)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(networkCheckpointRoot, ".tako-checkpoint-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
+}
+
+func loadNetworkFileCheckpoint(checkpoint string) (networkFileCheckpoint, bool) {
+	path := networkCheckpointPath(checkpoint)
+	if path == "" {
+		return networkFileCheckpoint{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) > 2<<20 {
+		return networkFileCheckpoint{}, false
+	}
+	var disk networkFileCheckpointDisk
+	if json.Unmarshal(data, &disk) != nil || disk.Backend == "" || !validNetworkToken(disk.Token) || disk.ExpiresAt.IsZero() || !time.Now().UTC().Before(disk.ExpiresAt) || len(disk.Files) == 0 {
+		return networkFileCheckpoint{}, false
+	}
+	entry := networkFileCheckpoint{backend: disk.Backend, interfaceName: disk.InterfaceName, token: disk.Token, expiresAt: disk.ExpiresAt, files: make([]networkFileBackup, 0, len(disk.Files))}
+	for _, backup := range disk.Files {
+		if !validNetworkConfigPath(backup.Path) || len(backup.Data) > maxNetworkConfigOutput {
+			return networkFileCheckpoint{}, false
+		}
+		entry.files = append(entry.files, networkFileBackup{path: backup.Path, data: backup.Data, mode: backup.Mode, existed: backup.Existed})
+	}
+	return entry, true
+}
+
+func RecoverNetworkFileCheckpoint(backend, checkpoint, token string) bool {
+	entry, ok := loadNetworkFileCheckpoint(checkpoint)
+	return ok && entry.backend == backend && entry.token == token
+}
+
+func takeNetworkFileCheckpoint(checkpoint string) (networkFileCheckpoint, bool) {
+	networkFileCheckpoints.Lock()
+	entry, ok := networkFileCheckpoints.values[checkpoint]
+	if ok {
+		delete(networkFileCheckpoints.values, checkpoint)
+	}
+	networkFileCheckpoints.Unlock()
+	return entry, ok
+}
+
+func removeNetworkFileCheckpoint(checkpoint string) error {
+	path := networkCheckpointPath(checkpoint)
+	if path == "" {
+		return ErrNetworkCheckpoint
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func netplanFallbackPath() string {
 	return networkConfigPath("/etc/netplan/99-tako.yaml")
 }
@@ -308,14 +446,17 @@ func ifupdownManagedPath(iface string) string {
 }
 
 func readNetworkBackup(path string) (networkFileBackup, error) {
-	info, err := os.Stat(path)
+	if !validNetworkConfigPath(path) {
+		return networkFileBackup{}, ErrNetworkUnavailable
+	}
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return networkFileBackup{path: path}, nil
 	}
 	if err != nil {
 		return networkFileBackup{}, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxNetworkConfigOutput {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxNetworkConfigOutput {
 		return networkFileBackup{}, ErrNetworkUnavailable
 	}
 	data, err := os.ReadFile(path)
@@ -336,7 +477,7 @@ func restoreNetworkBackup(backup networkFileBackup) error {
 }
 
 func writeNetworkFile(path string, data []byte, mode os.FileMode) error {
-	if len(data) > maxNetworkConfigOutput {
+	if !validNetworkConfigPath(path) || len(data) > maxNetworkConfigOutput {
 		return ErrNetworkUnavailable
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -366,11 +507,54 @@ func writeNetworkFile(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(temporaryName, path)
 }
 
+func validNetworkConfigPath(path string) bool {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) || clean != path || strings.ContainsAny(path, "\x00\r\n") {
+		return false
+	}
+	allowed := []string{
+		networkConfigPath("/etc/netplan"),
+		networkConfigPath("/etc/systemd/network"),
+		networkConfigPath("/etc/network"),
+	}
+	within := false
+	for _, root := range allowed {
+		if filePathWithin(root, clean) {
+			within = true
+			break
+		}
+	}
+	if !within {
+		return false
+	}
+	current := string(filepath.Separator)
+	if networkConfigRoot != "" {
+		current = filepath.Clean(networkConfigRoot)
+	}
+	for _, component := range strings.Split(strings.TrimPrefix(clean, current), string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func conflictingNetworkdFile(iface, managed string) bool {
 	matches, _ := filepath.Glob(networkConfigPath("/etc/systemd/network/*.network"))
 	for _, path := range matches {
 		if path == managed {
 			continue
+		}
+		if !validNetworkConfigPath(path) {
+			return true
+		}
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return true
 		}
 		data, err := os.ReadFile(path)
 		if err == nil && strings.Contains(string(data), "Name="+iface) {
@@ -506,15 +690,19 @@ func readIfupdownState(path string) (desiredNetworkState, error) {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[0] == "iface" && fields[2] == "dhcp" {
-			if fields[1] == "iface" {
+		if len(fields) >= 4 && fields[0] == "iface" && fields[2] == "inet" {
+			if fields[3] == "dhcp" {
 				state.IPv4Method = "auto"
-			} else if fields[1] == "iface6" {
-				state.IPv6Method = "auto"
+			} else if fields[3] == "static" {
+				state.IPv4Method = "manual"
 			}
 		}
-		if len(fields) >= 4 && fields[0] == "iface" && fields[2] == "inet6" && fields[3] == "auto" {
-			state.IPv6Method = "auto"
+		if len(fields) >= 4 && fields[0] == "iface" && fields[2] == "inet6" {
+			if fields[3] == "auto" {
+				state.IPv6Method = "auto"
+			} else if fields[3] == "static" {
+				state.IPv6Method = "manual"
+			}
 		}
 		if len(fields) >= 2 && fields[0] == "address" {
 			state.Addresses = append(state.Addresses, fields[1])
@@ -525,8 +713,43 @@ func readIfupdownState(path string) (desiredNetworkState, error) {
 		if len(fields) >= 2 && fields[0] == "dns-nameservers" {
 			state.DNS = append(state.DNS, fields[1:]...)
 		}
+		if len(fields) >= 4 && fields[0] == "up" && fields[1] == "ip" && fields[2] == "route" && fields[3] == "add" {
+			if route, ok := parseIfupdownRoute(fields[4:]); ok {
+				state.Routes = append(state.Routes, route)
+			}
+		}
 	}
 	return state, nil
+}
+
+func parseIfupdownRoute(fields []string) (NetworkRoute, bool) {
+	if len(fields) == 0 {
+		return NetworkRoute{}, false
+	}
+	route := NetworkRoute{Destination: fields[0]}
+	for index := 1; index < len(fields); index++ {
+		switch fields[index] {
+		case "via":
+			if index+1 >= len(fields) {
+				return NetworkRoute{}, false
+			}
+			route.Gateway = fields[index+1]
+			index++
+		case "metric":
+			if index+1 >= len(fields) {
+				return NetworkRoute{}, false
+			}
+			metric, err := strconv.Atoi(fields[index+1])
+			if err != nil || metric < 0 || metric > 65535 {
+				return NetworkRoute{}, false
+			}
+			route.Metric = metric
+			index++
+		default:
+			return NetworkRoute{}, false
+		}
+	}
+	return route, route.Destination != ""
 }
 
 func writeIfupdownState(path, iface string, state desiredNetworkState) error {
@@ -576,6 +799,10 @@ func writeIfupdownState(path, iface string, state desiredNetworkState) error {
 			builder.WriteString(" via ")
 			builder.WriteString(route.Gateway)
 		}
+		if route.Metric > 0 {
+			builder.WriteString(" metric ")
+			builder.WriteString(strconv.Itoa(route.Metric))
+		}
 		builder.WriteByte('\n')
 		builder.WriteString("  down ip route del ")
 		builder.WriteString(route.Destination)
@@ -593,12 +820,15 @@ func updateDesiredNetworkState(state *desiredNetworkState, operation NetworkOper
 	case "dhcp":
 		state.IPv4Method = nonEmptyNetworkValue(operation.IPv4Method, "auto")
 		state.IPv6Method = nonEmptyNetworkValue(operation.IPv6Method, "auto")
+		state.Addresses = nil
+		state.Gateways = nil
 	case "static":
 		addresses := networkOperationAddresses(operation)
 		if len(addresses) == 0 {
 			return ErrInvalidNetworkOperation
 		}
-		state.Addresses = append(state.Addresses, addresses...)
+		state.Addresses = append([]string(nil), addresses...)
+		state.Gateways = nil
 		for _, address := range addresses {
 			ip, _, _ := net.ParseCIDR(address)
 			if ip != nil && ip.To4() == nil {

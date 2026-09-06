@@ -1529,11 +1529,12 @@ components:
       additionalProperties: false
       required: [backend, action]
       properties:
-        backend: { type: string, enum: [NetworkManager, Netplan, systemd-networkd] }
+        backend: { type: string, enum: [NetworkManager, Netplan, systemd-networkd, ifupdown] }
         action: { type: string, enum: [preview, dhcp, static, dns, route-add, route-remove, checkpoint, commit, rollback] }
         interface: { type: string, maxLength: 256 }
         connection: { type: string, maxLength: 256 }
         address: { type: string, maxLength: 128 }
+        addresses: { type: array, maxItems: 16, items: { type: string, maxLength: 128 } }
         gateway: { type: string, maxLength: 128 }
         dns: { type: array, maxItems: 8, items: { type: string } }
         route: { type: string, maxLength: 128 }
@@ -1542,6 +1543,12 @@ components:
         confirmation: { type: string, maxLength: 128 }
         reconnectToken: { type: string, maxLength: 256 }
         checkpoint: { type: string, maxLength: 256 }
+        ipv4Method: { type: string, enum: [auto, manual, disabled, ignore] }
+        ipv4Address: { type: string, maxLength: 128 }
+        ipv4Gateway: { type: string, maxLength: 128 }
+        ipv6Method: { type: string, enum: [auto, manual, disabled, ignore] }
+        ipv6Address: { type: string, maxLength: 128 }
+        ipv6Gateway: { type: string, maxLength: 128 }
     NetworkState:
       type: object
       required: [snapshot, action, committed, rollback]
@@ -1551,6 +1558,9 @@ components:
         checkpoint: { type: string }
         committed: { type: boolean }
         rollback: { type: boolean }
+        reconnectRequired: { type: boolean }
+        reconnectToken: { type: string, maxLength: 256 }
+        rollbackDeadline: { type: string, format: date-time }
         warning: { type: string }
     FirewallOperation:
       type: object

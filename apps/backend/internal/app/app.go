@@ -1330,6 +1330,8 @@ func writeNetworkOperationError(writer http.ResponseWriter, err error) {
 		problem(writer, http.StatusConflict, "network-conflict", "Network state changed; preview again")
 	case errors.Is(err, platform.ErrNetworkOwnership):
 		problem(writer, http.StatusConflict, "network-ownership-conflict", "Network ownership is conflicted; mutations are disabled")
+	case errors.Is(err, platform.ErrNetworkCheckpoint):
+		problem(writer, http.StatusConflict, "network-checkpoint-invalid", "Network reconnect checkpoint is invalid or expired")
 	case errors.Is(err, platform.ErrNetworkUnavailable):
 		problem(writer, http.StatusServiceUnavailable, "network-unavailable", "The selected network adapter is unavailable")
 	case errors.Is(err, auth.ErrServiceUnavailable):

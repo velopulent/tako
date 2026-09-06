@@ -932,6 +932,8 @@ func networkResponseError(code string) error {
 		return platform.ErrNetworkConflict
 	case "network-ownership-conflict":
 		return platform.ErrNetworkOwnership
+	case "network-checkpoint-invalid":
+		return platform.ErrNetworkCheckpoint
 	case "network-unavailable":
 		return platform.ErrNetworkUnavailable
 	default:

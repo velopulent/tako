@@ -366,13 +366,16 @@ func validNetworkToken(value string) bool {
 }
 
 func networkBackendOwnsSnapshot(backend string, ownership NetworkOwnership) bool {
-	if backend == "systemd-networkd" && contains(ownership.Detected, "Netplan") {
+	if contains(ownership.Detected, "Netplan") && !(backend == "Netplan" && ownership.ActiveOwner == "Netplan" && len(ownership.Detected) == 1) {
+		// Netplan may render either NetworkManager or networkd. Until the
+		// renderer is resolved per interface, refuse to mutate the generated
+		// runtime manager or the merged YAML set.
 		return false
 	}
 	if ownership.ActiveOwner == backend {
 		return true
 	}
-	return backend == "Netplan" && ownership.ActiveOwner == "systemd-networkd" && contains(ownership.Detected, "Netplan")
+	return false
 }
 
 func newNetworkToken(prefix string) string {

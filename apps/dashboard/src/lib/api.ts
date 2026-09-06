@@ -603,7 +603,7 @@ export type NetworkResponse = {
   fingerprint?: string
 }
 export type NetworkOperation = {
-  backend: "NetworkManager" | "Netplan" | "systemd-networkd"
+  backend: "NetworkManager" | "Netplan" | "systemd-networkd" | "ifupdown"
   action:
     | "preview"
     | "dhcp"
@@ -617,6 +617,7 @@ export type NetworkOperation = {
   interface?: string
   connection?: string
   address?: string
+  addresses?: string[]
   gateway?: string
   dns?: string[]
   route?: string
@@ -624,6 +625,13 @@ export type NetworkOperation = {
   expectedFingerprint?: string
   confirmation?: string
   reconnectToken?: string
+  checkpoint?: string
+  ipv4Method?: string
+  ipv4Address?: string
+  ipv4Gateway?: string
+  ipv6Method?: string
+  ipv6Address?: string
+  ipv6Gateway?: string
 }
 export type NetworkState = {
   snapshot: NetworkResponse
@@ -631,6 +639,9 @@ export type NetworkState = {
   checkpoint?: string
   committed: boolean
   rollback: boolean
+  reconnectRequired?: boolean
+  reconnectToken?: string
+  rollbackDeadline?: string
   warning?: string
 }
 export type FirewallSnapshot = {
