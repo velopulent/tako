@@ -310,6 +310,20 @@ func ReadFilesystems(ctx context.Context, path string, credentials HostReadCrede
 	return response.Filesystems, nil
 }
 
+func ReadStorageSnapshot(ctx context.Context, path string, credentials HostReadCredentials) (platform.StorageSnapshot, error) {
+	response, err := readHostResponse(ctx, path, credentials, "storage.read", &StorageReadOperation{}, 20*time.Second, 8<<20)
+	if err != nil {
+		return platform.StorageSnapshot{}, err
+	}
+	if response.StorageSnapshot != nil {
+		return *response.StorageSnapshot, nil
+	}
+	if response.Filesystems != nil {
+		return platform.StorageSnapshotFromFilesystems(response.Filesystems, "Hardware inventory requires administrative access."), nil
+	}
+	return platform.StorageSnapshot{}, ErrServiceUnavailable
+}
+
 func ReadNetworkSnapshot(ctx context.Context, path string, credentials HostReadCredentials) (platform.NetworkSnapshot, error) {
 	response, err := readHostResponse(ctx, path, credentials, "network.read", &NetworkReadOperation{}, 20*time.Second, 4<<20)
 	if err != nil {

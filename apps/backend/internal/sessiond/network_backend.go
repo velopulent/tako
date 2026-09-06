@@ -177,6 +177,23 @@ func networkErrorCode(err error) string {
 	}
 }
 
+func storageErrorCode(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrInvalidStorageOperation):
+		return "invalid-storage-operation"
+	case errors.Is(err, platform.ErrStorageConflict):
+		return "storage-conflict"
+	case errors.Is(err, platform.ErrStorageUnsafe):
+		return "storage-unsafe"
+	case errors.Is(err, platform.ErrStorageBusy):
+		return "storage-busy"
+	case errors.Is(err, platform.ErrStorageUnavailable):
+		return "storage-unavailable"
+	default:
+		return "storage-operation-failed"
+	}
+}
+
 func firewallErrorCode(err error) string {
 	switch {
 	case errors.Is(err, platform.ErrInvalidFirewallOperation):

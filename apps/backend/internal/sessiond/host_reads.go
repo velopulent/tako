@@ -398,9 +398,18 @@ func dispatchHostOperation(ctx context.Context, request auth.Request, grants *gr
 		result.response.IdentityInventory = &item
 	case "storage.read":
 		if administrative {
-			result.response.Filesystems, err = platform.Filesystems()
+			var snapshot platform.StorageSnapshot
+			snapshot, err = platform.ReadStorageSnapshot(ctx)
+			result.response.StorageSnapshot = &snapshot
+			result.response.Filesystems = snapshot.Filesystems
 		} else {
-			result.response.Filesystems, err = reader.readFilesystems(ctx)
+			var filesystems []platform.Filesystem
+			filesystems, err = reader.readFilesystems(ctx)
+			if err == nil {
+				snapshot := platform.StorageSnapshotFromFilesystems(filesystems, "Hardware inventory requires administrative access.")
+				result.response.StorageSnapshot = &snapshot
+				result.response.Filesystems = filesystems
+			}
 		}
 	case "network.read":
 		var item platform.NetworkSnapshot

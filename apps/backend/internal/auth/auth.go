@@ -139,6 +139,7 @@ type Request struct {
 	File                *platform.FileOperation               `json:"file,omitempty"`
 	Journal             *platform.JournalQuery                `json:"journal,omitempty"`
 	Network             *platform.NetworkOperation            `json:"network,omitempty"`
+	Storage             *platform.StorageOperation            `json:"storage,omitempty"`
 	Firewall            *platform.FirewallOperation           `json:"firewall,omitempty"`
 	Security            *platform.SecurityOperation           `json:"security,omitempty"`
 	SupportReport       *platform.SupportReportOperation      `json:"supportReport,omitempty"`
@@ -299,6 +300,11 @@ type JournalRequest struct {
 type NetworkRequest struct {
 	AdminToken string
 	Operation  platform.NetworkOperation
+}
+
+type StorageRequest struct {
+	AdminToken string
+	Operation  platform.StorageOperation
 }
 
 type FirewallRequest struct {
@@ -762,6 +768,36 @@ func ApplyNetwork(ctx context.Context, path string, request NetworkRequest) (pla
 	return *response.NetworkState, nil
 }
 
+func PreviewStorage(ctx context.Context, path string, request StorageRequest) (platform.StorageState, error) {
+	operation := request.Operation
+	operation.Action = "preview"
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "storage", AdminToken: request.AdminToken, Storage: &operation}, 30*time.Second, 8<<20)
+	if err != nil {
+		return platform.StorageState{}, err
+	}
+	if response.Error != "" {
+		return platform.StorageState{}, storageResponseError(response.Error)
+	}
+	if response.StorageState == nil {
+		return platform.StorageState{}, ErrServiceUnavailable
+	}
+	return *response.StorageState, nil
+}
+
+func ApplyStorage(ctx context.Context, path string, request StorageRequest) (platform.StorageState, error) {
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "storage", AdminToken: request.AdminToken, Storage: &request.Operation}, 2*time.Minute, 8<<20)
+	if err != nil {
+		return platform.StorageState{}, err
+	}
+	if response.Error != "" {
+		return platform.StorageState{}, storageResponseError(response.Error)
+	}
+	if response.StorageState == nil {
+		return platform.StorageState{}, ErrServiceUnavailable
+	}
+	return *response.StorageState, nil
+}
+
 func PreviewFirewall(ctx context.Context, path string, request FirewallRequest) (platform.FirewallState, error) {
 	operation := request.Operation
 	operation.Action = "preview"
@@ -849,6 +885,23 @@ func securityResponseError(code string) error {
 		return platform.ErrSecurityUnsafe
 	case "security-unavailable":
 		return platform.ErrSecurityUnavailable
+	default:
+		return errors.New(code)
+	}
+}
+
+func storageResponseError(code string) error {
+	switch code {
+	case "invalid-storage-operation":
+		return platform.ErrInvalidStorageOperation
+	case "storage-conflict":
+		return platform.ErrStorageConflict
+	case "storage-unsafe":
+		return platform.ErrStorageUnsafe
+	case "storage-busy":
+		return platform.ErrStorageBusy
+	case "storage-unavailable":
+		return platform.ErrStorageUnavailable
 	default:
 		return errors.New(code)
 	}
@@ -1080,6 +1133,7 @@ type Response struct {
 	JournalPage            *platform.JournalPage               `json:"journalPage,omitempty"`
 	LogEntry               *platform.LogEntry                  `json:"logEntry,omitempty"`
 	NetworkState           *platform.NetworkState              `json:"networkState,omitempty"`
+	StorageState           *platform.StorageState              `json:"storageState,omitempty"`
 	FirewallState          *platform.FirewallState             `json:"firewallState,omitempty"`
 	SecurityStatus         *platform.SecurityStatus            `json:"securityStatus,omitempty"`
 	SupportReport          *platform.SupportReport             `json:"supportReport,omitempty"`
@@ -1095,6 +1149,7 @@ type Response struct {
 	SignalPreview          *platform.SignalPreview             `json:"signalPreview,omitempty"`
 	IdentityInventory      *platform.IdentityInventory         `json:"identityInventory,omitempty"`
 	Filesystems            []platform.Filesystem               `json:"filesystems,omitempty"`
+	StorageSnapshot        *platform.StorageSnapshot           `json:"storageSnapshot,omitempty"`
 	NetworkSnapshot        *platform.NetworkSnapshot           `json:"networkSnapshot,omitempty"`
 	UpdateStatus           *platform.UpdateStatus              `json:"updateStatus,omitempty"`
 	UpdateHistory          []platform.UpdateHistoryEntry       `json:"updateHistory,omitempty"`

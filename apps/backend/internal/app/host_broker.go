@@ -36,6 +36,9 @@ type HostBroker interface {
 	SignalProcesses(context.Context, auth.SignalRequest) (platform.SignalResult, error)
 	ReadIdentityInventory(context.Context, auth.HostReadCredentials) (platform.IdentityInventory, error)
 	ReadFilesystems(context.Context, auth.HostReadCredentials) ([]platform.Filesystem, error)
+	ReadStorageSnapshot(context.Context, auth.HostReadCredentials) (platform.StorageSnapshot, error)
+	PreviewStorage(context.Context, auth.StorageRequest) (platform.StorageState, error)
+	ApplyStorage(context.Context, auth.StorageRequest) (platform.StorageState, error)
 	ReadNetworkSnapshot(context.Context, auth.HostReadCredentials) (platform.NetworkSnapshot, error)
 	PreviewNetwork(context.Context, auth.NetworkRequest) (platform.NetworkState, error)
 	ApplyNetwork(context.Context, auth.NetworkRequest) (platform.NetworkState, error)
@@ -190,6 +193,18 @@ func (broker socketHostBroker) ReadIdentityInventory(ctx context.Context, creden
 
 func (broker socketHostBroker) ReadFilesystems(ctx context.Context, credentials auth.HostReadCredentials) ([]platform.Filesystem, error) {
 	return auth.ReadFilesystems(ctx, broker.path, credentials)
+}
+
+func (broker socketHostBroker) ReadStorageSnapshot(ctx context.Context, credentials auth.HostReadCredentials) (platform.StorageSnapshot, error) {
+	return auth.ReadStorageSnapshot(ctx, broker.path, credentials)
+}
+
+func (broker socketHostBroker) PreviewStorage(ctx context.Context, request auth.StorageRequest) (platform.StorageState, error) {
+	return auth.PreviewStorage(ctx, broker.path, request)
+}
+
+func (broker socketHostBroker) ApplyStorage(ctx context.Context, request auth.StorageRequest) (platform.StorageState, error) {
+	return auth.ApplyStorage(ctx, broker.path, request)
 }
 
 func (broker socketHostBroker) ReadNetworkSnapshot(ctx context.Context, credentials auth.HostReadCredentials) (platform.NetworkSnapshot, error) {
@@ -409,6 +424,18 @@ func (fakeHostBroker) ReadIdentityInventory(context.Context, auth.HostReadCreden
 
 func (fakeHostBroker) ReadFilesystems(context.Context, auth.HostReadCredentials) ([]platform.Filesystem, error) {
 	return []platform.Filesystem{}, nil
+}
+
+func (fakeHostBroker) ReadStorageSnapshot(context.Context, auth.HostReadCredentials) (platform.StorageSnapshot, error) {
+	return platform.StorageSnapshotFromFilesystems([]platform.Filesystem{}, "Development storage inventory is empty."), nil
+}
+
+func (fakeHostBroker) PreviewStorage(context.Context, auth.StorageRequest) (platform.StorageState, error) {
+	return platform.StorageState{}, nil
+}
+
+func (fakeHostBroker) ApplyStorage(context.Context, auth.StorageRequest) (platform.StorageState, error) {
+	return platform.StorageState{}, nil
 }
 
 func (fakeHostBroker) ReadNetworkSnapshot(context.Context, auth.HostReadCredentials) (platform.NetworkSnapshot, error) {

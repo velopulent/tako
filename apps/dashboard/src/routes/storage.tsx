@@ -8,7 +8,15 @@ import type { ColumnDef } from "@tanstack/react-table"
 import * as React from "react"
 import { DataTable, type DataTableFeatures } from "@/components/data-table"
 import { StorageMetrics } from "@/components/directional-metrics"
+import { StorageControls } from "@/components/storage-controls"
 import { Badge } from "@/components/ui/badge"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -16,7 +24,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { api, type FileSystemInfo, type MetricSample } from "@/lib/api"
+import {
+  api,
+  type FileSystemInfo,
+  type MetricSample,
+  type StorageDevice,
+  type StorageInventoryResponse,
+} from "@/lib/api"
 import { bytes, Page, State, usePageInterval } from "@/lib/page"
 import { qSearch } from "@/lib/search"
 
@@ -51,6 +65,88 @@ function MountTargets({ filesystem }: { filesystem: FileSystemInfo }) {
   )
 }
 
+function StorageDevices({ devices }: { devices: StorageDevice[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Block devices</CardTitle>
+        <CardDescription>
+          Device identity, partitions, and best-effort SMART/NVMe health.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-2">
+        {devices.map((device) => (
+          <div key={device.path} className="rounded-lg border p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-mono font-medium">{device.path}</span>
+              <Badge variant={device.readOnly ? "outline" : "secondary"}>
+                {device.readOnly ? "read-only" : device.type}
+              </Badge>
+            </div>
+            <div className="mt-1 text-muted-foreground">
+              {[device.model, device.transport, bytes(device.size)]
+                .filter(Boolean)
+                .join(" · ") || "No device metadata"}
+            </div>
+            <div className="mt-3 space-y-1">
+              {device.partitions.map((partition) => (
+                <div
+                  key={partition.path}
+                  className="flex flex-wrap justify-between gap-2 rounded bg-muted/50 px-2 py-1"
+                >
+                  <span className="font-mono">{partition.path}</span>
+                  <span className="text-muted-foreground">
+                    {partition.filesystem || "unknown"} ·{" "}
+                    {bytes(partition.size)} ·{" "}
+                    {partition.mountPoints.length
+                      ? partition.mountPoints
+                          .map((mount) => mount.target)
+                          .join(", ")
+                      : "unmounted"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {(device.smart || device.nvme) && (
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                {device.smart && (
+                  <Badge
+                    variant={device.smart.failing ? "destructive" : "outline"}
+                  >
+                    SMART:{" "}
+                    {device.smart.available
+                      ? device.smart.passed
+                        ? "passed"
+                        : "failed"
+                      : "unavailable"}
+                  </Badge>
+                )}
+                {device.nvme && (
+                  <Badge
+                    variant={
+                      device.nvme.criticalWarning ? "destructive" : "outline"
+                    }
+                  >
+                    NVMe:{" "}
+                    {device.nvme.available
+                      ? `${device.nvme.percentageUsed ?? 0}% used`
+                      : "unavailable"}
+                  </Badge>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+        {!devices.length && (
+          <span className="text-sm text-muted-foreground">
+            No block devices reported.
+          </span>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function StoragePage() {
   const interval = usePageInterval("storage")
   const search = getRouteApi("/storage").useSearch()
@@ -62,7 +158,7 @@ function StoragePage() {
   })
   const query = useQuery({
     queryKey: ["storage"],
-    queryFn: () => api<{ items: FileSystemInfo[] }>("/storage"),
+    queryFn: () => api<StorageInventoryResponse>("/storage"),
     refetchInterval: interval.milliseconds,
   })
   const filesystems = query.data?.items ?? []
@@ -158,6 +254,8 @@ function StoragePage() {
           }
         />
       </State>
+      {query.data && <StorageControls snapshot={query.data} />}
+      {query.data && <StorageDevices devices={query.data.devices} />}
     </Page>
   )
 }

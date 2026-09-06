@@ -994,17 +994,48 @@ paths:
       operationId: listStorage
       responses:
         '200':
-          description: One entry per distinct mounted filesystem, deduplicated by superblock device number
+          description: Mounted filesystem and bounded physical-device inventory
           content:
             application/json:
               schema:
                 type: object
-                required: [items]
+                required: [items, devices, fingerprint, readOnly]
                 properties:
                   items:
                     type: array
                     maxItems: 4096
                     items: { $ref: '#/components/schemas/StorageFilesystem' }
+                  devices:
+                    type: array
+                    maxItems: 256
+                    items: { $ref: '#/components/schemas/StorageDevice' }
+                  fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+                  readOnly: { type: boolean }
+                  reason: { type: string, maxLength: 512 }
+    post:
+      operationId: applyStorageOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/StorageOperation' } }
+      responses:
+        '200': { description: Verified storage state after UDisks2 operation, content: { application/json: { schema: { $ref: '#/components/schemas/StorageState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /storage/preview:
+    post:
+      operationId: previewStorageOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/StorageOperation' } }
+      responses:
+        '200': { description: Current storage state and operation safety preview, content: { application/json: { schema: { $ref: '#/components/schemas/StorageState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /network:
     get:
       operationId: listNetworkInterfaces
@@ -2570,12 +2601,90 @@ components:
           type: array
           maxItems: 4096
           items: { $ref: '#/components/schemas/MountPoint' }
+    StoragePartition:
+      type: object
+      required: [path, size, readOnly, mountPoints]
+      properties:
+        path: { type: string, maxLength: 256 }
+        name: { type: string, maxLength: 256 }
+        size: { type: integer, minimum: 0 }
+        filesystem: { type: string, maxLength: 64 }
+        label: { type: string, maxLength: 256 }
+        uuid: { type: string, maxLength: 128 }
+        parent: { type: string, maxLength: 256 }
+        readOnly: { type: boolean }
+        mountPoints: { type: array, maxItems: 64, items: { $ref: '#/components/schemas/MountPoint' } }
+    StorageHealth:
+      type: object
+      required: [available]
+      properties:
+        available: { type: boolean }
+        passed: { type: boolean }
+        temperatureC: { type: integer }
+        powerOnHours: { type: integer, minimum: 0 }
+        failing: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+    NVMeHealth:
+      type: object
+      required: [available]
+      properties:
+        available: { type: boolean }
+        temperatureC: { type: integer }
+        percentageUsed: { type: integer, minimum: 0, maximum: 255 }
+        criticalWarning: { type: integer, minimum: 0, maximum: 255 }
+        reason: { type: string, maxLength: 512 }
+    StorageDevice:
+      type: object
+      required: [path, name, type, size, readOnly, removable, partitions]
+      properties:
+        path: { type: string, maxLength: 256 }
+        name: { type: string, maxLength: 256 }
+        type: { type: string, maxLength: 64 }
+        model: { type: string, maxLength: 512 }
+        serial: { type: string, maxLength: 512 }
+        transport: { type: string, maxLength: 64 }
+        size: { type: integer, minimum: 0 }
+        readOnly: { type: boolean }
+        removable: { type: boolean }
+        partitions: { type: array, maxItems: 128, items: { $ref: '#/components/schemas/StoragePartition' } }
+        smart: { $ref: '#/components/schemas/StorageHealth' }
+        nvme: { $ref: '#/components/schemas/NVMeHealth' }
+    StorageSnapshot:
+      type: object
+      required: [filesystems, devices, fingerprint, readOnly]
+      properties:
+        filesystems: { type: array, maxItems: 4096, items: { $ref: '#/components/schemas/StorageFilesystem' } }
+        devices: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/StorageDevice' } }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        readOnly: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+    StorageOperation:
+      type: object
+      additionalProperties: false
+      required: [action, device]
+      properties:
+        action: { type: string, enum: [preview, mount, unmount, persistent-mount, persistent-unmount] }
+        device: { type: string, pattern: '^/dev/[A-Za-z0-9._/@+-]+$' }
+        target: { type: string, maxLength: 4096 }
+        filesystem: { type: string, maxLength: 64 }
+        options: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }
+        expectedFingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        confirmation: { type: string, maxLength: 128 }
+    StorageState:
+      type: object
+      required: [snapshot, action, applied]
+      properties:
+        snapshot: { $ref: '#/components/schemas/StorageSnapshot' }
+        action: { type: string }
+        applied: { type: boolean }
+        warning: { type: string, maxLength: 1024 }
     MountPoint:
       type: object
       required: [target]
       properties:
         target: { type: string, maxLength: 4096 }
         root: { type: string, maxLength: 4096, description: Path of the mount inside its filesystem (bind or btrfs subvolume source) }
+        readOnly: { type: boolean }
     StorageSummary:
       type: object
       required: [filesystems, total, used, percent]

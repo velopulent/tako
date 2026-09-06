@@ -81,6 +81,7 @@ type Server struct {
 	readProcessesFn        func(context.Context) ([]platform.Process, error)
 	readIdentityFn         func(context.Context) (platform.IdentityInventory, error)
 	readFilesystemsFn      func(context.Context) ([]platform.Filesystem, error)
+	readStorageFn          func(context.Context) (platform.StorageSnapshot, error)
 	readNetworkFn          func(context.Context) (platform.NetworkSnapshot, error)
 	previewSignalFn        func(context.Context, platform.SignalOperation) (platform.SignalPreview, error)
 	readMetricHistoryFn    func(context.Context, time.Time, int) ([]metrics.Sample, error)
@@ -231,6 +232,9 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	server.readFilesystemsFn = func(ctx context.Context) ([]platform.Filesystem, error) {
 		return server.hostBroker().ReadFilesystems(ctx, credentialsFromContext(ctx))
+	}
+	server.readStorageFn = func(ctx context.Context) (platform.StorageSnapshot, error) {
+		return server.hostBroker().ReadStorageSnapshot(ctx, credentialsFromContext(ctx))
 	}
 	server.readNetworkFn = func(ctx context.Context) (platform.NetworkSnapshot, error) {
 		return server.hostBroker().ReadNetworkSnapshot(ctx, credentialsFromContext(ctx))
@@ -485,6 +489,8 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/timers/preview", server.timerPreview)
 			router.With(server.requireCSRF).Post("/timers", server.timerAction)
 			router.Get("/storage", server.storage)
+			router.With(server.requireCSRF).Post("/storage/preview", server.storagePreview)
+			router.With(server.requireCSRF).Post("/storage", server.storageApply)
 			router.Get("/network", server.network)
 			router.With(server.requireCSRF).Post("/network/preview", server.networkPreview)
 			router.With(server.requireCSRF).Post("/network", server.networkApply)
@@ -1141,12 +1147,103 @@ func (server *Server) groups(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (server *Server) storage(writer http.ResponseWriter, request *http.Request) {
-	if server.readFilesystemsFn == nil {
+	if server.readStorageFn == nil && server.readFilesystemsFn == nil {
 		problem(writer, http.StatusServiceUnavailable, "storage-unavailable", "Storage inventory is unavailable")
 		return
 	}
-	items, err := server.readFilesystemsFn(request.Context())
-	server.writeModule(writer, "storage", items, err)
+	var snapshot platform.StorageSnapshot
+	var err error
+	if server.readStorageFn != nil {
+		snapshot, err = server.readStorageFn(request.Context())
+	} else {
+		var filesystems []platform.Filesystem
+		filesystems, err = server.readFilesystemsFn(request.Context())
+		snapshot = platform.StorageSnapshotFromFilesystems(filesystems, "Hardware inventory is unavailable.")
+	}
+	if err != nil {
+		server.writeModule(writer, "storage", nil, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"items": snapshot.Filesystems, "devices": snapshot.Devices,
+		"fingerprint": snapshot.Fingerprint, "readOnly": snapshot.ReadOnly,
+		"reason": snapshot.Reason,
+	})
+}
+
+func decodeStorageOperation(writer http.ResponseWriter, request *http.Request) (platform.StorageOperation, bool) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var operation platform.StorageOperation
+	if err := decoder.Decode(&operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-storage-operation", "Storage operation is invalid")
+		return platform.StorageOperation{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-storage-operation", "Storage operation contains trailing data")
+		return platform.StorageOperation{}, false
+	}
+	return operation, true
+}
+
+func (server *Server) storagePreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before previewing storage changes")
+		return
+	}
+	operation, ok := decodeStorageOperation(writer, request)
+	if !ok {
+		return
+	}
+	operation.Action = "preview"
+	state, err := server.hostBroker().PreviewStorage(request.Context(), auth.StorageRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeStorageOperationError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (server *Server) storageApply(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before changing storage")
+		return
+	}
+	operation, ok := decodeStorageOperation(writer, request)
+	if !ok {
+		return
+	}
+	startedAt := time.Now().UTC()
+	state, err := server.hostBroker().ApplyStorage(request.Context(), auth.StorageRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeStorageOperationError(writer, err)
+		server.recordOperation(request.Context(), current.Identity.Username, "storage/"+operation.Action, startedAt, "failed", err.Error(), true)
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, "storage/"+operation.Action, startedAt, "succeeded", "", true)
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func writeStorageOperationError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, platform.ErrInvalidStorageOperation):
+		problem(writer, http.StatusBadRequest, "invalid-storage-operation", "Storage operation is invalid")
+	case errors.Is(err, platform.ErrStorageConflict):
+		problem(writer, http.StatusConflict, "storage-conflict", "Storage state changed; preview again")
+	case errors.Is(err, platform.ErrStorageUnsafe):
+		problem(writer, http.StatusForbidden, "storage-unsafe", "The selected storage target is protected or read-only")
+	case errors.Is(err, platform.ErrStorageBusy):
+		problem(writer, http.StatusConflict, "storage-busy", "The storage target is busy")
+	case errors.Is(err, platform.ErrStorageUnavailable):
+		problem(writer, http.StatusServiceUnavailable, "storage-unavailable", "UDisks2 storage service is unavailable")
+	case errors.Is(err, auth.ErrServiceUnavailable):
+		problem(writer, http.StatusBadGateway, "storage-service-unavailable", "The privileged storage service is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "storage-operation-failed", "The storage operation failed")
+	}
 }
 
 func (server *Server) network(writer http.ResponseWriter, request *http.Request) {

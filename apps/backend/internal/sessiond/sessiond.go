@@ -1048,6 +1048,37 @@ func handleWithAllBackendsAndUpdatesRuntime(conn net.Conn, service auth.PAMAuthe
 		handleJournal(conn, encoder, request, grants, request.Operation == "journal-follow")
 		return
 	}
+	if request.Operation == "storage" {
+		if request.Storage == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Kpatch != nil || request.Network != nil || request.Firewall != nil || request.Security != nil || request.SupportReport != nil {
+			_ = encoder.Encode(auth.Response{Error: "invalid-storage-operation"})
+			return
+		}
+		if _, ok := grants.adminIdentity(request.AdminToken); !ok {
+			_ = encoder.Encode(auth.Response{Error: "invalid-admin-token"})
+			return
+		}
+		operation := *request.Storage
+		request.Storage = nil
+		if err := platform.ValidateStorageOperation(operation); err != nil {
+			_ = encoder.Encode(auth.Response{Error: storageErrorCode(err)})
+			return
+		}
+		storageCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		var state platform.StorageState
+		var operationErr error
+		if operation.Action == "preview" {
+			state, operationErr = platform.PreviewStorageOperation(storageCtx, operation)
+		} else {
+			state, operationErr = platform.ApplyStorageOperation(storageCtx, operation)
+		}
+		cancel()
+		if operationErr != nil {
+			_ = encoder.Encode(auth.Response{Error: storageErrorCode(operationErr)})
+			return
+		}
+		_ = encoder.Encode(auth.Response{StorageState: &state})
+		return
+	}
 	if request.Operation == "network" {
 		if request.Network == nil || request.AdminToken == "" || request.Token != "" || request.Username != "" || request.Password != "" || request.ConversationID != "" || len(request.Responses) != 0 || request.Columns != 0 || request.Rows != 0 || request.Action != "" || request.Unit != "" || request.Scope != "" || request.Hostname != "" || request.Timezone != "" || request.NTPEnabled || request.ExpectedFingerprint != "" || request.PowerAction != "" || request.PowerConfirmation != "" || request.AdminTTL != 0 || request.Timer != nil || request.Override != nil || request.Signal != nil || request.Account != nil || request.GroupMembership != nil || request.AdminRole != nil || request.PasswordChange != nil || request.SSHKeys != nil || request.Updates != nil || request.File != nil || request.Kpatch != nil {
 			_ = encoder.Encode(auth.Response{Error: "invalid-network-operation"})

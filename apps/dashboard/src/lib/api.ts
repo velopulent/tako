@@ -457,6 +457,7 @@ export type LocalGroupPreview = {
 export type MountPoint = {
   target: string
   root?: string
+  readOnly?: boolean
 }
 export type FileSystemInfo = {
   device: string
@@ -469,6 +470,78 @@ export type FileSystemInfo = {
   available: number
   percent: number
   targets: MountPoint[]
+}
+export type StoragePartition = {
+  path: string
+  name?: string
+  size: number
+  filesystem?: string
+  label?: string
+  uuid?: string
+  parent?: string
+  readOnly: boolean
+  mountPoints: MountPoint[]
+}
+export type StorageDevice = {
+  path: string
+  name: string
+  type: string
+  model?: string
+  serial?: string
+  transport?: string
+  size: number
+  readOnly: boolean
+  removable: boolean
+  partitions: StoragePartition[]
+  smart?: {
+    available: boolean
+    passed?: boolean
+    temperatureC?: number
+    powerOnHours?: number
+    failing?: boolean
+    reason?: string
+  }
+  nvme?: {
+    available: boolean
+    temperatureC?: number
+    percentageUsed?: number
+    criticalWarning?: number
+    reason?: string
+  }
+}
+export type StorageSnapshot = {
+  filesystems: FileSystemInfo[]
+  devices: StorageDevice[]
+  fingerprint: string
+  readOnly: boolean
+  reason?: string
+}
+export type StorageInventoryResponse = {
+  items: FileSystemInfo[]
+  devices: StorageDevice[]
+  fingerprint: string
+  readOnly: boolean
+  reason?: string
+}
+export type StorageOperation = {
+  action:
+    | "preview"
+    | "mount"
+    | "unmount"
+    | "persistent-mount"
+    | "persistent-unmount"
+  device: string
+  target?: string
+  filesystem?: string
+  options?: string[]
+  expectedFingerprint?: string
+  confirmation?: string
+}
+export type StorageState = {
+  snapshot: StorageSnapshot
+  action: string
+  applied: boolean
+  warning?: string
 }
 export type StorageSummary = {
   filesystems: number
