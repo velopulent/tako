@@ -207,6 +207,8 @@ func firewallErrorCode(err error) string {
 		return "firewall-ownership-conflict"
 	case errors.Is(err, platform.ErrFirewallAccessRisk):
 		return "firewall-access-risk"
+	case errors.Is(err, platform.ErrFirewallCheckpoint):
+		return "firewall-checkpoint-invalid"
 	case errors.Is(err, platform.ErrFirewallUnavailable):
 		return "firewall-unavailable"
 	default:

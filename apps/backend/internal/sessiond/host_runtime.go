@@ -17,6 +17,7 @@ type hostRuntime struct {
 	sampler         *metrics.Sampler
 	processTracker  *platform.ProcessTracker
 	network         *networkCoordinator
+	firewall        *firewallCoordinator
 	certificatePath string
 	updates         *platform.UpdateService
 }
@@ -35,7 +36,7 @@ func newHostRuntime(settings ...time.Duration) *hostRuntime {
 	}
 	sampler := metrics.NewSampler(capacity)
 	sampler.Configure(defaultInterval, retention)
-	return &hostRuntime{sampler: sampler, processTracker: platform.NewProcessTracker(), network: newNetworkCoordinator()}
+	return &hostRuntime{sampler: sampler, processTracker: platform.NewProcessTracker(), network: newNetworkCoordinator(), firewall: newFirewallCoordinator()}
 }
 
 func (runtime *hostRuntime) run(ctx context.Context) {
@@ -47,6 +48,9 @@ func (runtime *hostRuntime) run(ctx context.Context) {
 func (runtime *hostRuntime) close() {
 	if runtime != nil && runtime.network != nil {
 		runtime.network.Close()
+	}
+	if runtime != nil && runtime.firewall != nil {
+		runtime.firewall.Close()
 	}
 }
 func (runtime *hostRuntime) updateObservation(_ context.Context) platform.UpdateObservation {

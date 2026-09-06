@@ -1134,6 +1134,8 @@ func handleWithAllBackendsAndUpdatesRuntime(conn net.Conn, service auth.PAMAuthe
 		var operationErr error
 		if operation.Action == "preview" {
 			state, operationErr = platform.PreviewFirewallOperation(firewallCtx, operation)
+		} else if runtime != nil && runtime.firewall != nil {
+			state, operationErr = runtime.firewall.Apply(firewallCtx, operation)
 		} else {
 			state, operationErr = platform.ApplyFirewallOperation(firewallCtx, operation)
 		}

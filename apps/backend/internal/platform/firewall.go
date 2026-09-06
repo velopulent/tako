@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -17,6 +18,7 @@ var (
 	ErrFirewallOwnership        = errors.New("firewall ownership is conflicted")
 	ErrFirewallUnavailable      = errors.New("firewall adapter unavailable")
 	ErrFirewallAccessRisk       = errors.New("firewall operation could lock out management access")
+	ErrFirewallCheckpoint       = errors.New("firewall rollback checkpoint is invalid or expired")
 )
 
 // FirewallSnapshot contains the active firewall state and the two firewalld
@@ -51,13 +53,21 @@ type FirewallOperation struct {
 	ExpectedFingerprint string `json:"expectedFingerprint,omitempty"`
 	Confirmation        string `json:"confirmation,omitempty"`
 	Persist             bool   `json:"persist,omitempty"`
+	RollbackSeconds     int    `json:"rollbackSeconds,omitempty"`
+	Checkpoint          string `json:"checkpoint,omitempty"`
+	RollbackToken       string `json:"rollbackToken,omitempty"`
 }
 
 type FirewallState struct {
-	Snapshot FirewallSnapshot `json:"snapshot"`
-	Action   string           `json:"action"`
-	Applied  bool             `json:"applied"`
-	Warning  string           `json:"warning,omitempty"`
+	Snapshot         FirewallSnapshot `json:"snapshot"`
+	Action           string           `json:"action"`
+	Applied          bool             `json:"applied"`
+	Committed        bool             `json:"committed,omitempty"`
+	RollbackRequired bool             `json:"rollbackRequired,omitempty"`
+	Checkpoint       string           `json:"checkpoint,omitempty"`
+	RollbackToken    string           `json:"rollbackToken,omitempty"`
+	RollbackDeadline time.Time        `json:"rollbackDeadline,omitempty"`
+	Warning          string           `json:"warning,omitempty"`
 }
 
 var firewallNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$`)
@@ -83,11 +93,13 @@ func ValidateFirewallOperation(operation FirewallOperation) error {
 		"add-source":     true,
 		"remove-source":  true,
 		"reload":         true,
+		"commit":         true,
+		"rollback":       true,
 	}
 	if !backends[operation.Backend] || !actions[operation.Action] {
 		return ErrInvalidFirewallOperation
 	}
-	if len(operation.Zone) > 128 || len(operation.Service) > 128 || len(operation.Port) > 32 || len(operation.Source) > 128 || len(operation.DefaultZone) > 128 || len(operation.ExpectedFingerprint) > 128 || len(operation.Confirmation) > 128 || strings.ContainsAny(operation.Zone+operation.Service+operation.Port+operation.Source+operation.DefaultZone+operation.ExpectedFingerprint+operation.Confirmation, "\x00\r\n") {
+	if len(operation.Zone) > 128 || len(operation.Service) > 128 || len(operation.Port) > 32 || len(operation.Source) > 128 || len(operation.DefaultZone) > 128 || len(operation.ExpectedFingerprint) > 128 || len(operation.Confirmation) > 128 || len(operation.Checkpoint) > 256 || len(operation.RollbackToken) > 256 || operation.RollbackSeconds < 0 || operation.RollbackSeconds > 600 || strings.ContainsAny(operation.Zone+operation.Service+operation.Port+operation.Source+operation.DefaultZone+operation.ExpectedFingerprint+operation.Confirmation+operation.Checkpoint+operation.RollbackToken, "\x00\r\n") {
 		return ErrInvalidFirewallOperation
 	}
 	for _, value := range []string{operation.Zone, operation.Service, operation.DefaultZone} {
@@ -134,15 +146,22 @@ func ValidateFirewallOperation(operation FirewallOperation) error {
 		if operation.Zone != "" || operation.Service != "" || operation.Port != "" || operation.Source != "" || operation.DefaultZone != "" {
 			return ErrInvalidFirewallOperation
 		}
+	case "commit", "rollback":
+		if operation.Checkpoint == "" || operation.RollbackToken == "" || operation.Zone != "" || operation.Service != "" || operation.Port != "" || operation.Source != "" || operation.DefaultZone != "" || operation.ExpectedFingerprint != "" {
+			return ErrInvalidFirewallOperation
+		}
 	}
 	if operation.Backend == "UFW" && operation.Action == "default-zone" {
 		return ErrInvalidFirewallOperation
 	}
-	if operation.ExpectedFingerprint == "" && operation.Action != "preview" {
+	if operation.ExpectedFingerprint == "" && operation.Action != "preview" && operation.Action != "commit" && operation.Action != "rollback" {
 		return ErrInvalidFirewallOperation
 	}
 	if operation.Action != "preview" && operation.Confirmation != "CONFIRM FIREWALL CHANGE" && operation.Confirmation != "CONFIRM FIREWALL ACCESS" {
 		return ErrInvalidFirewallOperation
+	}
+	if firewallAccessRisk(operation) && operation.RollbackSeconds != 0 && operation.RollbackSeconds < 30 {
+		return ErrFirewallAccessRisk
 	}
 	if firewallAccessRisk(operation) && operation.Confirmation != "CONFIRM FIREWALL ACCESS" {
 		return ErrFirewallAccessRisk

@@ -917,6 +917,8 @@ func firewallResponseError(code string) error {
 		return platform.ErrFirewallOwnership
 	case "firewall-access-risk":
 		return platform.ErrFirewallAccessRisk
+	case "firewall-checkpoint-invalid":
+		return platform.ErrFirewallCheckpoint
 	case "firewall-unavailable":
 		return platform.ErrFirewallUnavailable
 	default:

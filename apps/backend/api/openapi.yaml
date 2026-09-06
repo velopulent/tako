@@ -1568,7 +1568,7 @@ components:
       required: [backend, action]
       properties:
         backend: { type: string, enum: [auto, firewalld, UFW] }
-        action: { type: string, enum: [preview, enable, disable, default-zone, add-service, remove-service, add-port, remove-port, add-source, remove-source, reload] }
+        action: { type: string, enum: [preview, enable, disable, default-zone, add-service, remove-service, add-port, remove-port, add-source, remove-source, reload, commit, rollback] }
         zone: { type: string, maxLength: 128 }
         service: { type: string, maxLength: 128 }
         port: { type: string, maxLength: 32 }
@@ -1577,6 +1577,9 @@ components:
         expectedFingerprint: { type: string, maxLength: 128 }
         confirmation: { type: string, maxLength: 128 }
         persist: { type: boolean }
+        rollbackSeconds: { type: integer, minimum: 0, maximum: 600 }
+        checkpoint: { type: string, maxLength: 256 }
+        rollbackToken: { type: string, maxLength: 256 }
     FirewallState:
       type: object
       required: [snapshot, action, applied]
@@ -1584,6 +1587,11 @@ components:
         snapshot: { type: object }
         action: { type: string }
         applied: { type: boolean }
+        committed: { type: boolean }
+        rollbackRequired: { type: boolean }
+        checkpoint: { type: string }
+        rollbackToken: { type: string }
+        rollbackDeadline: { type: string, format: date-time }
         warning: { type: string }
     SecurityOperation:
       type: object

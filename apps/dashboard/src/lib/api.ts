@@ -649,8 +649,12 @@ export type FirewallSnapshot = {
   active: boolean
   version?: string
   defaultZone?: string
+  persistentDefaultZone?: string
   zones: string[]
   rules: string[]
+  runtimeRules?: string[]
+  persistentRules?: string[]
+  synchronized: boolean
   conflicted: boolean
   readOnly: boolean
   reason?: string
@@ -658,7 +662,20 @@ export type FirewallSnapshot = {
 }
 export type FirewallOperation = {
   backend: "auto" | "firewalld" | "UFW"
-  action: string
+  action:
+    | "preview"
+    | "enable"
+    | "disable"
+    | "default-zone"
+    | "add-service"
+    | "remove-service"
+    | "add-port"
+    | "remove-port"
+    | "add-source"
+    | "remove-source"
+    | "reload"
+    | "commit"
+    | "rollback"
   zone?: string
   service?: string
   port?: string
@@ -667,11 +684,19 @@ export type FirewallOperation = {
   expectedFingerprint?: string
   confirmation?: string
   persist?: boolean
+  rollbackSeconds?: number
+  checkpoint?: string
+  rollbackToken?: string
 }
 export type FirewallState = {
   snapshot: FirewallSnapshot
   action: string
   applied: boolean
+  committed?: boolean
+  rollbackRequired?: boolean
+  checkpoint?: string
+  rollbackToken?: string
+  rollbackDeadline?: string
   warning?: string
 }
 export type SecurityFinding = {

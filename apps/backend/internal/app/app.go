@@ -1421,6 +1421,8 @@ func writeFirewallOperationError(writer http.ResponseWriter, err error) {
 		problem(writer, http.StatusConflict, "firewall-ownership-conflict", "Conflicting firewall ownership detected")
 	case errors.Is(err, platform.ErrFirewallAccessRisk):
 		problem(writer, http.StatusForbidden, "firewall-access-risk", "This change could lock out management access")
+	case errors.Is(err, platform.ErrFirewallCheckpoint):
+		problem(writer, http.StatusConflict, "firewall-checkpoint-invalid", "Firewall rollback checkpoint is invalid or expired")
 	case errors.Is(err, platform.ErrFirewallUnavailable):
 		problem(writer, http.StatusServiceUnavailable, "firewall-unavailable", "No supported active firewall adapter is available")
 	case errors.Is(err, auth.ErrServiceUnavailable):
