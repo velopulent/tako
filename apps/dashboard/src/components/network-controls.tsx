@@ -17,6 +17,14 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   api,
   type NetworkOperation,
   type NetworkResponse,
@@ -28,6 +36,17 @@ type NetworkMutation = Exclude<
   NetworkOperation["action"],
   "preview" | "checkpoint" | "commit" | "rollback"
 >
+
+const networkActionOptions: Array<{
+  value: NetworkMutation
+  label: string
+}> = [
+  { value: "dhcp", label: "Use DHCP" },
+  { value: "static", label: "Configure static addresses" },
+  { value: "dns", label: "Configure DNS" },
+  { value: "route-add", label: "Add route" },
+  { value: "route-remove", label: "Remove route" },
+]
 
 function backendValue(response?: NetworkResponse): NetworkOperation["backend"] {
   const owner = response?.ownership?.activeOwner
@@ -142,6 +161,8 @@ export function NetworkControls() {
     !confirmation
   const blocked =
     invalidInput || !network.data || preview.isPending || apply.isPending
+  const actionLabel =
+    networkActionOptions.find((item) => item.value === action)?.label ?? action
 
   return (
     <Card>
@@ -152,7 +173,7 @@ export function NetworkControls() {
           checkpointed; verify a fresh connection before commit.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="flex flex-col gap-4">
         {network.data?.ownership?.conflicted && (
           <Alert variant="destructive">
             <AlertTitle>Ownership conflict</AlertTitle>
@@ -174,21 +195,28 @@ export function NetworkControls() {
           </Field>
           <Field>
             <FieldLabel htmlFor="network-action">Action</FieldLabel>
-            <select
-              id="network-action"
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+            <Select
+              items={networkActionOptions}
               value={action}
-              onChange={(event) => {
-                setAction(event.target.value as NetworkMutation)
+              onValueChange={(next) => {
+                if (!next) return
+                setAction(next as NetworkMutation)
                 setConfirmation("")
               }}
             >
-              <option value="dhcp">DHCP</option>
-              <option value="static">Static addresses</option>
-              <option value="dns">DNS</option>
-              <option value="route-add">Add route</option>
-              <option value="route-remove">Remove route</option>
-            </select>
+              <SelectTrigger id="network-action" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {networkActionOptions.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </Field>
           <Field>
             <FieldLabel htmlFor="network-interface">Interface</FieldLabel>
@@ -297,15 +325,15 @@ export function NetworkControls() {
             disabled={blocked}
             onClick={() => apply.mutate(operation(action))}
           >
-            Apply {action.replaceAll("-", " ")}
+            Apply {actionLabel}
           </Button>
         </div>
         {pending?.reconnectRequired && (
           <Alert>
             <AlertTitle>Reconnect checkpoint active</AlertTitle>
-            <AlertDescription className="space-y-2">
-              <span className="block">{pending.warning}</span>
-              <span className="block font-mono text-xs">
+            <AlertDescription className="flex flex-col gap-2">
+              <span>{pending.warning}</span>
+              <span className="font-mono text-xs">
                 Deadline:{" "}
                 {pending.rollbackDeadline
                   ? new Date(pending.rollbackDeadline).toLocaleString()

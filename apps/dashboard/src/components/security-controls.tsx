@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Field,
   FieldDescription,
@@ -18,11 +19,22 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
   api,
   type SecurityOperation,
   type SecurityStatus,
   type SessionResponse,
 } from "@/lib/api"
+
+type SecurityMutation = Exclude<SecurityOperation["action"], "inspect">
 
 export function SecurityControls() {
   const queryClient = useQueryClient()
@@ -100,10 +112,20 @@ export function SecurityControls() {
     Boolean(preview.data?.allowed) &&
     !preview.data?.stale &&
     previewKey === currentKey
-  const actionOptions: SecurityOperation["action"][] =
+  const actionOptions: SecurityMutation[] =
     framework === "SELinux"
       ? ["selinux-boolean", "selinux-restorecon"]
       : ["apparmor-enforce", "apparmor-complain", "apparmor-load"]
+  const actionLabels: Record<
+    Exclude<SecurityOperation["action"], "inspect">,
+    string
+  > = {
+    "selinux-boolean": "Set SELinux boolean",
+    "selinux-restorecon": "Restore SELinux labels",
+    "apparmor-enforce": "Enforce AppArmor profile",
+    "apparmor-complain": "Use AppArmor complain mode",
+    "apparmor-load": "Load AppArmor profile",
+  }
   const invalidInput =
     (action === "selinux-boolean" && !booleanName) ||
     (action === "selinux-restorecon" && !path) ||
@@ -120,10 +142,8 @@ export function SecurityControls() {
           apply only the exact fingerprinted change that was reviewed.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {status.isPending && (
-          <div className="h-20 animate-pulse rounded bg-muted" />
-        )}
+      <CardContent className="flex flex-col gap-4">
+        {status.isPending && <Skeleton className="h-20 w-full rounded-lg" />}
         {status.isError && (
           <Alert variant="destructive">
             <AlertTitle>Policy status unavailable</AlertTitle>
@@ -146,7 +166,7 @@ export function SecurityControls() {
               </Badge>
             </div>
             {status.data.findings.length > 0 && (
-              <div className="space-y-2">
+              <div className="flex flex-col gap-2">
                 {status.data.findings.map((finding) => (
                   <Alert key={`${finding.framework}:${finding.subject}`}>
                     <AlertTitle>
@@ -164,41 +184,60 @@ export function SecurityControls() {
         <FieldGroup className="grid gap-4 md:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="security-framework">Framework</FieldLabel>
-            <select
-              id="security-framework"
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+            <Select
+              items={[
+                { value: "SELinux", label: "SELinux" },
+                { value: "AppArmor", label: "AppArmor" },
+              ]}
               value={framework}
-              onChange={(event) => {
-                const next = event.target
-                  .value as SecurityOperation["framework"]
-                setFramework(next)
+              onValueChange={(next) => {
+                if (!next) return
+                const value = next as SecurityOperation["framework"]
+                setFramework(value)
                 setAction(
-                  next === "SELinux" ? "selinux-boolean" : "apparmor-enforce"
+                  value === "SELinux" ? "selinux-boolean" : "apparmor-enforce"
                 )
                 setPreviewKey("")
               }}
             >
-              <option value="SELinux">SELinux</option>
-              <option value="AppArmor">AppArmor</option>
-            </select>
+              <SelectTrigger id="security-framework" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="SELinux">SELinux</SelectItem>
+                  <SelectItem value="AppArmor">AppArmor</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </Field>
           <Field>
             <FieldLabel htmlFor="security-action">Remediation</FieldLabel>
-            <select
-              id="security-action"
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+            <Select
+              items={actionOptions.map((value) => ({
+                value,
+                label: actionLabels[value],
+              }))}
               value={action}
-              onChange={(event) => {
-                setAction(event.target.value as SecurityOperation["action"])
+              onValueChange={(next) => {
+                if (!next) return
+                setAction(next as SecurityOperation["action"])
                 setPreviewKey("")
               }}
             >
-              {actionOptions.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="security-action" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {actionOptions.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {actionLabels[value]}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </Field>
           {action === "selinux-boolean" && (
             <>
@@ -219,17 +258,22 @@ export function SecurityControls() {
                   Must be present in the reported boolean inventory.
                 </FieldDescription>
               </Field>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
+              <Field orientation="horizontal">
+                <Checkbox
+                  id="security-boolean-value"
                   checked={booleanValue}
-                  onChange={(event) => {
-                    setBooleanValue(event.target.checked)
+                  onCheckedChange={(checked) => {
+                    setBooleanValue(checked === true)
                     setPreviewKey("")
                   }}
                 />
-                Enable boolean
-              </label>
+                <FieldLabel
+                  htmlFor="security-boolean-value"
+                  className="font-normal"
+                >
+                  Enable boolean
+                </FieldLabel>
+              </Field>
             </>
           )}
           {action === "selinux-restorecon" && (
@@ -252,22 +296,36 @@ export function SecurityControls() {
               <FieldLabel htmlFor="security-profile">
                 AppArmor profile
               </FieldLabel>
-              <select
-                id="security-profile"
-                className="h-9 rounded-md border bg-background px-3 text-sm"
-                value={profile}
-                onChange={(event) => {
-                  setProfile(event.target.value)
+              <Select
+                items={[
+                  { value: null, label: "Select a reported profile" },
+                  ...(status.data?.apparmor.profiles ?? []).map((value) => ({
+                    value,
+                    label: value,
+                  })),
+                ]}
+                value={profile || null}
+                onValueChange={(next) => {
+                  setProfile(next ?? "")
                   setPreviewKey("")
                 }}
               >
-                <option value="">Select a reported profile</option>
-                {(status.data?.apparmor.profiles ?? []).map((value) => (
-                  <option key={value} value={value}>
-                    {value}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger id="security-profile" className="w-full">
+                  <SelectValue placeholder="Select a reported profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value={null}>
+                      Select a reported profile
+                    </SelectItem>
+                    {(status.data?.apparmor.profiles ?? []).map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </Field>
           )}
           {action === "apparmor-load" && (
@@ -329,15 +387,15 @@ export function SecurityControls() {
             <AlertTitle>
               {preview.data.stale ? "Preview is stale" : "Preview ready"}
             </AlertTitle>
-            <AlertDescription className="space-y-1">
+            <AlertDescription className="flex flex-col gap-1">
               {(preview.data.changes ?? []).map((change) => (
-                <span key={change.field} className="block">
+                <span key={change.field}>
                   {change.field}: {change.before ?? "unknown"} →{" "}
                   {change.after ?? "no change"}
                 </span>
               ))}
               {(preview.data.warnings ?? []).map((warning) => (
-                <span key={warning} className="block text-muted-foreground">
+                <span key={warning} className="text-muted-foreground">
                   {warning}
                 </span>
               ))}

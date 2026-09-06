@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Field,
   FieldDescription,
@@ -17,6 +18,15 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   api,
   type FirewallOperation,
@@ -41,6 +51,36 @@ const actionLabels: Record<FirewallMutation, string> = {
   "add-source": "Allow source",
   "remove-source": "Remove source",
   reload: "Reload policy",
+}
+
+export type FirewallRuleGroup = {
+  zone: string
+  rules: string[]
+}
+
+export function groupFirewallRules(
+  rules: readonly string[]
+): FirewallRuleGroup[] {
+  const groups = new Map<string, string[]>()
+
+  for (const rule of rules) {
+    const trimmed = rule.trim()
+    if (!trimmed) continue
+    const match = /^(\S+)\s+(.+)$/.exec(trimmed)
+    const detail = match?.[2] ?? ""
+    const isZonedRule =
+      Boolean(match) && (detail.includes(":") || detail.startsWith("rule "))
+    const zone = isZonedRule ? (match?.[1] ?? "Unzoned rules") : "Unzoned rules"
+    const value = isZonedRule ? detail : trimmed
+    const existing = groups.get(zone) ?? []
+    existing.push(value)
+    groups.set(zone, existing)
+  }
+
+  return Array.from(groups, ([zone, groupedRules]) => ({
+    zone,
+    rules: groupedRules,
+  }))
 }
 
 function backendValue(
@@ -172,10 +212,8 @@ export function FirewallControls() {
           changes use fresh fingerprints; access-risk changes can auto-rollback.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {status.isPending && (
-          <div className="h-16 animate-pulse rounded bg-muted" />
-        )}
+      <CardContent className="flex flex-col gap-4">
+        {status.isPending && <Skeleton className="h-16 w-full rounded-lg" />}
         {status.isError && (
           <Alert variant="destructive">
             <AlertTitle>Firewall unavailable</AlertTitle>
@@ -201,15 +239,29 @@ export function FirewallControls() {
               {status.data.conflicted && (
                 <Badge variant="destructive">conflicted</Badge>
               )}
+              {status.data.defaultZone && (
+                <Badge variant="outline">
+                  Runtime default: {status.data.defaultZone}
+                </Badge>
+              )}
+              {status.data.persistentDefaultZone && (
+                <Badge variant="outline">
+                  Persistent default: {status.data.persistentDefaultZone}
+                </Badge>
+              )}
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <RuleList
-                title="Runtime rules"
+                title="Runtime policy"
                 rules={status.data.runtimeRules ?? status.data.rules}
+                zones={status.data.zones}
+                defaultZone={status.data.defaultZone}
               />
               <RuleList
-                title="Persistent rules"
+                title="Persistent policy"
                 rules={status.data.persistentRules ?? []}
+                zones={status.data.zones}
+                defaultZone={status.data.persistentDefaultZone}
               />
             </div>
           </>
@@ -217,9 +269,9 @@ export function FirewallControls() {
         {rollbackState?.rollbackRequired && (
           <Alert>
             <AlertTitle>Rollback guard active</AlertTitle>
-            <AlertDescription className="space-y-2">
-              <span className="block">{rollbackState.warning}</span>
-              <span className="block font-mono text-xs">
+            <AlertDescription className="flex flex-col gap-2">
+              <span>{rollbackState.warning}</span>
+              <span className="font-mono text-xs">
                 Deadline:{" "}
                 {rollbackState.rollbackDeadline
                   ? new Date(rollbackState.rollbackDeadline).toLocaleString()
@@ -248,21 +300,31 @@ export function FirewallControls() {
         <FieldGroup className="grid gap-4 md:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="firewall-action">Action</FieldLabel>
-            <select
-              id="firewall-action"
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+            <Select
+              items={Object.entries(actionLabels).map(([value, label]) => ({
+                value: value as FirewallMutation,
+                label,
+              }))}
               value={action}
-              onChange={(event) => {
-                setAction(event.target.value as FirewallMutation)
+              onValueChange={(next) => {
+                if (!next) return
+                setAction(next as FirewallMutation)
                 setConfirmation("")
               }}
             >
-              {Object.entries(actionLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="firewall-action" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {Object.entries(actionLabels).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </Field>
           {isRule && (
             <Field>
@@ -358,14 +420,16 @@ export function FirewallControls() {
               0 disables the timed guard; access-risk changes require 30–600.
             </FieldDescription>
           </Field>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+          <Field orientation="horizontal" className="md:col-span-2">
+            <Checkbox
+              id="firewall-persist"
               checked={persist}
-              onChange={(event) => setPersist(event.target.checked)}
+              onCheckedChange={(checked) => setPersist(checked === true)}
             />
-            Persist firewalld rule changes
-          </label>
+            <FieldLabel htmlFor="firewall-persist" className="font-normal">
+              Persist firewalld rule changes
+            </FieldLabel>
+          </Field>
         </FieldGroup>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -402,13 +466,68 @@ export function FirewallControls() {
   )
 }
 
-function RuleList({ title, rules }: { title: string; rules: string[] }) {
+function RuleList({
+  title,
+  rules,
+  zones,
+  defaultZone,
+}: {
+  title: string
+  rules: string[]
+  zones: string[]
+  defaultZone?: string
+}) {
+  const groupedRules = groupFirewallRules(rules)
+  const knownZones = zones
+    .filter((zone) => !groupedRules.some((group) => group.zone === zone))
+    .map((zone) => ({ zone, rules: [] }))
+  const groups = [...groupedRules, ...knownZones]
+
   return (
-    <div className="rounded-lg border p-3">
-      <div className="mb-2 text-sm font-medium">{title}</div>
-      <pre className="max-h-36 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
-        {rules.join("\n") || "No rules reported."}
-      </pre>
-    </div>
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription>
+          {groups.length > 0
+            ? "Rules grouped by reported zone."
+            : "No zone or rule data reported."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex max-h-80 flex-col gap-4 overflow-auto">
+        {groups.map((group) => (
+          <section key={group.zone} className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge
+                variant={group.zone === defaultZone ? "secondary" : "outline"}
+              >
+                {group.zone}
+              </Badge>
+              {group.zone === defaultZone && (
+                <span className="text-xs text-muted-foreground">default</span>
+              )}
+            </div>
+            {group.rules.length > 0 ? (
+              <ul className="flex flex-col gap-2">
+                {group.rules.map((rule, index) => (
+                  <li
+                    key={[group.zone, rule, index].join(":")}
+                    className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground"
+                  >
+                    {rule}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                No rules reported.
+              </p>
+            )}
+          </section>
+        ))}
+        {groups.length === 0 && (
+          <p className="text-xs text-muted-foreground">No rules reported.</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
