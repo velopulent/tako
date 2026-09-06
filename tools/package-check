@@ -110,4 +110,5 @@ if ! systemd-analyze verify \
 fi
 
 apps/backend/packaging/scripts/test.sh
+bash tools/tako-host-test
 echo "Packaging checks passed"

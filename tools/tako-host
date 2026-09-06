@@ -401,10 +401,10 @@ units_installed() {
 }
 
 restart_sockets() {
-  # Stop services first: restarting a socket unit under a live service (e.g. a
-  # long-lived Vite HMR websocket proxied through the gateway) can fail the
-  # re-bind and wedge the socket in failed/resources. Stopped services
-  # socket-activate on the next request, so no explicit start is needed.
+  # Close listeners before stopping triggered services. Otherwise pending
+  # clients can reactivate sessiond while the socket restart is in progress.
+  log_run "systemctl stop tako.socket tako-sessiond.socket"
+  systemctl stop tako.socket tako-sessiond.socket 2>/dev/null || true
   log_run "systemctl stop tako.service tako-sessiond.service"
   systemctl stop tako.service tako-sessiond.service 2>/dev/null || true
   systemctl reset-failed tako.socket tako-sessiond.socket tako.service tako-sessiond.service 2>/dev/null || true
@@ -412,7 +412,7 @@ restart_sockets() {
   systemctl daemon-reload
   local attempt
   for attempt in 1 2 3; do
-    if systemctl restart tako-sessiond.socket tako.socket; then
+    if systemctl start tako-sessiond.socket && systemctl start tako.socket; then
       log_ok "sockets listening (attempt $attempt/3)"
       return 0
     fi
@@ -623,4 +623,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
