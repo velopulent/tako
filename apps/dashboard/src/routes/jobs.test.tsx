@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { JobsPage } from "@/routes/jobs"
+import { JobsPage } from "@/components/pages/jobs-page"
 
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
