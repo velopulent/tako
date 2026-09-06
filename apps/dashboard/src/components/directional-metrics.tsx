@@ -41,7 +41,7 @@ function DirectionalMetrics({
   const text = copy[direction]
   if (pending) {
     return (
-      <div role="status" className="space-y-3">
+      <div role="status" className="flex flex-col gap-3">
         <span className="sr-only">Loading {text.label} telemetry</span>
         <Skeleton className="h-72 w-full" />
       </div>
