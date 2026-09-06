@@ -830,7 +830,9 @@ func ApplyFirewall(ctx context.Context, path string, request FirewallRequest) (p
 
 func PreviewSecurity(ctx context.Context, path string, request SecurityRequest) (platform.SecurityStatus, error) {
 	operation := request.Operation
-	operation.Action = "inspect"
+	if operation.Action == "" {
+		operation.Action = "inspect"
+	}
 	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "security", AdminToken: request.AdminToken, Security: &operation}, 30*time.Second, 512<<10)
 	if err != nil {
 		return platform.SecurityStatus{}, err

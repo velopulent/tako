@@ -44,11 +44,22 @@ type AppArmorStatus struct {
 }
 
 type SecurityStatus struct {
-	SELinux     SELinuxStatus     `json:"selinux"`
-	AppArmor    AppArmorStatus    `json:"apparmor"`
-	Active      string            `json:"active"`
-	Findings    []SecurityFinding `json:"findings"`
-	Fingerprint string            `json:"fingerprint"`
+	SELinux              SELinuxStatus     `json:"selinux"`
+	AppArmor             AppArmorStatus    `json:"apparmor"`
+	Active               string            `json:"active"`
+	Findings             []SecurityFinding `json:"findings"`
+	Changes              []SecurityChange  `json:"changes,omitempty"`
+	Warnings             []string          `json:"warnings,omitempty"`
+	Stale                bool              `json:"stale,omitempty"`
+	Allowed              bool              `json:"allowed,omitempty"`
+	RequiresConfirmation bool              `json:"requiresConfirmation,omitempty"`
+	Fingerprint          string            `json:"fingerprint"`
+}
+
+type SecurityChange struct {
+	Field  string `json:"field"`
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
 }
 
 type SecurityOperation struct {
@@ -133,11 +144,111 @@ func safeRestoreconPath(path string) bool {
 }
 
 func PreviewSecurityOperation(ctx context.Context, operation SecurityOperation) (SecurityStatus, error) {
-	operation = SecurityOperation{Action: "inspect", Framework: operation.Framework}
-	if err := ValidateSecurityOperation(operation); err != nil {
+	if operation.Action == "" {
+		operation.Action = "inspect"
+	}
+	if operation.Action == "inspect" {
+		operation = SecurityOperation{Action: "inspect", Framework: operation.Framework}
+	}
+	if err := ValidateSecurityPreviewOperation(operation); err != nil {
 		return SecurityStatus{}, err
 	}
-	return ReadSecurityStatus(ctx)
+	status, err := ReadSecurityStatus(ctx)
+	if err != nil {
+		return SecurityStatus{}, err
+	}
+	status.Allowed = true
+	status.RequiresConfirmation = operation.Action != "inspect"
+	status.Changes, status.Warnings = securityPreviewChanges(status, operation)
+	allowed, eligibilityWarnings := securityPreviewEligibility(status, operation)
+	status.Allowed = allowed
+	status.Warnings = append(status.Warnings, eligibilityWarnings...)
+	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != status.Fingerprint {
+		status.Stale = true
+		status.Allowed = false
+		status.Warnings = append(status.Warnings, "Security policy changed since this preview was requested.")
+	}
+	return status, nil
+}
+
+func securityPreviewEligibility(status SecurityStatus, operation SecurityOperation) (bool, []string) {
+	warnings := []string{}
+	allowed := true
+	switch operation.Action {
+	case "selinux-boolean", "selinux-restorecon":
+		if !status.SELinux.Userspace || status.SELinux.Mode == "Disabled" {
+			allowed = false
+			warnings = append(warnings, "SELinux userspace is unavailable or disabled.")
+		}
+	case "apparmor-enforce", "apparmor-complain", "apparmor-load":
+		if !status.AppArmor.Userspace {
+			allowed = false
+			warnings = append(warnings, "AppArmor userspace tooling is unavailable.")
+		}
+	}
+	if operation.Action == "selinux-boolean" && allowed {
+		known := false
+		for _, value := range status.SELinux.Booleans {
+			if strings.HasPrefix(value, operation.Boolean+"=") {
+				known = true
+				break
+			}
+		}
+		if !known {
+			allowed = false
+			warnings = append(warnings, "The selected SELinux boolean was not reported by the current policy inventory.")
+		}
+	}
+	if (operation.Action == "apparmor-enforce" || operation.Action == "apparmor-complain") && allowed && !contains(status.AppArmor.Profiles, operation.Profile) {
+		allowed = false
+		warnings = append(warnings, "The selected AppArmor profile was not reported by the current policy inventory.")
+	}
+	return allowed, warnings
+}
+
+func ValidateSecurityPreviewOperation(operation SecurityOperation) error {
+	if operation.Action == "inspect" {
+		return ValidateSecurityOperation(operation)
+	}
+	copy := operation
+	if copy.ExpectedFingerprint == "" {
+		copy.ExpectedFingerprint = strings.Repeat("0", 64)
+	}
+	if copy.Confirmation == "" {
+		copy.Confirmation = "CONFIRM NARROW SECURITY CHANGE"
+	}
+	return ValidateSecurityOperation(copy)
+}
+
+func securityPreviewChanges(status SecurityStatus, operation SecurityOperation) ([]SecurityChange, []string) {
+	changes := []SecurityChange{}
+	warnings := []string{}
+	switch operation.Action {
+	case "selinux-boolean":
+		before := "unknown"
+		for _, value := range status.SELinux.Booleans {
+			if strings.HasPrefix(value, operation.Boolean+"=") {
+				before = strings.TrimPrefix(value, operation.Boolean+"=")
+				break
+			}
+		}
+		after := "off"
+		if operation.Value {
+			after = "on"
+		}
+		changes = append(changes, SecurityChange{Field: "SELinux boolean " + operation.Boolean, Before: before, After: after})
+	case "selinux-restorecon":
+		changes = append(changes, SecurityChange{Field: "SELinux label", After: operation.Path + " will be relabeled from matchpathcon"})
+		warnings = append(warnings, "Target label is re-evaluated through a pinned descriptor during apply.")
+	case "apparmor-enforce", "apparmor-complain":
+		before := status.AppArmor.ProfileModes[operation.Profile]
+		after := strings.TrimPrefix(operation.Action, "apparmor-")
+		changes = append(changes, SecurityChange{Field: "AppArmor profile " + operation.Profile, Before: before, After: after})
+	case "apparmor-load":
+		changes = append(changes, SecurityChange{Field: "AppArmor profile", After: operation.Path + " will be parsed and replaced"})
+		warnings = append(warnings, "Only root-owned, non-world-writable profiles under approved AppArmor directories are accepted.")
+	}
+	return changes, warnings
 }
 
 func ApplySecurityOperation(ctx context.Context, operation SecurityOperation) (SecurityStatus, error) {

@@ -1472,7 +1472,6 @@ func (server *Server) securityPreview(writer http.ResponseWriter, request *http.
 	if !ok {
 		return
 	}
-	operation.Action = "inspect"
 	status, err := server.hostBroker().PreviewSecurity(request.Context(), auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeSecurityOperationError(writer, err)

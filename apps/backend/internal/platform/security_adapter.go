@@ -117,7 +117,40 @@ func (adapter *securityAdapter) Apply(ctx context.Context, operation SecurityOpe
 	if err != nil {
 		return SecurityStatus{}, err
 	}
+	if err := verifySecurityMutation(updated, operation); err != nil {
+		return SecurityStatus{}, err
+	}
+	updated.Changes, updated.Warnings = securityPreviewChanges(current, operation)
+	updated.Allowed = true
+	updated.RequiresConfirmation = true
 	return updated, nil
+}
+
+func verifySecurityMutation(status SecurityStatus, operation SecurityOperation) error {
+	switch operation.Action {
+	case "selinux-boolean":
+		want := "off"
+		if operation.Value {
+			want = "on"
+		}
+		for _, value := range status.SELinux.Booleans {
+			if strings.HasPrefix(value, operation.Boolean+"=") {
+				if strings.TrimPrefix(value, operation.Boolean+"=") == want {
+					return nil
+				}
+				return ErrSecurityConflict
+			}
+		}
+		return ErrSecurityConflict
+	case "apparmor-enforce", "apparmor-complain":
+		want := strings.TrimPrefix(operation.Action, "apparmor-")
+		if status.AppArmor.ProfileModes[operation.Profile] == want {
+			return nil
+		}
+		return ErrSecurityConflict
+	default:
+		return nil
+	}
 }
 
 func (adapter *securityAdapter) mutationCommand(current SecurityStatus, operation SecurityOperation) (string, []string, error) {

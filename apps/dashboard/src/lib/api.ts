@@ -720,11 +720,33 @@ export type SecurityStatus = {
     kernelPresent: boolean
     userspace: boolean
     profiles: string[]
+    profileModes?: Record<string, string>
     denials: string[]
   }
   active: string
   findings: SecurityFinding[]
+  changes?: { field: string; before?: string; after?: string }[]
+  warnings?: string[]
+  stale?: boolean
+  allowed?: boolean
+  requiresConfirmation?: boolean
   fingerprint: string
+}
+export type SecurityOperation = {
+  action:
+    | "inspect"
+    | "selinux-boolean"
+    | "selinux-restorecon"
+    | "apparmor-enforce"
+    | "apparmor-complain"
+    | "apparmor-load"
+  framework: "SELinux" | "AppArmor"
+  boolean?: string
+  value?: boolean
+  path?: string
+  profile?: string
+  expectedFingerprint?: string
+  confirmation?: string
 }
 export type IncidentEvent = {
   id: string

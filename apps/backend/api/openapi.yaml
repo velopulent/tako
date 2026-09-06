@@ -1606,6 +1606,54 @@ components:
         profile: { type: string, maxLength: 256 }
         expectedFingerprint: { type: string, maxLength: 128 }
         confirmation: { type: string, maxLength: 128 }
+    SecurityChange:
+      type: object
+      required: [field]
+      properties:
+        field: { type: string, maxLength: 512 }
+        before: { type: string, maxLength: 512 }
+        after: { type: string, maxLength: 512 }
+    SecurityFinding:
+      type: object
+      required: [framework, kind, subject, message, severity]
+      properties:
+        framework: { type: string, enum: [SELinux, AppArmor] }
+        kind: { type: string, maxLength: 128 }
+        subject: { type: string, maxLength: 256 }
+        message: { type: string, maxLength: 1024 }
+        severity: { type: string, enum: [info, warning, critical] }
+        guidance: { type: string, maxLength: 1024 }
+    SecurityStatus:
+      type: object
+      required: [selinux, apparmor, active, findings, fingerprint]
+      properties:
+        selinux:
+          type: object
+          required: [kernelPresent, userspace, mode, booleans, denials]
+          properties:
+            kernelPresent: { type: boolean }
+            userspace: { type: boolean }
+            mode: { type: string }
+            policy: { type: string }
+            booleans: { type: array, maxItems: 4096, items: { type: string, maxLength: 256 } }
+            denials: { type: array, maxItems: 256, items: { type: string, maxLength: 1024 } }
+        apparmor:
+          type: object
+          required: [kernelPresent, userspace, profiles, denials]
+          properties:
+            kernelPresent: { type: boolean }
+            userspace: { type: boolean }
+            profiles: { type: array, maxItems: 4096, items: { type: string, maxLength: 512 } }
+            profileModes: { type: object, additionalProperties: { type: string, maxLength: 32 } }
+            denials: { type: array, maxItems: 256, items: { type: string, maxLength: 1024 } }
+        active: { type: string }
+        findings: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/SecurityFinding' } }
+        changes: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/SecurityChange' } }
+        warnings: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        requiresConfirmation: { type: boolean }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
     IncidentEvent:
       type: object
       required: [id, timestamp, severity, kind, summary]
