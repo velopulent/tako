@@ -88,10 +88,16 @@ export function FileBrowser({
   const [filter, setFilter] = React.useState("")
   const [search, setSearch] = React.useState("")
   const [selected, setSelected] = React.useState<FileEntry | null>(null)
+  const [selectedPaths, setSelectedPaths] = React.useState<Set<string>>(
+    new Set()
+  )
   const [dirty, setDirty] = React.useState(false)
   const [discardPreview, setDiscardPreview] = React.useState(false)
   const [action, setAction] = React.useState<Action | null>(null)
   const [value, setValue] = React.useState("")
+  const [overwrite, setOverwrite] = React.useState(false)
+  const [owner, setOwner] = React.useState("")
+  const [group, setGroup] = React.useState("")
   const [error, setError] = React.useState("")
   const [transfer, setTransfer] = React.useState<Transfer | null>(null)
   const transferRef = React.useRef<Transfer | null>(null)
@@ -112,6 +118,7 @@ export function FileBrowser({
   const refresh = () => {
     setPages([0])
     setFingerprint("")
+    setSelectedPaths(new Set())
     void client.invalidateQueries({ queryKey: ["files"] })
   }
   const navigate = (next: string) => {
@@ -123,6 +130,7 @@ export function FileBrowser({
     setSearch("")
     setFilter("")
     setError("")
+    setSelectedPaths(new Set())
   }
   const mutation = useMutation({
     mutationFn: (operation: Record<string, unknown>) =>
@@ -149,6 +157,27 @@ export function FileBrowser({
   }, [scope, administrative])
   const items =
     query.data?.search?.entries ?? query.data?.directory?.entries ?? []
+  const bulkMutation = useMutation({
+    mutationFn: async (operation: "trash" | "delete") => {
+      const entries = items.filter((entry) => selectedPaths.has(entry.path))
+      for (const entry of entries) {
+        await api<FileResult>("/files", {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken },
+          body: JSON.stringify({
+            action: operation,
+            path: entry.path,
+            scope,
+            expectedFingerprint: entry.fingerprint,
+            confirmation: "CONFIRM FILE OPERATION",
+            permanent: operation === "delete",
+            recursive: entry.kind === "directory",
+          }),
+        })
+      }
+    },
+    onSuccess: refresh,
+  })
   const download = (entry: FileEntry) => {
     const anchor = document.createElement("a")
     anchor.href = `/api/v1/files/content?${new URLSearchParams({ path: entry.path, scope, ...(entry.previewToken ? { token: entry.previewToken } : {}) })}`
@@ -163,29 +192,54 @@ export function FileBrowser({
   const choose = (next: Action) => {
     mutation.reset()
     setAction(next)
+    setOverwrite(false)
     setValue(
       next.action === "metadata"
         ? (next.entry?.mode.toString(8) ?? "644")
         : next.action === "rename"
           ? (next.entry?.name ?? "")
-          : ""
+          : next.action === "archive"
+            ? joinPath(path, `${next.entry?.name ?? "archive"}.tar.gz`)
+            : next.action === "extract"
+              ? path
+              : ""
     )
+    setOwner("")
+    setGroup("")
   }
   const runAction = () => {
     if (!action) return
     const operation: Record<string, unknown> = {
       action: action.action,
-      path: action.entry?.path ?? joinPath(path, value),
+      path:
+        action.action === "extract"
+          ? value
+          : (action.entry?.path ?? joinPath(path, value)),
       expectedFingerprint: action.entry?.fingerprint,
-      confirmation: "CONFIRM FILE OPERATION",
+      confirmation: overwrite
+        ? "CONFIRM FILE OVERWRITE"
+        : "CONFIRM FILE OPERATION",
     }
+    if (overwrite) operation.overwrite = true
     if (action.action === "create") operation.kind = action.kind
     if (["rename", "move", "copy"].includes(action.action))
       operation.destination =
         action.action === "rename"
           ? joinPath(parentPath(action.entry?.path ?? path), value)
           : value
-    if (action.action === "metadata") operation.mode = Number.parseInt(value, 8)
+    if (action.action === "archive") operation.archivePath = value
+    if (action.action === "extract") operation.archivePath = action.entry?.path
+    if (action.action === "metadata") {
+      operation.mode = Number.parseInt(value, 8)
+      operation.owner = owner.trim() || undefined
+      operation.group = group.trim() || undefined
+    }
+    if (
+      ["move", "copy"].includes(action.action) &&
+      action.entry?.kind === "directory"
+    ) {
+      operation.recursive = true
+    }
     if (action.action === "delete") {
       operation.permanent = true
       operation.recursive = action.entry?.kind === "directory"
@@ -199,6 +253,36 @@ export function FileBrowser({
     transferRef.current = task
     setTransfer({ ...task })
     try {
+      const recovery = await api<FileResult>("/files", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({
+          action: "upload-status",
+          path: task.path,
+          scope: task.scope,
+          ...(task.id ? { uploadId: task.id } : {}),
+        }),
+      })
+      const candidates =
+        recovery.uploads?.filter((item) => item.total === task.file.size) ?? []
+      const resumable =
+        candidates.find((item) => item.completed) ?? candidates[0]
+      if (resumable?.completed) {
+        setTransfer(null)
+        transferRef.current = null
+        refresh()
+        return
+      }
+      if (resumable) {
+        task.id = resumable.uploadId
+        task.offset = resumable.offset
+      } else if (task.id) {
+        // The staging file expired or was removed. A new upload must restart
+        // at offset zero; the server still refuses to replace an existing
+        // destination without its original fingerprint.
+        task.id = ""
+        task.offset = 0
+      }
       if (task.file.size === 0) {
         await api<FileResult>("/files", {
           method: "POST",
@@ -288,6 +372,31 @@ export function FileBrowser({
   }
   const columns: ColumnDef<DataTableFeatures, FileEntry>[] = [
     {
+      id: "select",
+      header: "Select",
+      enableSorting: false,
+      size: 72,
+      cell: ({ row }) => {
+        const entry = row.original
+        return (
+          <input
+            type="checkbox"
+            aria-label={`Select ${entry.name}`}
+            checked={selectedPaths.has(entry.path)}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => {
+              setSelectedPaths((current) => {
+                const next = new Set(current)
+                if (event.target.checked) next.add(entry.path)
+                else next.delete(entry.path)
+                return next
+              })
+            }}
+          />
+        )
+      },
+    },
+    {
       accessorKey: "name",
       header: "Name",
       size: 320,
@@ -366,25 +475,30 @@ export function FileBrowser({
                 "rename",
                 "move",
                 "copy",
-                "trash",
+                ...(row.original.kind === "file" ||
+                row.original.kind === "directory"
+                  ? ["archive"]
+                  : []),
+                ...(row.original.kind === "file" ? ["extract"] : []),
                 ...(path.includes(".local/share/Trash/files")
                   ? ["restore", "delete"]
-                  : []),
+                  : ["trash"]),
                 ...(scope === "system" ? ["metadata"] : []),
               ].map((name) => (
                 <DropdownMenuItem
                   key={name}
-                  disabled={
-                    row.original.permissionDenied ||
-                    (name === "copy" && row.original.kind !== "file")
-                  }
+                  disabled={row.original.permissionDenied}
                   onClick={() => choose({ action: name, entry: row.original })}
                 >
                   {name === "metadata"
                     ? "Permissions"
                     : name === "trash"
                       ? "Move to trash"
-                      : name[0].toUpperCase() + name.slice(1)}
+                      : name === "archive"
+                        ? "Create archive"
+                        : name === "extract"
+                          ? "Extract archive"
+                          : name[0].toUpperCase() + name.slice(1)}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuGroup>
@@ -395,7 +509,19 @@ export function FileBrowser({
   ]
   const needsValue =
     action &&
-    ["create", "rename", "move", "copy", "metadata"].includes(action.action)
+    [
+      "create",
+      "rename",
+      "move",
+      "copy",
+      "metadata",
+      "archive",
+      "extract",
+    ].includes(action.action)
+  const canOverwrite =
+    action !== null &&
+    ["rename", "move", "copy"].includes(action.action) &&
+    action.entry?.kind === "file"
   const validValue =
     !needsValue ||
     (value.trim() !== "" &&
@@ -421,7 +547,7 @@ export function FileBrowser({
           onClick={() =>
             navigate(
               scope === "system"
-                ? "/.local/share/Trash/files"
+                ? "/root/.local/share/Trash/files"
                 : ".local/share/Trash/files"
             )
           }
@@ -583,6 +709,15 @@ export function FileBrowser({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
+      {bulkMutation.isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Bulk file action interrupted</AlertTitle>
+          <AlertDescription>
+            {bulkMutation.error.message} Some selected items may already have
+            been changed; refresh before retrying.
+          </AlertDescription>
+        </Alert>
+      )}
       {query.isPending && <Skeleton className="h-80" />}
       {query.isError && (
         <Alert variant="destructive">
@@ -617,6 +752,29 @@ export function FileBrowser({
           searchPlaceholder="Filter names on this page"
           toolbar={
             <>
+              {selectedPaths.size > 0 && (
+                <>
+                  <Badge variant="secondary">
+                    {selectedPaths.size} selected
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={bulkMutation.isPending}
+                    onClick={() => bulkMutation.mutate("trash")}
+                  >
+                    Move selected to trash
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={bulkMutation.isPending}
+                    onClick={() => bulkMutation.mutate("delete")}
+                  >
+                    Delete selected
+                  </Button>
+                </>
+              )}
               <Button
                 variant="outline"
                 disabled={!filter.trim()}
@@ -735,7 +893,13 @@ export function FileBrowser({
                 ? "This permanently deletes the item and cannot be undone."
                 : action?.action === "trash"
                   ? "Move this item to trash. Restore it later from Trash."
-                  : "Review the destination and apply this file change."}
+                  : action?.action === "archive"
+                    ? "Create a bounded gzip tar archive without following symlinks."
+                    : action?.action === "extract"
+                      ? "Extract a bounded gzip tar archive into the selected destination."
+                      : overwrite
+                        ? "The destination file will be replaced. This cannot be undone."
+                        : "Review the destination and apply this file change."}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -751,9 +915,13 @@ export function FileBrowser({
                   <FieldLabel htmlFor="file-action-value">
                     {action.action === "metadata"
                       ? "Permissions (octal)"
-                      : ["move", "copy"].includes(action.action)
-                        ? "Destination path"
-                        : "Name"}
+                      : ["archive", "extract"].includes(action.action)
+                        ? action.action === "archive"
+                          ? "Archive path"
+                          : "Destination path"
+                        : ["move", "copy"].includes(action.action)
+                          ? "Destination path"
+                          : "Name"}
                   </FieldLabel>
                   <Input
                     id="file-action-value"
@@ -763,6 +931,38 @@ export function FileBrowser({
                   />
                 </Field>
               </FieldGroup>
+            )}
+            {action?.action === "metadata" && (
+              <FieldGroup className="grid gap-4 md:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="file-owner">Owner</FieldLabel>
+                  <Input
+                    id="file-owner"
+                    value={owner}
+                    onChange={(event) => setOwner(event.target.value)}
+                    placeholder="username"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="file-group">Group</FieldLabel>
+                  <Input
+                    id="file-group"
+                    value={group}
+                    onChange={(event) => setGroup(event.target.value)}
+                    placeholder="groupname"
+                  />
+                </Field>
+              </FieldGroup>
+            )}
+            {canOverwrite && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={overwrite}
+                  onChange={(event) => setOverwrite(event.target.checked)}
+                />
+                Replace an existing regular file
+              </label>
             )}
             {mutation.isError && (
               <Alert variant="destructive">

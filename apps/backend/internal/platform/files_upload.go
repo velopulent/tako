@@ -10,8 +10,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -22,9 +24,16 @@ type uploadRecord struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+const uploadStagingTTL = 24 * time.Hour
+
 func uploadNames(path, id string) (string, string) {
 	data := filepath.Join(filepath.Dir(path), ".tako-upload-"+id)
 	return data, data + ".json"
+}
+
+func uploadCompletedName(path, id string) string {
+	_, metadata := uploadNames(path, id)
+	return strings.TrimSuffix(metadata, ".json") + ".done.json"
 }
 func (f fileTree) writeChunk(path string, operation FileOperation) (FileResult, error) {
 	digest := sha256.Sum256(operation.Content)
@@ -41,6 +50,7 @@ func (f fileTree) writeChunk(path string, operation FileOperation) (FileResult, 
 			return FileResult{}, err
 		}
 		id = hex.EncodeToString(value[:])
+		_ = f.cleanupStaleUploads(filepath.Dir(path))
 	}
 	data, metadata := uploadNames(path, id)
 	flags := os.O_RDWR
@@ -135,7 +145,9 @@ func (f fileTree) writeChunk(path string, operation FileOperation) (FileResult, 
 		if err := f.root.rename(data, path, record.Fingerprint == ""); err != nil {
 			return FileResult{}, err
 		}
-		f.root.Remove(metadata)
+		// Preserve a short-lived completion marker so a client that lost the
+		// final response can distinguish completion from expired staging.
+		_ = f.root.rename(metadata, uploadCompletedName(path, id), true)
 		entry, err := f.entry(path, path)
 		if err != nil {
 			return FileResult{}, err
@@ -145,6 +157,101 @@ func (f fileTree) writeChunk(path string, operation FileOperation) (FileResult, 
 		result.EOF = true
 	}
 	return result, nil
+}
+
+func (f fileTree) cleanupStaleUploads(directory string) error {
+	parent, err := f.root.Open(directory)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	entries, err := parent.ReadDir(256)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	now := time.Now()
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".tako-upload-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil || now.Sub(info.ModTime()) < uploadStagingTTL {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, ".tako-upload-"), ".json")
+		if strings.HasSuffix(id, ".done") {
+			id = strings.TrimSuffix(id, ".done")
+		}
+		if len(id) != 32 || !isHex(id) {
+			continue
+		}
+		data, _ := uploadNames(filepath.Join(directory, "placeholder"), id)
+		_ = f.root.Remove(data)
+		_ = f.root.Remove(filepath.Join(directory, name))
+	}
+	return nil
+}
+
+func (f fileTree) uploadStatus(path string, operation FileOperation) (FileResult, error) {
+	if err := f.cleanupStaleUploads(filepath.Dir(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return FileResult{}, err
+	}
+	parent, err := f.root.Open(filepath.Dir(path))
+	if err != nil {
+		return FileResult{}, err
+	}
+	defer parent.Close()
+	entries, err := parent.ReadDir(256)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return FileResult{}, err
+	}
+	result := make([]UploadInfo, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".tako-upload-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, ".tako-upload-"), ".json")
+		completed := false
+		if strings.HasSuffix(id, ".done") {
+			completed = true
+			id = strings.TrimSuffix(id, ".done")
+		}
+		if len(id) != 32 || !isHex(id) || (operation.UploadID != "" && operation.UploadID != id) {
+			continue
+		}
+		metadataPath := filepath.Join(filepath.Dir(path), name)
+		metadata, openErr := f.root.Open(metadataPath)
+		if openErr != nil {
+			continue
+		}
+		var record uploadRecord
+		decodeErr := json.NewDecoder(io.LimitReader(metadata, 8192)).Decode(&record)
+		metadata.Close()
+		if decodeErr != nil || record.Path != path || record.Total <= 0 {
+			continue
+		}
+		dataPath, _ := uploadNames(path, id)
+		metaInfo, metaErr := f.root.Stat(metadataPath)
+		if metaErr != nil {
+			continue
+		}
+		dataInfo, statErr := f.root.Stat(dataPath)
+		if completed || errors.Is(statErr, os.ErrNotExist) {
+			entry, entryErr := f.root.Stat(record.Path)
+			if entryErr == nil && entry.Mode().IsRegular() && entry.Size() == record.Total {
+				result = append(result, UploadInfo{UploadID: id, Path: record.Path, Offset: record.Total, Total: record.Total, ExpiresAt: metaInfo.ModTime().Add(uploadStagingTTL).UTC(), Completed: true})
+			}
+			continue
+		}
+		if statErr != nil || !dataInfo.Mode().IsRegular() {
+			continue
+		}
+		result = append(result, UploadInfo{UploadID: id, Path: record.Path, Offset: dataInfo.Size(), Total: record.Total, ExpiresAt: metaInfo.ModTime().Add(uploadStagingTTL).UTC()})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].UploadID < result[j].UploadID })
+	return FileResult{Uploads: result}, nil
 }
 func (f fileTree) cancelUpload(path string, operation FileOperation) (FileResult, error) {
 	if operation.UploadID == "" {

@@ -66,6 +66,14 @@ export type FileResult = {
   fingerprint?: string
   warnings?: string[]
   message?: string
+  uploads?: {
+    uploadId: string
+    path: string
+    offset: number
+    total: number
+    expiresAt: string
+    completed?: boolean
+  }[]
 }
 
 export type LoginPrompt = {

@@ -1489,7 +1489,9 @@ components:
       additionalProperties: false
       required: [action]
       properties:
-        action: { type: string, enum: [list, stat, read, read-window, write, write-text, write-chunk, create, rename, move, copy, trash, delete, search, archive, extract, metadata] }
+        action: { type: string, enum: [list, stat, read, read-window, write, write-text, write-chunk, upload-status, create, rename, move, copy, trash, delete, search, archive, extract, metadata, cancel-upload, restore] }
+        scope: { type: string, enum: [home, system] }
+        uploadId: { type: string, pattern: '^[a-fA-F0-9]{32}$' }
         path: { type: string, maxLength: 4096 }
         destination: { type: string, maxLength: 4096 }
         kind: { type: string, enum: [file, directory] }
@@ -1504,13 +1506,24 @@ components:
         showHidden: { type: boolean }
         recursive: { type: boolean }
         permanent: { type: boolean }
+        overwrite: { type: boolean }
         confirmation: { type: string, maxLength: 128 }
         query: { type: string, maxLength: 512 }
         maxEntries: { type: integer, minimum: 0, maximum: 10000 }
         archivePath: { type: string, maxLength: 4096 }
-        mode: { type: integer, minimum: 0, maximum: 511 }
+        mode: { type: integer, minimum: 0, maximum: 4095 }
         owner: { type: string, maxLength: 256 }
         group: { type: string, maxLength: 256 }
+    UploadInfo:
+      type: object
+      required: [uploadId, path, offset, total, expiresAt]
+      properties:
+        uploadId: { type: string, pattern: '^[a-fA-F0-9]{32}$' }
+        path: { type: string, maxLength: 4096 }
+        offset: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 1 }
+        expiresAt: { type: string, format: date-time }
+        completed: { type: boolean }
     NetworkOperation:
       type: object
       additionalProperties: false
@@ -1645,6 +1658,9 @@ components:
       type: object
       required: [path, entries, showHidden, fingerprint]
       properties:
+        parent: { type: string, maxLength: 4096 }
+        nextOffset: { type: integer, minimum: 0 }
+        hasMore: { type: boolean }
         path: { type: string }
         entries:
           type: array
@@ -1684,7 +1700,11 @@ components:
           maxItems: 16
           items: { type: string, maxLength: 256 }
         message: { type: string, maxLength: 512 }
-        reason: { type: string, maxLength: 512 }
+        uploadId: { type: string, pattern: '^[a-fA-F0-9]{32}$' }
+        uploads:
+          type: array
+          maxItems: 256
+          items: { $ref: '#/components/schemas/UploadInfo' }
     UpdatePackage:
       type: object
       required: [name, candidateVersion]
@@ -2105,8 +2125,9 @@ components:
         nextCursor: { type: string, maxLength: 8192 }
     JournalEntry:
       type: object
-      required: [timestamp, priority, unit, message]
+      required: [id, timestamp, priority, unit, message]
       properties:
+        id: { type: string, maxLength: 128 }
         timestamp: { type: string, format: date-time }
         priority: { type: string, maxLength: 2 }
         unit: { type: string, maxLength: 256 }

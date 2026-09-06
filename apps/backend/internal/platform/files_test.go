@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -108,6 +109,47 @@ func TestRootedExtractionRejectsExistingSymlinkAncestor(t *testing.T) {
 	}
 }
 
+func TestExtractionRemovesPartialOutputAfterFailure(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "destination"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.Create(filepath.Join(root, "partial.tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := gzip.NewWriter(archive)
+	writer := tar.NewWriter(compressed)
+	if err := writer.WriteHeader(&tar.Header{Name: "created.txt", Mode: 0600, Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteHeader(&tar.Header{Name: "unsafe", Typeflag: tar.TypeSymlink, Linkname: "/tmp/outside"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = applyFileOperation(context.Background(), FileOperation{
+		Action: "extract", Path: "destination", ArchivePath: "partial.tar.gz", Confirmation: "CONFIRM FILE OPERATION",
+	}, root, false)
+	if err == nil {
+		t.Fatal("unsafe archive unexpectedly extracted")
+	}
+	if _, err := os.Stat(filepath.Join(root, "destination", "created.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial output remained: %v", err)
+	}
+}
+
 func TestRootedFileOperationsRejectSymlinkParents(t *testing.T) {
 	root, outside := t.TempDir(), t.TempDir()
 	os.Symlink(outside, filepath.Join(root, "link"))
@@ -145,6 +187,94 @@ func TestUploadStagesAndValidatesRetries(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(root, "upload"))
 	if err != nil || string(content) != "abcdef" {
 		t.Fatalf("content %q %v", content, err)
+	}
+	status, err := applyFileOperation(context.Background(), FileOperation{Action: "upload-status", Path: "upload", UploadID: first.UploadID}, root, false)
+	if err != nil || len(status.Uploads) != 1 || !status.Uploads[0].Completed || status.Uploads[0].Offset != 6 {
+		t.Fatalf("completed upload status = %+v, err=%v", status.Uploads, err)
+	}
+}
+
+func TestRecursiveDirectoryCopyAndUploadStatus(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "source", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "source", "nested", "value"), []byte("copy me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyFileOperation(context.Background(), FileOperation{Action: "copy", Path: "source", Destination: "copied", Recursive: true, Confirmation: "CONFIRM FILE OPERATION"}, root, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "copied", "nested", "value"))
+	if err != nil || string(data) != "copy me" {
+		t.Fatalf("copied content %q, err=%v", data, err)
+	}
+	if _, err := applyFileOperation(context.Background(), FileOperation{Action: "copy", Path: "source", Destination: "source/child", Recursive: true, Confirmation: "CONFIRM FILE OPERATION"}, root, false); !errors.Is(err, ErrInvalidFileOperation) {
+		t.Fatalf("copy into source error = %v", err)
+	}
+
+	chunk := []byte("abc")
+	sum := sha256.Sum256(chunk)
+	first, err := applyFileOperation(context.Background(), FileOperation{Action: "write-chunk", Path: "upload", Offset: 0, TotalSize: 6, Content: chunk, ContentSHA256: hex.EncodeToString(sum[:])}, root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := applyFileOperation(context.Background(), FileOperation{Action: "upload-status", Path: "upload"}, root, false)
+	if err != nil || len(status.Uploads) != 1 || status.Uploads[0].UploadID != first.UploadID || status.Uploads[0].Offset != 3 {
+		t.Fatalf("upload status = %+v, err=%v", status.Uploads, err)
+	}
+}
+
+func TestFileOverwriteRequiresExplicitConfirmationAndReplacesRegularFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "source"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "destination"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	operation := FileOperation{Action: "copy", Path: "source", Destination: "destination", Overwrite: true}
+	if _, err := applyFileOperation(context.Background(), operation, root, false); !errors.Is(err, ErrInvalidFileOperation) {
+		t.Fatalf("missing overwrite confirmation error = %v", err)
+	}
+	operation.Confirmation = "CONFIRM FILE OVERWRITE"
+	if _, err := applyFileOperation(context.Background(), operation, root, false); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "destination"))
+	if err != nil || string(content) != "new" {
+		t.Fatalf("overwritten content %q, err=%v", content, err)
+	}
+
+	if err := os.Mkdir(filepath.Join(root, "directory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	operation.Destination = "directory"
+	if _, err := applyFileOperation(context.Background(), operation, root, false); !errors.Is(err, ErrInvalidFileOperation) {
+		t.Fatalf("directory overwrite error = %v", err)
+	}
+}
+
+func TestTrashUsesFreedesktopMetadataAndRestores(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note"), []byte("trash"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := applyFileOperation(context.Background(), FileOperation{Action: "trash", Path: "note"}, root, false)
+	if err != nil || moved.Entry == nil {
+		t.Fatalf("trash result = %+v, err=%v", moved, err)
+	}
+	metadata := filepath.Join(root, ".local/share/Trash/info", filepath.Base(moved.Entry.Path)+".trashinfo")
+	content, err := os.ReadFile(metadata)
+	if err != nil || !strings.Contains(string(content), "[Trash Info]") || !strings.Contains(string(content), "Path=") {
+		t.Fatalf("trash metadata = %q, err=%v", content, err)
+	}
+	restored, err := applyFileOperation(context.Background(), FileOperation{Action: "restore", Path: moved.Entry.Path}, root, false)
+	if err != nil || restored.Entry == nil {
+		t.Fatalf("restore result = %+v, err=%v", restored, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "note")); err != nil {
+		t.Fatalf("restored file missing: %v", err)
 	}
 }
 
