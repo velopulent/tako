@@ -18,21 +18,28 @@ The table is descriptive; scripts and workflows read `targets.json` so adding a
 target does not require changing artifact counts in a shell assertion. Every
 target has its own GoReleaser build ID and is built with `CGO_ENABLED=1` inside
 the target distribution image on a runner with the matching CPU architecture.
-The build lane deliberately does not use QEMU or cross-link against another
-distribution's libc and PAM libraries. A target cannot be produced by
-`bun run package` on a different host.
+The release build lane deliberately does not use QEMU or cross-link against
+another distribution's libc and PAM libraries.
 
-For a local native build, install the target's PAM development package and the
-tools listed by `bun run package:check`, then select the manifest ID:
+For local cross-distro packaging, install the host's PAM development package
+and the tools listed by `bun run package:check`, then run:
+
+```bash
+bun run package
+```
+
+This emits every manifest distro target matching host `GOARCH` (eight packages
+on amd64, seven on arm64 with the current manifest). These are cross-CGO
+packages built with the host's libc and PAM libraries. For one native local
+build, select a manifest ID:
 
 ```bash
 TAKO_PACKAGE_TARGET=fedora44-amd64 bun run package
 ```
 
-The default selection uses `/etc/os-release` and `GOARCH`. A host that does not
-match a manifest target fails before GoReleaser starts. The resulting `dist/`
-directory contains one binary, one native package, `artifacts.json`, and a
-checksum file for that target.
+The selected native target must match `/etc/os-release` and `GOARCH`. The
+resulting `dist/` directory contains one package, one binary, `artifacts.json`,
+and a checksum file for that target.
 
 The `native-packages.yml` workflow expands the manifest and builds each target
 in its declared image. The arm64 entries require an arm64 GitHub runner; an

@@ -4,27 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-manifest="apps/backend/packaging/targets.json"
-target_id="${TAKO_PACKAGE_TARGET:-}"
-if [ -z "$target_id" ]; then
-    target_id=$(bun -e '
-const manifest = await Bun.file(process.argv[1]).json();
-let requestedDistro = process.env.TAKO_DISTRO || (await Bun.file("/etc/os-release").text()).split("\n").find((line) => line.startsWith("ID="))?.slice(3).replaceAll("\"", "") || "";
-requestedDistro = ({arch:"archlinux","opensuse-leap":"opensuse"})[requestedDistro] ?? requestedDistro;
-const release = (await Bun.file("/etc/os-release").text()).split("\n").find((line) => line.startsWith("VERSION_ID="))?.slice(11).replaceAll("\"", "") || "";
-const machine = (await Bun.$`go env GOARCH`.text()).trim();
-const target = manifest.targets.find((value) => value.distribution === requestedDistro && (value.release === "rolling" || release === value.release || release.startsWith(value.release+".")) && value.goarch === machine);
-if (!target) throw new Error(`no native packaging target matches ID=${requestedDistro}, VERSION_ID=${release}, GOARCH=${machine}; set TAKO_PACKAGE_TARGET explicitly`);
-console.log(target.id);
-' "$manifest")
-fi
-
-case "$target_id" in
-    all)
-        echo "package: use one native runner per manifest target; all-target cross packaging is disabled" >&2
-        exit 2
-        ;;
-esac
+target_id="${TAKO_PACKAGE_TARGET:-all}"
 
 build_config_dir=$(mktemp -d)
 trap 'rm -rf "$build_config_dir"' EXIT HUP INT TERM
@@ -34,13 +14,26 @@ TAKO_PACKAGE_TARGET="$target_id" ./tools/package-check
 
 TAKO_PACKAGE_TARGET="$target_id" TAKO_BUILD_CONFIG="$build_config" bun -e '
 const manifest = await Bun.file("apps/backend/packaging/targets.json").json();
-const target = manifest.targets.find((value) => value.id === process.env.TAKO_PACKAGE_TARGET);
-if (!target) throw new Error(`unknown TAKO_PACKAGE_TARGET: ${process.env.TAKO_PACKAGE_TARGET}`);
+const requested = process.env.TAKO_PACKAGE_TARGET;
+const hostArch = (await Bun.$`go env GOARCH`.text()).trim();
+const targets = requested === "all"
+  ? manifest.targets.filter((value) => value.goarch === hostArch)
+  : [manifest.targets.find((value) => value.id === requested)].filter(Boolean);
+if (targets.length === 0) {
+  throw new Error(requested === "all"
+    ? `no packaging targets match host GOARCH=${hostArch}`
+    : `unknown TAKO_PACKAGE_TARGET: ${requested}`);
+}
+const buildIds = new Set(targets.map((value) => value.build_id));
+const packageIds = new Set(targets.map((value) => value.package_id));
 const config = Bun.YAML.parse(await Bun.file(".goreleaser.yaml").text());
-config.builds = config.builds.filter((build) => build.id === target.build_id);
-config.nfpms = config.nfpms.filter((pkg) => pkg.ids?.includes(target.build_id));
-config.nfpms.forEach(pkg => {pkg.ids=[target.build_id]});
-if (config.builds.length !== 1 || config.nfpms.length !== 1) throw new Error(`incomplete GoReleaser selection for ${target.id}`);
+config.builds = config.builds.filter((build) => buildIds.has(build.id));
+config.nfpms = config.nfpms
+  .map((pkg) => ({ ...pkg, ids: (pkg.ids ?? []).filter((id) => buildIds.has(id)) }))
+  .filter((pkg) => pkg.ids.length > 0);
+if (config.builds.length !== buildIds.size || config.nfpms.length !== packageIds.size) {
+  throw new Error(`incomplete GoReleaser selection for ${targets.map((value) => value.id).join(", ")}`);
+}
 await Bun.write(process.env.TAKO_BUILD_CONFIG, Bun.YAML.stringify(config));
 '
 
@@ -48,24 +41,43 @@ goreleaser release --snapshot --clean --config "$build_config"
 
 TAKO_PACKAGE_TARGET="$target_id" bun -e '
 const manifest = await Bun.file("apps/backend/packaging/targets.json").json();
-const target = manifest.targets.find((value) => value.id === process.env.TAKO_PACKAGE_TARGET);
-if (!target) throw new Error(`unknown TAKO_PACKAGE_TARGET: ${process.env.TAKO_PACKAGE_TARGET}`);
+const requested = process.env.TAKO_PACKAGE_TARGET;
+const hostArch = (await Bun.$`go env GOARCH`.text()).trim();
+const targets = requested === "all"
+  ? manifest.targets.filter((value) => value.goarch === hostArch)
+  : [manifest.targets.find((value) => value.id === requested)].filter(Boolean);
+if (targets.length === 0) {
+  throw new Error(requested === "all"
+    ? `no packaging targets match host GOARCH=${hostArch}`
+    : `unknown TAKO_PACKAGE_TARGET: ${requested}`);
+}
 const data = await Bun.file("dist/artifacts.json").json();
-const packages = data.filter((artifact) => artifact.type === "Linux Package" && artifact.extra?.ID === target.package_id && artifact.goarch === target.goarch);
-const binaries = data.filter((artifact) => artifact.type === "Binary" && artifact.extra?.ID === target.build_id && artifact.goarch === target.goarch);
-if (packages.length !== 1) throw new Error(`${target.id}: expected its package artifact, found ${packages.length}`);
-if (binaries.length !== 1) throw new Error(`${target.id}: expected its binary artifact, found ${binaries.length}`);
-const artifact = packages[0];
-if (artifact.extra.Format !== target.package_format) throw new Error(`${target.id}: package format ${artifact.extra.Format} does not match ${target.package_format}`);
-const paths = new Set((artifact.extra.Files ?? []).map((file) => file.dst));
-for (const path of manifest.build.required_files) if (!paths.has(path)) throw new Error(`${target.id}: package is missing ${path}`);
-const branding = [...paths].filter((path) => path.startsWith(`${manifest.build.branding_directory}/`));
-if (branding.length !== 1 || branding[0] !== `${manifest.build.branding_directory}/${target.branding}.png`) throw new Error(`${target.id}: package has the wrong branding files`);
-const pam = (artifact.extra.Files ?? []).find((file) => file.dst === manifest.build.pam_destination);
-if (!pam || !pam.src.endsWith(`/pam/${target.pam_source}`)) throw new Error(`${target.id}: package has the wrong PAM policy`);
+const packages = data.filter((artifact) => artifact.type === "Linux Package");
+const binaries = data.filter((artifact) => artifact.type === "Binary");
+const extensions = { deb: ".deb", rpm: ".rpm", archlinux: ".pkg.tar.zst" };
+if (packages.length !== targets.length) throw new Error(`expected ${targets.length} package artifacts, found ${packages.length}`);
+if (binaries.length !== targets.length) throw new Error(`expected ${targets.length} binary artifacts, found ${binaries.length}`);
+for (const target of targets) {
+  const matchingPackages = packages.filter((artifact) => artifact.extra?.ID === target.package_id && artifact.goarch === target.goarch);
+  const matchingBinaries = binaries.filter((artifact) => artifact.extra?.ID === target.build_id && artifact.goarch === target.goarch);
+  if (matchingPackages.length !== 1) throw new Error(`${target.id}: expected one package artifact, found ${matchingPackages.length}`);
+  if (matchingBinaries.length !== 1) throw new Error(`${target.id}: expected one binary artifact, found ${matchingBinaries.length}`);
+  const artifact = matchingPackages[0];
+  if (artifact.goos !== "linux" || artifact.goarch !== target.goarch) throw new Error(`${target.id}: unexpected package target ${artifact.target}`);
+  if (artifact.extra.Format !== target.package_format) throw new Error(`${target.id}: package format ${artifact.extra.Format} does not match ${target.package_format}`);
+  if (!artifact.name.endsWith(`_${target.package_name}${extensions[target.package_format]}`)) throw new Error(`${target.id}: package name ${artifact.name} does not match manifest`);
+  const binary = matchingBinaries[0];
+  if (binary.goos !== "linux" || binary.goarch !== target.goarch) throw new Error(`${target.id}: unexpected binary target ${binary.target}`);
+  const paths = new Set((artifact.extra.Files ?? []).map((file) => file.dst));
+  for (const path of manifest.build.required_files) if (!paths.has(path)) throw new Error(`${target.id}: package is missing ${path}`);
+  const branding = [...paths].filter((path) => path.startsWith(`${manifest.build.branding_directory}/`));
+  if (branding.length !== 1 || branding[0] !== `${manifest.build.branding_directory}/${target.branding}.png`) throw new Error(`${target.id}: package has the wrong branding files`);
+  const pam = (artifact.extra.Files ?? []).find((file) => file.dst === manifest.build.pam_destination);
+  if (!pam || !pam.src.endsWith(`/pam/${target.pam_source}`)) throw new Error(`${target.id}: package has the wrong PAM policy`);
+}
 if (!(await Bun.file("dist/checksums.txt").exists())) throw new Error("missing dist/checksums.txt");
-console.log(`validated native ${target.id} package ${artifact.name}`);
+console.log(`validated ${targets.length} package artifacts for ${requested}`);
 '
 
 (cd dist && sha256sum --check checksums.txt)
-echo "Package written to dist/ for $target_id"
+echo "Packages written to dist/ for $target_id"

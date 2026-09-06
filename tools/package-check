@@ -77,13 +77,17 @@ for (const target of targets) {
 const configuredBuildIds = new Set([...builds.keys()]);
 if (configuredBuildIds.size !== buildIds.size || [...configuredBuildIds].some((id) => !buildIds.has(id))) throw new Error("GoReleaser has a build missing from the target manifest");
 if (process.env.TAKO_PACKAGE_TARGET) {
-  const target = targets.find((value) => value.id === process.env.TAKO_PACKAGE_TARGET);
-  if (!target) throw new Error(`unknown TAKO_PACKAGE_TARGET: ${process.env.TAKO_PACKAGE_TARGET}`);
   const actualGoarch = (await Bun.$`go env GOARCH`.text()).trim();
-  const release = Object.fromEntries((await Bun.file("/etc/os-release").text()).split("\n").filter(line=>line.includes("=")).map(line=>{const at=line.indexOf("=");return [line.slice(0,at),line.slice(at+1).replaceAll("\"","")]}));
-  const distro=({arch:"archlinux","opensuse-leap":"opensuse"})[release.ID] ?? release.ID;
-  if(distro!==target.distribution || (target.release!=="rolling" && release.VERSION_ID!==target.release && !release.VERSION_ID?.startsWith(target.release+"."))) throw new Error(`${target.id} requires its matching native distro release`);
-  if (actualGoarch !== target.goarch) throw new Error(`${target.id} needs GOARCH=${target.goarch}, host has ${actualGoarch}`);
+  if (process.env.TAKO_PACKAGE_TARGET === "all") {
+    if (!targets.some((value) => value.goarch === actualGoarch)) throw new Error(`all packaging requires a manifest target for GOARCH=${actualGoarch}`);
+  } else {
+    const target = targets.find((value) => value.id === process.env.TAKO_PACKAGE_TARGET);
+    if (!target) throw new Error(`unknown TAKO_PACKAGE_TARGET: ${process.env.TAKO_PACKAGE_TARGET}`);
+    const release = Object.fromEntries((await Bun.file("/etc/os-release").text()).split("\n").filter(line=>line.includes("=")).map(line=>{const at=line.indexOf("=");return [line.slice(0,at),line.slice(at+1).replaceAll("\"","")]}));
+    const distro=({arch:"archlinux","opensuse-leap":"opensuse"})[release.ID] ?? release.ID;
+    if(distro!==target.distribution || (target.release!=="rolling" && release.VERSION_ID!==target.release && !release.VERSION_ID?.startsWith(target.release+"."))) throw new Error(`${target.id} requires its matching native distro release`);
+    if (actualGoarch !== target.goarch) throw new Error(`${target.id} needs GOARCH=${target.goarch}, host has ${actualGoarch}`);
+  }
 }
 console.log(`validated ${targets.length} packaging targets from ${manifestPath}`);
 '
