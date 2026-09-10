@@ -1,0 +1,124 @@
+---
+import Icon from './icon.astro';
+const workflows = [
+  {
+    id: 'diagnose',
+    label: 'Investigate an incident',
+    prompt: 'Why did the web server stop responding?',
+    steps: [
+      'Read service state and recent journal entries',
+      'Compare memory pressure with the failure window',
+      'Summarize the evidence and suggest a next step',
+    ],
+    result:
+      'The worker ran out of memory at 09:38. Check the recent workload before restarting the service.',
+    tags: ['Services', 'Journal', 'Metrics'],
+  },
+  {
+    id: 'updates',
+    label: 'Plan maintenance',
+    prompt: 'Help me prepare this host for updates.',
+    steps: [
+      'Review pending packages and host restart status',
+      'Identify services affected by the planned changes',
+      'Prepare a maintenance checklist for review',
+    ],
+    result:
+      'Review the package changes, schedule the service interruption, then verify host health after the update.',
+    tags: ['Packages', 'Services', 'Host'],
+  },
+  {
+    id: 'capacity',
+    label: 'Understand capacity',
+    prompt: 'What is taking up space on this server?',
+    steps: [
+      'Inspect filesystem usage and mounted storage',
+      'Connect disk activity with running processes',
+      'Suggest what to inspect before removing anything',
+    ],
+    result:
+      'Start with the busiest filesystem and its active processes. Review retention settings before deleting files.',
+    tags: ['Storage', 'Processes', 'Files'],
+  },
+];
+---
+
+<div class="agent-workflows">
+  <div class="workflow-choices" aria-label="Example AI workflows">
+    {
+      workflows.map((flow, index) => (
+        <button data-workflow={flow.id} aria-pressed={index === 0}>
+          <span>0{index + 1}</span>
+          {flow.label}
+          <Icon name="arrow" size={17} />
+        </button>
+      ))
+    }
+  </div>
+  <div class="agent-console">
+    <div class="agent-console-top">
+      <span><Icon name="spark" size={16} /> Tako for AI agents</span><span
+        >Workflow illustration</span
+      >
+    </div>
+    {
+      workflows.map((flow, index) => (
+        <section data-workflow-panel={flow.id} hidden={index !== 0}>
+          <>
+            <div class="agent-prompt">
+              <>
+                <span class="avatar">You</span>
+                <p>{flow.prompt}</p>
+              </>
+            </div>
+            <div class="agent-response">
+              <>
+                <span class="agent-mark">
+                  <Icon name="spark" size={19} />
+                </span>
+                <div>
+                  <>
+                    <span class="console-label">
+                      A clearer path to an answer
+                    </span>
+                    <ol>
+                      {flow.steps.map((step) => (
+                        <li>
+                          <span>✓</span>
+                          {step}
+                        </li>
+                      ))}
+                    </ol>
+                    <p class="agent-result">{flow.result}</p>
+                    <div class="tool-tags">
+                      {flow.tags.map((tag) => (
+                        <span>{tag}</span>
+                      ))}
+                    </div>
+                  </>
+                </div>
+              </>
+            </div>
+          </>
+        </section>
+      ))
+    }
+  </div>
+</div>
+<script>
+  const choices =
+    document.querySelectorAll<HTMLButtonElement>('[data-workflow]');
+  choices.forEach((button) =>
+    button.addEventListener('click', () => {
+      choices.forEach((choice) =>
+        choice.setAttribute('aria-pressed', String(choice === button)),
+      );
+      document
+        .querySelectorAll<HTMLElement>('[data-workflow-panel]')
+        .forEach((panel) => {
+          panel.hidden =
+            panel.dataset.workflowPanel !== button.dataset.workflow;
+        });
+    }),
+  );
+</script>

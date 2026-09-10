@@ -1,0 +1,29 @@
+{
+  "name": "@tako/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --host 0.0.0.0",
+    "build": "astro build",
+    "preview": "astro preview --host 0.0.0.0",
+    "typecheck": "astro check",
+    "format": "prettier --write .",
+    "lint": "prettier --check ."
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.38.0",
+    "@fontsource-variable/dm-sans": "^5.2.8",
+    "@fontsource-variable/newsreader": "^5.2.8",
+    "@iconify-json/devicon": "^1.2.62",
+    "@iconify-json/logos": "^1.2.14",
+    "astro": "^6.0.0",
+    "astro-icon": "^1.2.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "typescript": "~5.9.3",
+    "prettier": "^3.6.2",
+    "prettier-plugin-astro": "^0.14.1"
+  }
+}

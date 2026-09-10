@@ -1,0 +1,73 @@
+@import '@fontsource-variable/newsreader';
+@import '@fontsource-variable/dm-sans';
+:root {
+  --sl-font: 'DM Sans Variable', sans-serif;
+  --sl-color-accent-low: #3e281f;
+  --sl-color-accent: #b0472e;
+  --sl-color-accent-high: #edb6a7;
+  --sl-color-bg: #1b1b19;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #f3e4dc;
+  --sl-color-accent: #b0472e;
+  --sl-color-accent-high: #8b3522;
+  --sl-color-bg: #f6f5f0;
+}
+h1 {
+  font-family: 'Newsreader Variable', Georgia, serif;
+  font-weight: 400;
+}
+
+/* Share the marketing shell while keeping Starlight's content rendering. */
+:root {
+  --sl-color-bg-nav: var(--paper);
+  --sl-color-text: var(--ink);
+  --sl-nav-height: 90px;
+}
+.docs-frame {
+  min-height: calc(100vh - 220px);
+  padding-block: 65px;
+}
+.docs-frame .hero {
+  display: block;
+  padding-block: 35px;
+}
+.docs-frame .hero h1 {
+  max-width: 850px;
+  font-size: clamp(48px, 7vw, 86px);
+  font-weight: 450;
+  line-height: 1.1;
+}
+.docs-frame .tagline {
+  max-width: 680px;
+  font-size: 19px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.docs-frame .hero .actions {
+  gap: 20px;
+}
+.docs-frame .sl-link-button {
+  font-family: var(--sans);
+  font-size: 16px;
+  border-radius: 5px;
+}
+.docs-frame .sl-link-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--paper);
+}
+.docs-frame .content-panel {
+  border: 0;
+}
+.docs-frame .sl-container {
+  max-width: 1180px;
+}
+.site-header {
+  font-family: var(--sans);
+}
+@media (max-width: 760px) {
+  .docs-frame {
+    padding-block: 30px;
+  }
+}

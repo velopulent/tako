@@ -1,0 +1,194 @@
+---
+import Icon from './icon.astro';
+const charts = [
+  {
+    label: 'CPU usage',
+    value: '12.8',
+    unit: '%',
+    note: '8 cores · 3.40 GHz',
+    path: 'M0 64 12 60 24 64 36 40 48 47 60 32 72 50 84 43 96 49 108 20 120 38 132 42 144 27 156 48 168 39 180 49 192 33 204 45 216 40 228 48 240 39',
+  },
+  {
+    label: 'Memory',
+    value: '3.2',
+    unit: 'GB',
+    note: 'of 16 GB total',
+    path: 'M0 65 20 63 40 62 60 54 80 55 100 48 120 47 140 49 160 41 180 43 200 37 220 37 240 33',
+  },
+  {
+    label: 'Network',
+    value: '824',
+    unit: 'KB/s',
+    note: '↓ 824 KB/s   ↑ 126 KB/s',
+    path: 'M0 68 15 67 30 40 45 59 60 62 75 17 90 47 105 42 120 56 135 24 150 49 165 50 180 30 195 45 210 20 225 42 240 35',
+  },
+];
+---
+
+<div class="dashboard" data-reveal>
+  <div class="dashboard-top">
+    <span class="window-dots"><i></i><i></i><i></i></span><span
+      >tako / app-server-01</span
+    ><span class="demo-label">Interactive preview · sample data</span>
+  </div>
+  <div class="dashboard-body">
+    <aside class="dashboard-sidebar" aria-label="Preview views">
+      <div class="preview-brand">tako.</div><div class="preview-host">
+        <span class="status-dot"></span> app-server-01 <small
+          >Ubuntu 24.04 LTS</small
+        >
+      </div>
+      <div class="preview-nav">
+        <button data-view="overview" aria-pressed="true"
+          ><Icon name="pulse" size={16} />Overview</button
+        ><button data-view="services" aria-pressed="false"
+          ><Icon name="layers" size={16} />Services</button
+        ><button data-view="logs" aria-pressed="false"
+          ><Icon name="terminal" size={16} />System logs</button
+        >
+      </div>
+      <span class="sidebar-bottom"
+        ><span class="status-dot"></span> Connected securely</span
+      >
+    </aside>
+    <div class="preview-content">
+      <section data-panel="overview">
+        <div class="preview-title">
+          <div>
+            <h3>Good to see you.</h3><p>Here's how your host is doing.</p>
+          </div><span class="health"
+            ><span class="status-dot"></span> All systems healthy</span
+          >
+        </div>
+        <div class="metric-grid">
+          {
+            charts.map((chart) => (
+              <div class="metric">
+                <>
+                  <span>{chart.label}</span>
+                  <strong>
+                    {chart.value}
+                    <small>{chart.unit}</small>
+                  </strong>
+                  <svg
+                    viewBox="0 0 240 90"
+                    role="img"
+                    aria-label={`${chart.label} sample trend`}
+                  >
+                    <>
+                      <path
+                        d={`${chart.path} L240 90H0Z`}
+                        fill="currentColor"
+                        opacity=".09"
+                      />
+                      <path
+                        d={chart.path}
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      />
+                    </>
+                  </svg>
+                  <small>{chart.note}</small>
+                </>
+              </div>
+            ))
+          }
+        </div>
+        <div class="preview-bottom">
+          <div>
+            <span class="eyebrow">Host at a glance</span><dl>
+              <div><dt>Uptime</dt><dd>14 days, 6 hours</dd></div><div>
+                <dt>Kernel</dt><dd>6.8.0-52-generic</dd>
+              </div><div><dt>Storage</dt><dd>48.2 GB / 256 GB</dd></div>
+            </dl>
+          </div><div>
+            <span class="eyebrow">Services</span><ul class="service-list">
+              <li>nginx.service <span>Running</span></li><li>
+                postgresql.service <span>Running</span>
+              </li><li>ssh.service <span>Running</span></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+      <section data-panel="services" hidden>
+        <div class="preview-title">
+          <div>
+            <h3>Everything in service.</h3><p>
+              Unit state, relationships, and logs in one view.
+            </p>
+          </div><span class="health">3 running</span>
+        </div><div class="service-table">
+          {
+            ['nginx.service', 'postgresql.service', 'ssh.service'].map(
+              (service, index) => (
+                <div>
+                  <>
+                    <Icon name="layers" />
+                    <span>
+                      <>
+                        <strong>{service}</strong>
+                        <small>
+                          {
+                            [
+                              'Web server and reverse proxy',
+                              'PostgreSQL database server',
+                              'OpenSSH server',
+                            ][index]
+                          }
+                        </small>
+                      </>
+                    </span>
+                    <span class="health">
+                      <span class="status-dot" />
+                      Running
+                    </span>
+                  </>
+                </div>
+              ),
+            )
+          }
+        </div><p class="preview-note">
+          Inspect system and user units, trace dependencies, and control service
+          lifecycles.
+        </p>
+      </section>
+      <section data-panel="logs" hidden>
+        <div class="preview-title">
+          <div>
+            <h3>The story behind the status.</h3><p>
+              A searchable journal, close at hand.
+            </p>
+          </div><span class="health">Journal</span>
+        </div><div class="log-lines">
+          <p><time>09:41:02</time><b>systemd</b> Started nginx.service.</p><p>
+            <time>09:41:03</time><b>nginx</b> Configuration test successful.
+          </p><p>
+            <time>09:41:06</time><b>sshd</b> Session opened for user alex.
+          </p><p>
+            <time>09:41:12</time><b>systemd</b> Finished daily package metadata refresh.
+          </p><p>
+            <time>09:41:18</time><b>tako</b> Host metrics stream connected.
+          </p>
+        </div><p class="preview-note">
+          Follow live events and filter the noise when you need to investigate.
+        </p>
+      </section>
+    </div>
+  </div>
+</div>
+<script>
+  const buttons = document.querySelectorAll<HTMLButtonElement>('[data-view]');
+  buttons.forEach((button) =>
+    button.addEventListener('click', () => {
+      buttons.forEach((item) =>
+        item.setAttribute('aria-pressed', String(item === button)),
+      );
+      document
+        .querySelectorAll<HTMLElement>('[data-panel]')
+        .forEach((panel) => {
+          panel.hidden = panel.dataset.panel !== button.dataset.view;
+        });
+    }),
+  );
+</script>
