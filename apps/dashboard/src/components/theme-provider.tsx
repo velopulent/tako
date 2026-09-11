@@ -1,6 +1,6 @@
 import * as React from "react"
 
-type Theme = "dark" | "light" | "system"
+export type Theme = "dark" | "light" | "tako-light" | "tako-dark" | "system"
 type ResolvedTheme = "dark" | "light"
 
 type ThemeProviderProps = {
@@ -16,7 +16,13 @@ type ThemeProviderState = {
 }
 
 const COLOR_SCHEME_QUERY = "(prefers-color-scheme: dark)"
-const THEME_VALUES: Theme[] = ["dark", "light", "system"]
+const THEME_VALUES: Theme[] = [
+  "dark",
+  "light",
+  "tako-light",
+  "tako-dark",
+  "system",
+]
 
 const ThemeProviderContext = React.createContext<
   ThemeProviderState | undefined
@@ -104,13 +110,15 @@ export function ThemeProvider({
     (nextTheme: Theme) => {
       const root = document.documentElement
       const resolvedTheme =
-        nextTheme === "system" ? getSystemTheme() : nextTheme
+        nextTheme === "system" ? `tako-${getSystemTheme()}` : nextTheme
       const restoreTransitions = disableTransitionOnChange
         ? disableTransitionsTemporarily()
         : null
 
-      root.classList.remove("light", "dark")
-      root.classList.add(resolvedTheme)
+      const colorScheme = resolvedTheme.endsWith("dark") ? "dark" : "light"
+      root.classList.remove("light", "dark", "tako-light", "tako-dark")
+      root.classList.add(colorScheme, resolvedTheme)
+      root.style.colorScheme = colorScheme
 
       if (restoreTransitions) {
         restoreTransitions()
@@ -119,7 +127,7 @@ export function ThemeProvider({
     [disableTransitionOnChange]
   )
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     applyTheme(theme)
 
     if (theme !== "system") {
@@ -157,14 +165,15 @@ export function ThemeProvider({
       }
 
       setThemeState((currentTheme) => {
-        const nextTheme =
-          currentTheme === "dark"
+        const resolvedTheme =
+          currentTheme === "system" ? `tako-${getSystemTheme()}` : currentTheme
+        const nextTheme: Theme = resolvedTheme.startsWith("tako-")
+          ? resolvedTheme === "tako-dark"
+            ? "tako-light"
+            : "tako-dark"
+          : resolvedTheme === "dark"
             ? "light"
-            : currentTheme === "light"
-              ? "dark"
-              : getSystemTheme() === "dark"
-                ? "light"
-                : "dark"
+            : "dark"
 
         localStorage.setItem(storageKey, nextTheme)
         return nextTheme
