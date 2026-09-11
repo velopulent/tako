@@ -160,7 +160,15 @@ export function NetworkControls() {
     (needsRoute && !route) ||
     !confirmation
   const blocked =
-    invalidInput || !network.data || preview.isPending || apply.isPending
+    invalidInput ||
+    !network.data ||
+    network.data.ownership?.conflicted === true ||
+    network.data.ownership?.activeOwner !== "NetworkManager" ||
+    preview.isPending ||
+    apply.isPending
+  const networkManagerActive =
+    network.data?.ownership?.activeOwner === "NetworkManager" &&
+    network.data.ownership.conflicted !== true
   const actionLabel =
     networkActionOptions.find((item) => item.value === action)?.label ?? action
 
@@ -180,6 +188,17 @@ export function NetworkControls() {
             <AlertDescription>{network.data.ownership.reason}</AlertDescription>
           </Alert>
         )}
+        {network.data &&
+          !network.data.ownership?.conflicted &&
+          network.data.ownership?.activeOwner !== "NetworkManager" && (
+            <Alert>
+              <AlertTitle>Network configuration is read-only</AlertTitle>
+              <AlertDescription>
+                NetworkManager is not the active network owner. Configuration
+                changes require an active NetworkManager service.
+              </AlertDescription>
+            </Alert>
+          )}
         <FieldGroup className="grid gap-4 md:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="network-backend">Detected backend</FieldLabel>
@@ -239,7 +258,7 @@ export function NetworkControls() {
               placeholder="Wired connection 1"
             />
             <FieldDescription>
-              Optional; NetworkManager uses the interface when blank.
+              Optional; blank uses the active profile for this interface.
             </FieldDescription>
           </Field>
           {needsAddress && (
@@ -343,7 +362,7 @@ export function NetworkControls() {
                 <Button
                   size="sm"
                   onClick={() => apply.mutate(operation("commit"))}
-                  disabled={apply.isPending}
+                  disabled={apply.isPending || !networkManagerActive}
                 >
                   Commit after reconnect
                 </Button>
@@ -351,7 +370,7 @@ export function NetworkControls() {
                   size="sm"
                   variant="outline"
                   onClick={() => apply.mutate(operation("rollback"))}
-                  disabled={apply.isPending}
+                  disabled={apply.isPending || !networkManagerActive}
                 >
                   Roll back
                 </Button>
