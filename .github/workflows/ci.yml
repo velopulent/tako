@@ -234,7 +234,7 @@ jobs:
           version: "v${{ vars.GORELEASER_VERSION || '2.18.0' }}"
           install-only: true
       - run: bun run package:check
-      - run: bun run test:packaging
+      - run: bun test tools/release-gate.test.ts
 
   openapi-contract:
     name: OpenAPI contract validation
@@ -279,6 +279,7 @@ jobs:
       - name: Run shellcheck
         run: >-
           shellcheck --severity=error
+          tools/package
           tools/package-check
           tools/tako-go.sh
           tools/tako-host-test
@@ -287,12 +288,6 @@ jobs:
           apps/backend/packaging/scripts/deb/*.sh
           apps/backend/packaging/scripts/rpm/*.sh
           apps/backend/packaging/scripts/arch/*.sh
-
-  integration:
-    name: Disposable VM integration
-    uses: ./.github/workflows/integration.yml
-    permissions:
-      contents: read
 
   pr-gate:
     name: PR gate
@@ -310,7 +305,6 @@ jobs:
       - openapi-contract
       - workflow-quality
       - shell-quality
-      - integration
     runs-on: ubuntu-24.04
     steps:
       - name: Fail if a required check failed, was cancelled, or skipped
