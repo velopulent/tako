@@ -3,11 +3,12 @@ import Icon from "./icon.astro"
 import "../styles/navigation.css"
 
 const links = [
-  { label: "Features", href: "/#features" },
-  { label: "AI agents", href: "/#agents" },
-  { label: "Compatibility", href: "/#compatibility" },
-  { label: "Architecture", href: "/#architecture" },
-  { label: "FAQ", href: "/#faq" },
+  { label: "Overview", href: "/#overview", number: "01" },
+  { label: "Features", href: "/#features", number: "02" },
+  { label: "AI agents", href: "/#agents", number: "03" },
+  { label: "Compatibility", href: "/#compatibility", number: "04" },
+  { label: "Architecture", href: "/#architecture", number: "05" },
+  { label: "FAQ", href: "/#faq", number: "06" },
   { label: "Docs", href: "/docs/" },
 ]
 ---
@@ -77,7 +78,7 @@ const links = [
     {links.map((link, index) => (
         <a href={link.href} style={`--item-index:${index}`}>
           <>
-            <span class="menu-number">0{index + 1}</span>
+            {link.number && <span class="menu-number">{link.number}</span>}
             <span>{link.label}</span>
             <Icon name="external" size={24} />
           </>
