@@ -642,7 +642,7 @@ paths:
     get:
       operationId: getService
       responses:
-        '200': { description: Unit status, runtime properties, and relationships }
+        '200': { description: "Unit status, runtime properties, and relationships" }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /services/{scope}/{unit}/configuration:
@@ -986,7 +986,7 @@ paths:
                 action: { type: string, enum: [reboot, shutdown] }
                 expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
       responses:
-        '200': { description: Current capability, inhibitor, and confirmation requirements }
+        '200': { description: "Current capability, inhibitor, and confirmation requirements" }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /storage:
