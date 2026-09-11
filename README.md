@@ -10,6 +10,8 @@
 
 </div>
 
+> :warning: Tako is under active development and not yet at v1. Expect breaking changes. See [status and scope](#status-and-scope).
+
 Tako is one Go binary plus an embedded React dashboard. It runs on the machine it manages and exposes that machine over HTTPS. You log in with your normal UNIX username and password through PAM. There is no separate Tako account database and no cloud component.
 
 The gateway that faces the browser is unprivileged. Anything that needs host authority goes through a small privileged helper over a local socket, and per-user work runs as your own UID. The code keeps those three roles in separate processes so a bug in the web layer does not become root access.
