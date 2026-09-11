@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host-integrated development helper (Cockpit-style).
+# Host-integrated development helper.
 # Installs systemd units, PAM, and a checkout overlay so `tako serve` /
 # `tako sessiond` run like production on the developer machine.
 set -euo pipefail
