@@ -97,13 +97,13 @@ console.log(`validated ${targets.length} packaging targets from ${manifestPath}`
 
 verify_log="$probe_dir/systemd-analyze.log"
 verify_root="$probe_dir/systemd-root"
-mkdir -p "$verify_root/usr/bin"
+mkdir -p "$verify_root/usr/bin" "$verify_root/usr/lib/systemd/system"
+# --root resolves unit paths inside the staged filesystem, including dependencies.
+cp /usr/lib/systemd/system/*.target "$verify_root/usr/lib/systemd/system/"
+cp apps/backend/packaging/systemd/* "$verify_root/usr/lib/systemd/system/"
 install -m 0755 /bin/true "$verify_root/usr/bin/tako"
 if ! systemd-analyze --root="$verify_root" verify \
-    apps/backend/packaging/systemd/tako-sessiond.socket \
-    apps/backend/packaging/systemd/tako-sessiond.service \
-    apps/backend/packaging/systemd/tako.socket \
-    apps/backend/packaging/systemd/tako.service 2>"$verify_log"; then
+    tako-sessiond.socket tako-sessiond.service tako.socket tako.service 2>"$verify_log"; then
     # Restricted build sandboxes can block systemd's userdb credential sockets.
     # Ignore only those environment errors; unit diagnostics remain fatal.
     unexpected="$probe_dir/systemd-analyze-unexpected.log"

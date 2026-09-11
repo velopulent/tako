@@ -45,11 +45,14 @@ jobs:
           TARGET_ID: ${{ matrix.id }}
           TARGET_ARCH: ${{ matrix.arch }}
           TARGET_IMAGE: ${{ matrix.image }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
+          set -euo pipefail
           docker run --rm --platform "linux/${TARGET_ARCH}" \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
             --env TAKO_PACKAGE_TARGET="$TARGET_ID" \
+            --env GORELEASER_CURRENT_TAG \
             "$TARGET_IMAGE" \
             /bin/bash -c './apps/backend/packaging/native-build.sh'
       - name: Upload package artifacts

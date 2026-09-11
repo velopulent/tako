@@ -27,6 +27,11 @@ if (targets.length === 0) {
 const buildIds = new Set(targets.map((value) => value.build_id));
 const packageIds = new Set(targets.map((value) => value.package_id));
 const config = Bun.YAML.parse(await Bun.file(".goreleaser.yaml").text());
+// Explicit release and lifecycle tags must retain their version in snapshot builds.
+// Snapshot mode still prevents GoReleaser from publishing directly.
+if (process.env.GORELEASER_CURRENT_TAG) {
+  config.snapshot = { version_template: process.env.GORELEASER_CURRENT_TAG.replace(/^v/, "") };
+}
 config.builds = config.builds.filter((build) => buildIds.has(build.id));
 config.nfpms = config.nfpms
   .map((pkg) => ({ ...pkg, ids: (pkg.ids ?? []).filter((id) => buildIds.has(id)) }))
