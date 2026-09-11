@@ -25,6 +25,14 @@
         "cwd": "apps/dashboard"
       }
     },
+    "coverage": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "vitest run --coverage",
+        "cwd": "apps/dashboard"
+      }
+    },
     "lint": {
       "executor": "nx:run-commands",
       "cache": true,
