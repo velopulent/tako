@@ -69,6 +69,8 @@ jobs:
           set -euo pipefail
           old_password="tako-ci-$(openssl rand -hex 16)"
           new_password="tako-ci-$(openssl rand -hex 16)"
+          echo "::add-mask::$old_password"
+          echo "::add-mask::$new_password"
           {
             printf 'TAKO_TEST_PASSWORD_OLD=%s\n' "$old_password"
             printf 'TAKO_TEST_PASSWORD_NEW=%s\n' "$new_password"
