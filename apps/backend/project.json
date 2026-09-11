@@ -64,6 +64,19 @@
         }
       }
     },
+    "integration": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "../../tools/tako-go.sh test ./...",
+        "cwd": "apps/backend",
+        "env": {
+          "GOCACHE": "/tmp/tako-go-integration-cache",
+          "TAKO_DASHBOARD_DIR": "",
+          "TAKO_EXTRA_GO_TAGS": "integration"
+        }
+      }
+    },
     "lint": {
       "executor": "nx:run-commands",
       "cache": true,

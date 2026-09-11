@@ -24,4 +24,8 @@ esac
 
 command=$1
 shift
-exec go "$command" -tags "$tag" "$@"
+tags=$tag
+if [ -n "${TAKO_EXTRA_GO_TAGS:-}" ]; then
+  tags="$tags,$TAKO_EXTRA_GO_TAGS"
+fi
+exec go "$command" -tags "$tags" "$@"

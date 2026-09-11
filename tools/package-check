@@ -31,10 +31,13 @@ goreleaser check
 
 for script in apps/backend/packaging/scripts/deb/*.sh \
     apps/backend/packaging/scripts/rpm/*.sh \
-    apps/backend/packaging/scripts/arch/*.sh \
-    apps/backend/packaging/smoke-test.sh \
-    apps/backend/packaging/lifecycle-test.sh; do
+    apps/backend/packaging/scripts/arch/*.sh; do
     sh -n "$script"
+done
+
+for script in apps/backend/packaging/smoke-test.sh \
+    apps/backend/packaging/lifecycle-test.sh; do
+    bash -n "$script"
 done
 
 bun -e '

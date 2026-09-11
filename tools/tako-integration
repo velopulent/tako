@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+: "${TAKO_INTEGRATION_DISTRO:?TAKO_INTEGRATION_DISTRO is required}"
+: "${TAKO_INTEGRATION_EVIDENCE_DIR:?TAKO_INTEGRATION_EVIDENCE_DIR is required}"
+: "${TAKO_TEST_PAM_USER:?TAKO_TEST_PAM_USER is required}"
+: "${TAKO_TEST_PASSWORD_OLD:?TAKO_TEST_PASSWORD_OLD is required}"
+: "${TAKO_TEST_PASSWORD_NEW:?TAKO_TEST_PASSWORD_NEW is required}"
+: "${TAKO_TEST_PAM_RESPONSES:?TAKO_TEST_PAM_RESPONSES is required}"
+: "${TAKO_TEST_BINARY:?TAKO_TEST_BINARY is required}"
+
+if [[ "$EUID" -ne 0 ]]; then
+  echo "tako-integration: run as root inside a disposable VM" >&2
+  exit 2
+fi
+
+case "$TAKO_INTEGRATION_DISTRO" in
+  ubuntu|fedora) ;;
+  *) echo "unsupported integration distro: $TAKO_INTEGRATION_DISTRO" >&2; exit 2 ;;
+esac
+
+workspace_root=${GITHUB_WORKSPACE:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+backend_dir="$workspace_root/apps/backend"
+evidence_dir="$TAKO_INTEGRATION_EVIDENCE_DIR"
+if [[ "$evidence_dir" != /* ]]; then
+  evidence_dir="$workspace_root/$evidence_dir"
+fi
+test_log="$evidence_dir/go-test.json"
+fixture_user="$TAKO_TEST_PAM_USER"
+fixture_home=""
+fixture_uid=""
+pam_backup_dir=$(mktemp -d)
+pam_had_file=false
+user_created=false
+
+mkdir -p "$evidence_dir"
+
+collect_diagnostics() {
+  set +e
+  {
+    echo "== /etc/os-release =="
+    cat /etc/os-release
+    echo "== identity =="
+    id
+    echo "== systemd =="
+    systemctl --version
+    systemctl is-system-running
+    systemctl is-active systemd-journald
+    echo "== user manager =="
+    if [[ -n "$fixture_uid" ]]; then
+      systemctl status "user@${fixture_uid}.service" --no-pager
+      systemctl --user is-system-running
+    fi
+    echo "== failed units =="
+    systemctl --failed --no-legend
+    echo "== recent journal =="
+    journalctl -b --no-pager -n 500
+  } >"$evidence_dir/machine-diagnostics.txt" 2>&1
+  set -e
+}
+
+cleanup() {
+  local exit_code=$?
+  trap - EXIT
+  collect_diagnostics
+
+  if [[ -n "$fixture_uid" ]]; then
+    loginctl disable-linger "$fixture_user" >/dev/null 2>&1 || true
+    systemctl stop "user@${fixture_uid}.service" >/dev/null 2>&1 || true
+  fi
+  if [[ "$pam_had_file" == true ]]; then
+    cp -a "$pam_backup_dir/tako" /etc/pam.d/tako
+  else
+    rm -f /etc/pam.d/tako
+  fi
+  if [[ "$user_created" == true ]]; then
+    userdel --remove "$fixture_user" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$pam_backup_dir"
+  exit "$exit_code"
+}
+trap cleanup EXIT
+
+for command_name in bash chpasswd find getent go id journalctl ldconfig loginctl systemctl useradd userdel; do
+  command -v "$command_name" >/dev/null || {
+    echo "tako-integration: missing command: $command_name" >&2
+    exit 2
+  }
+done
+[[ -d /run/systemd/system ]] || { echo "systemd system manager is not running" >&2; exit 1; }
+systemctl is-active --quiet systemd-journald || { echo "systemd-journald is not active" >&2; exit 1; }
+journalctl --list-boots >/dev/null
+ldconfig -p | grep -q 'libpam\.so' || { echo "PAM runtime is not installed" >&2; exit 1; }
+find /lib /usr/lib -name pam_unix.so -print -quit | grep -q . || { echo "pam_unix.so is not installed" >&2; exit 1; }
+
+if id "$fixture_user" >/dev/null 2>&1; then
+  echo "refusing to reuse existing fixture account: $fixture_user" >&2
+  exit 2
+fi
+useradd --create-home --shell /bin/bash "$fixture_user"
+user_created=true
+printf '%s:%s\n' "$fixture_user" "$TAKO_TEST_PASSWORD_OLD" | chpasswd
+fixture_home=$(getent passwd "$fixture_user" | cut -d: -f6)
+fixture_uid=$(id -u "$fixture_user")
+fixture_gid=$(id -g "$fixture_user")
+[[ -n "$fixture_home" && -n "$fixture_uid" ]] || { echo "fixture account lookup failed" >&2; exit 1; }
+
+if [[ -e /etc/pam.d/tako ]]; then
+  cp -a /etc/pam.d/tako "$pam_backup_dir/tako"
+  pam_had_file=true
+fi
+case "$TAKO_INTEGRATION_DISTRO" in
+  ubuntu)
+    pam_stack=$'auth\tinclude common-auth\naccount\tinclude common-account\nsession\tinclude common-session\n'
+    ;;
+  fedora)
+    pam_stack=$'auth\tsubstack system-auth\naccount\tinclude system-auth\nsession\tinclude system-auth\nsession\tinclude postlogin\n'
+    ;;
+esac
+printf '%s' "$pam_stack" >/etc/pam.d/tako
+chmod 0644 /etc/pam.d/tako
+
+install -d -m 0700 -o "$fixture_uid" -g "$fixture_gid" "$fixture_home/.ssh"
+install -m 0600 -o "$fixture_uid" -g "$fixture_gid" /dev/null "$fixture_home/.ssh/authorized_keys"
+
+loginctl enable-linger "$fixture_user"
+systemctl start "user@${fixture_uid}.service"
+export HOME="$fixture_home"
+export XDG_RUNTIME_DIR="/run/user/${fixture_uid}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+[[ -d "$XDG_RUNTIME_DIR" ]] || { echo "user runtime directory was not created" >&2; exit 1; }
+systemctl --user is-system-running >/dev/null
+
+[[ -x "$TAKO_TEST_BINARY" ]] || { echo "integration binary is not executable: $TAKO_TEST_BINARY" >&2; exit 1; }
+
+expected_tests=(
+  TestPAMUserSessionLifecycle
+  TestPAMPasswordLifecycle
+  TestLocalAccountLifecycle
+  TestHostCapabilitiesContract
+  TestGroupAndAdministrativeRoleLifecycle
+  TestNSSIdentityInventoryLinuxVMSeam
+  TestJournalQueryAgainstSystemd
+  TestLoginHistoryAgainstSystemd
+  TestProcessDetailsLinuxVMSeam
+  TestServiceOverrideLoadsInDisposableVM
+  TestAuthorizedSSHKeysFilesystemSeam
+  TestStructuredTimerPairLoadsInDisposableVM
+  TestUpdatesAgainstHost
+  TestPAMBackedUserBridge
+)
+
+export TAKO_TEST_ACCOUNT_VM=1
+export TAKO_TEST_IDENTITY_VM=1
+export TAKO_TEST_JOURNAL_VM=1
+export TAKO_TEST_LOGIN_HISTORY_USER="$fixture_user"
+export TAKO_TEST_PROCESS_VM=1
+export TAKO_TEST_OVERRIDE_VM=1
+export TAKO_TEST_SSH_HOME="$fixture_home"
+export TAKO_TEST_SSH_USER="$fixture_user"
+export TAKO_TEST_TIMER_VM=1
+export TAKO_TEST_PASSWORD_USER="$fixture_user"
+export TAKO_TEST_PASSWORD_SERVICE=passwd
+export TAKO_TEST_PAM_SERVICE=tako
+
+set +e
+(
+  cd "$backend_dir"
+  go test -json -tags "$TAKO_INTEGRATION_DISTRO,integration" ./...
+) 2>&1 | tee "$test_log"
+test_status=${PIPESTATUS[0]}
+set -e
+
+python3 - "$test_log" "${expected_tests[@]}" <<'PY'
+import json
+import sys
+
+path, *expected = sys.argv[1:]
+expected = set(expected)
+passed = set()
+skipped = set()
+failed = set()
+with open(path, encoding="utf-8", errors="replace") as stream:
+    for line in stream:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        name = event.get("Test")
+        if not name:
+            continue
+        action = event.get("Action")
+        if action == "pass":
+            passed.add(name)
+        elif action == "skip":
+            skipped.add(name)
+        elif action == "fail":
+            failed.add(name)
+
+unexpected_skips = sorted(skipped & expected)
+missing = sorted(expected - passed - skipped)
+if unexpected_skips:
+    print("required integration tests were skipped: " + ", ".join(unexpected_skips), file=sys.stderr)
+if missing:
+    print("required integration tests did not run: " + ", ".join(missing), file=sys.stderr)
+if failed:
+    print("failed integration tests: " + ", ".join(sorted(failed)), file=sys.stderr)
+if unexpected_skips or missing or failed:
+    raise SystemExit(1)
+PY
+parser_status=$?
+
+if [[ "$test_status" -ne 0 || "$parser_status" -ne 0 ]]; then
+  exit 1
+fi
+echo "Tako integration tests passed for $TAKO_INTEGRATION_DISTRO"
