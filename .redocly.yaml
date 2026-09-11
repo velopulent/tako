@@ -1,0 +1,8 @@
+extends:
+  - minimal
+
+rules:
+  operation-summary: off
+  security-defined: off
+  no-unused-components: off
+  operation-2xx-response: off
