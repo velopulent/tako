@@ -1,6 +1,6 @@
-@import '@fontsource-variable/newsreader';
-@import '@fontsource-variable/newsreader/wght-italic.css';
-@import '@fontsource-variable/dm-sans';
+@import "@fontsource-variable/newsreader";
+@import "@fontsource-variable/newsreader/wght-italic.css";
+@import "@fontsource-variable/dm-sans";
 
 :root {
   --paper: #f6f5f0;
@@ -11,11 +11,11 @@
   --soft: #e9e7de;
   --panel: #fbfaf7;
   --green: #52755d;
-  --serif: 'Newsreader Variable', Georgia, serif;
-  --sans: 'DM Sans Variable', sans-serif;
+  --serif: "Newsreader Variable", Georgia, serif;
+  --sans: "DM Sans Variable", sans-serif;
   color-scheme: light;
 }
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   --paper: #1b1b19;
   --ink: #eeeae0;
   --muted: #aaa79b;
@@ -37,7 +37,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font: 15px/1.65 var(--sans);
+  font: 15px / 1.65 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
 button,
@@ -110,7 +110,7 @@ summary:focus-visible {
 }
 .eyebrow {
   display: block;
-  font: 500 12px/1.5 var(--sans);
+  font: 500 12px / 1.5 var(--sans);
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--accent);
@@ -228,7 +228,7 @@ summary:focus-visible {
   background: var(--accent);
   color: var(--paper);
 }
-:root[data-theme='dark'] .primary {
+:root[data-theme="dark"] .primary {
   color: #1b1b19;
 }
 .text-link {
@@ -430,7 +430,7 @@ summary:focus-visible {
   gap: 10px;
   color: var(--muted);
 }
-.preview-nav button[aria-pressed='true'] {
+.preview-nav button[aria-pressed="true"] {
   color: var(--accent);
   background: var(--soft);
 }
@@ -583,7 +583,7 @@ dd {
 }
 .log-lines {
   font:
-    11px/2.7 ui-monospace,
+    11px / 2.7 ui-monospace,
     monospace;
 }
 .log-lines time {
@@ -642,7 +642,7 @@ dd {
   color: var(--muted);
 }
 .feature h3 {
-  font: 450 26px/1.18 var(--serif);
+  font: 450 26px / 1.18 var(--serif);
   letter-spacing: -0.5px;
   margin-bottom: 12px;
 }
@@ -689,7 +689,10 @@ dd {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-top: 6px;
+  min-inline-size: 0;
+  margin: 0;
+  border: 0;
+  padding: 6px 0 0;
 }
 .workflow-choices button {
   display: flex;
@@ -712,7 +715,7 @@ dd {
     monospace;
   opacity: 0.6;
 }
-.workflow-choices button[aria-pressed='true'] {
+.workflow-choices button[aria-pressed="true"] {
   background: var(--paper);
   border-color: var(--line);
   color: var(--accent);
@@ -887,7 +890,7 @@ dd {
   column-gap: 70px;
 }
 .questions > .eyebrow {
-  grid-row: 1/5;
+  grid-row: 1 / 5;
   max-width: 170px;
 }
 .questions details {
