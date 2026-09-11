@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,9 +33,15 @@ func TestViteDevTargetAllowsOnlyLoopback(t *testing.T) {
 }
 
 func TestSpaHandlerProxiesToViteDev(t *testing.T) {
-	vite := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vite := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Write([]byte("vite-dev:" + request.URL.Path))
 	}))
+	vite.Listener = listener
+	vite.Start()
 	defer vite.Close()
 	t.Setenv("TAKO_VITE_URL", vite.URL)
 	t.Setenv("TAKO_DASHBOARD_DIR", "")
