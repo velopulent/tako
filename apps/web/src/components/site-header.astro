@@ -1,14 +1,15 @@
 ---
-import Icon from './icon.astro';
-import '../styles/navigation.css';
+import Icon from "./icon.astro"
+import "../styles/navigation.css"
+
 const links = [
-  { label: 'Features', href: '/#features' },
-  { label: 'AI agents', href: '/#agents' },
-  { label: 'Compatibility', href: '/#compatibility' },
-  { label: 'Architecture', href: '/#architecture' },
-  { label: 'FAQ', href: '/#faq' },
-  { label: 'Docs', href: '/docs/' },
-];
+  { label: "Features", href: "/#features" },
+  { label: "AI agents", href: "/#agents" },
+  { label: "Compatibility", href: "/#compatibility" },
+  { label: "Architecture", href: "/#architecture" },
+  { label: "FAQ", href: "/#faq" },
+  { label: "Docs", href: "/docs/" },
+]
 ---
 
 <header class="site-header">
@@ -19,8 +20,7 @@ const links = [
       ></a
     >
     <nav class="desktop-nav" aria-label="Main navigation">
-      {
-        links.map((link) => (
+      {links.map((link) => (
           <a
             href={link.href}
             aria-current={
@@ -31,24 +31,29 @@ const links = [
           >
             {link.label}
           </a>
-        ))
-      }
+        ))}
     </nav>
     <div class="nav-actions">
       <button
+        type="button"
         class="theme-toggle"
         aria-label="Switch to dark theme"
-        aria-pressed="false"><Icon name="sun" size={21} /></button
+        aria-pressed="false"
       >
+        <Icon name="sun" size={21} />
+      </button>
       <a class="nav-github" href="https://github.com/velopulent/tako"
         >GitHub <Icon name="external" size={17} /></a
       >
       <button
+        type="button"
         class="menu-toggle"
         aria-label="Open navigation menu"
         aria-expanded="false"
-        aria-controls="mobile-navigation"><span></span><span></span></button
+        aria-controls="mobile-navigation"
       >
+        <span></span><span></span>
+      </button>
     </div>
   </div>
 </header>
@@ -59,14 +64,17 @@ const links = [
 >
   <div class="mobile-menu-top">
     <a class="wordmark" href="/">tako<span class="wordmark-dot">.</span></a
-    ><button class="menu-close" aria-label="Close navigation menu"
-      ><span></span><span></span></button
+    ><button
+      type="button"
+      class="menu-close"
+      aria-label="Close navigation menu"
     >
+      <span></span><span></span>
+    </button>
   </div>
   <p class="eyebrow">Your Linux. A little more human.</p>
   <nav aria-label="Mobile navigation">
-    {
-      links.map((link, index) => (
+    {links.map((link, index) => (
         <a href={link.href} style={`--item-index:${index}`}>
           <>
             <span class="menu-number">0{index + 1}</span>
@@ -74,84 +82,83 @@ const links = [
             <Icon name="external" size={24} />
           </>
         </a>
-      ))
-    }
+      ))}
   </nav>
   <div class="mobile-menu-bottom">
-    <p>A clearer view of every Linux server.</p><a
-      href="https://github.com/velopulent/tako"
+    <p>A clearer view of every Linux server.</p>
+    <a href="https://github.com/velopulent/tako"
       >Explore on GitHub <Icon name="external" size={18} /></a
     >
   </div>
 </dialog>
 <script>
-  const toggle = document.querySelector<HTMLButtonElement>('.theme-toggle');
-  function syncThemeButton() {
-    const dark = document.documentElement.dataset.theme === 'dark';
-    toggle?.setAttribute('aria-pressed', String(dark));
-    toggle?.setAttribute(
-      'aria-label',
-      `Switch to ${dark ? 'light' : 'dark'} theme`,
-    );
+const toggle = document.querySelector<HTMLButtonElement>(".theme-toggle")
+function syncThemeButton() {
+  const dark = document.documentElement.dataset.theme === "dark"
+  toggle?.setAttribute("aria-pressed", String(dark))
+  toggle?.setAttribute(
+    "aria-label",
+    `Switch to ${dark ? "light" : "dark"} theme`
+  )
+}
+syncThemeButton()
+toggle?.addEventListener("click", () => {
+  const theme =
+    document.documentElement.dataset.theme === "dark" ? "light" : "dark"
+  document.documentElement.dataset.theme = theme
+  try {
+    localStorage.setItem("starlight-theme", theme)
+  } catch {}
+  syncThemeButton()
+})
+const menu = document.querySelector<HTMLDialogElement>("#mobile-navigation")
+const trigger = document.querySelector<HTMLButtonElement>(".menu-toggle")
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)")
+let closing = false
+trigger?.addEventListener("click", () => {
+  if (!menu || menu.open) return
+  menu.showModal()
+  document.documentElement.classList.add("menu-open")
+  trigger.setAttribute("aria-expanded", "true")
+})
+async function closeMenu() {
+  if (!menu?.open || closing) return
+  closing = true
+  if (!reduceMotion.matches) {
+    await menu.animate(
+      [
+        { opacity: 1, transform: "translateY(0)" },
+        { opacity: 0, transform: "translateY(-18px)" },
+      ],
+      { duration: 180, easing: "ease-in" }
+    ).finished
   }
-  syncThemeButton();
-  toggle?.addEventListener('click', () => {
-    const theme =
-      document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = theme;
-    try {
-      localStorage.setItem('starlight-theme', theme);
-    } catch {}
-    syncThemeButton();
-  });
-  const menu = document.querySelector<HTMLDialogElement>('#mobile-navigation');
-  const trigger = document.querySelector<HTMLButtonElement>('.menu-toggle');
-  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
-  let closing = false;
-  trigger?.addEventListener('click', () => {
-    if (!menu || menu.open) return;
-    menu.showModal();
-    document.documentElement.classList.add('menu-open');
-    trigger.setAttribute('aria-expanded', 'true');
-  });
-  async function closeMenu() {
-    if (!menu?.open || closing) return;
-    closing = true;
-    if (!reduceMotion.matches) {
-      await menu.animate(
-        [
-          { opacity: 1, transform: 'translateY(0)' },
-          { opacity: 0, transform: 'translateY(-18px)' },
-        ],
-        { duration: 180, easing: 'ease-in' },
-      ).finished;
+  menu.close()
+  document.documentElement.classList.remove("menu-open")
+  trigger?.setAttribute("aria-expanded", "false")
+  closing = false
+}
+menu
+  ?.querySelector(".menu-close")
+  ?.addEventListener("click", () => void closeMenu())
+menu?.addEventListener("cancel", (event) => {
+  event.preventDefault()
+  void closeMenu()
+})
+menu?.querySelectorAll<HTMLAnchorElement>("a").forEach((link) => {
+  link.addEventListener("click", async (event) => {
+    event.preventDefault()
+    await closeMenu()
+    const target = new URL(link.href)
+    if (target.pathname === location.pathname && target.hash) {
+      const section = document.querySelector<HTMLElement>(target.hash)
+      section?.setAttribute("tabindex", "-1")
+      section?.focus({ preventScroll: true })
     }
-    menu.close();
-    document.documentElement.classList.remove('menu-open');
-    trigger?.setAttribute('aria-expanded', 'false');
-    closing = false;
-  }
-  menu
-    ?.querySelector('.menu-close')
-    ?.addEventListener('click', () => void closeMenu());
-  menu?.addEventListener('cancel', (event) => {
-    event.preventDefault();
-    void closeMenu();
-  });
-  menu?.querySelectorAll<HTMLAnchorElement>('a').forEach((link) =>
-    link.addEventListener('click', async (event) => {
-      event.preventDefault();
-      await closeMenu();
-      const target = new URL(link.href);
-      if (target.pathname === location.pathname && target.hash) {
-        const section = document.querySelector<HTMLElement>(target.hash);
-        section?.setAttribute('tabindex', '-1');
-        section?.focus({ preventScroll: true });
-      }
-      location.assign(link.href);
-    }),
-  );
-  matchMedia('(min-width: 1101px)').addEventListener('change', (event) => {
-    if (event.matches) void closeMenu();
-  });
+    location.assign(link.href)
+  })
+})
+matchMedia("(min-width: 1101px)").addEventListener("change", (event) => {
+  if (event.matches) void closeMenu()
+})
 </script>
