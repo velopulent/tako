@@ -96,7 +96,10 @@ console.log(`validated ${targets.length} packaging targets from ${manifestPath}`
 '
 
 verify_log="$probe_dir/systemd-analyze.log"
-if ! systemd-analyze verify \
+verify_root="$probe_dir/systemd-root"
+mkdir -p "$verify_root/usr/bin"
+install -m 0755 /bin/true "$verify_root/usr/bin/tako"
+if ! systemd-analyze --root="$verify_root" verify \
     apps/backend/packaging/systemd/tako-sessiond.socket \
     apps/backend/packaging/systemd/tako-sessiond.service \
     apps/backend/packaging/systemd/tako.socket \
