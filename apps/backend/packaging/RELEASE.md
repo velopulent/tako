@@ -47,15 +47,20 @@ amd64 runner cannot silently satisfy them. The RHEL image is the public UBI
 image named by the manifest. If an image tag or hosted runner is unavailable,
 the target remains pending or fails and the beta release stays blocked.
 
-The `vm-validation.yml` workflow runs `packaging/vm-test.sh` on a disposable
+The reusable `vm-validation.yml` workflow consumes native artifacts from the
+same beta run (use the beta workflow for manual end-to-end validation). It runs `packaging/vm-test.sh` on a disposable
 VM runner carrying the `vm_label` from the manifest. These labels describe an
 operator-provided runner contract; this repository does not contain VM hosts,
 credentials, or evidence that a VM has run. Each successful invocation writes
 one release input record containing the tested package digest. A failed or
 missing record is a hard failure.
 
-The beta workflow publishes only after all required CI jobs, all native package
-jobs, and every manifest target's VM evidence pass. It then assembles packages,
+PR and push CI run on GitHub-hosted runners. Privileged VM integration runs
+on its schedule, by manual dispatch, and as a required beta release gate; it
+is not a PR gate because it requires operator-provided disposable runners.
+
+The beta workflow publishes only after all required CI jobs, VM integration, all native package
+jobs, and every manifest target's VM evidence pass. It verifies each package digest against its VM evidence, then assembles packages,
 writes `dependency-inventory.json`, creates `checksums.txt`, signs that checksum
 manifest with keyless Sigstore signing, and emits GitHub build provenance. The
 workflow uses the repository's ephemeral `GITHUB_TOKEN`; no package registry,
@@ -79,3 +84,7 @@ maintainer-hook tests also exercise Arch's install, upgrade, and removal hooks.
 basename as a lookup through the `sysusers.d` search path, and `tako.conf` is a
 valid vendor filename. The package installs it under `/usr/lib/sysusers.d/`,
 which leaves `/etc/sysusers.d/` available for administrator overrides.
+
+Tag builds preserve the release version in package metadata and the binary.
+Local untagged builds retain GoReleaser snapshot versions. Release checksums
+use relative filenames and can be checked from the downloaded asset directory.
