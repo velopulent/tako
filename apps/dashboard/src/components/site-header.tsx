@@ -4,11 +4,12 @@ import {
   KeyRoundIcon,
   LockKeyholeIcon,
   LogOutIcon,
+  MonitorIcon,
   MoonIcon,
   SunIcon,
 } from "lucide-react"
 import * as React from "react"
-import { useTheme } from "@/components/theme-provider"
+import { type Theme, useTheme } from "@/components/theme-provider"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
   AlertDialog,
@@ -25,7 +26,10 @@ import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuGroup,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -48,7 +52,7 @@ export function SiteHeader({
 }) {
   const location = useLocation(),
     client = useQueryClient(),
-    { setTheme } = useTheme(),
+    { theme, setTheme } = useTheme(),
     [password, setPassword] = React.useState(""),
     [mfaResponse, setMfaResponse] = React.useState(""),
     [elevationError, setElevationError] = React.useState(""),
@@ -196,15 +200,30 @@ export function SiteHeader({
             <span className="sr-only">Toggle theme</span>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => setTheme("light")}>
-              Light
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setTheme("dark")}>
-              Dark
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setTheme("system")}>
-              System
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuRadioGroup
+                value={theme}
+                onValueChange={(value) => setTheme(value as Theme)}
+              >
+                <DropdownMenuRadioItem value="tako-light">
+                  <SunIcon /> Tako Light
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="tako-dark">
+                  <MoonIcon /> Tako Dark
+                </DropdownMenuRadioItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuRadioItem value="light">
+                  <SunIcon /> Standard Light
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="dark">
+                  <MoonIcon /> Standard Dark
+                </DropdownMenuRadioItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuRadioItem value="system">
+                  <MonitorIcon /> System
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
         <Button
