@@ -1,397 +1,408 @@
 ---
-import Icon from './icon.astro';
+import Icon from "./icon.astro"
 
 const explore = [
-  { label: 'Features', href: '/#features' },
-  { label: 'AI agents', href: '/#agents' },
-  { label: 'Compatibility', href: '/#compatibility' },
-  { label: 'Architecture', href: '/#architecture' },
-];
+  { label: "Features", href: "/#features" },
+  { label: "AI agents", href: "/#agents" },
+  { label: "Compatibility", href: "/#compatibility" },
+  { label: "Architecture", href: "/#architecture" },
+]
 
 const project = [
-  { label: 'Documentation', href: '/docs/' },
-  { label: 'Questions & answers', href: '/#faq' },
-  { label: 'Source on GitHub', href: 'https://github.com/velopulent/tako' },
+  { label: "Documentation", href: "/docs/" },
+  { label: "Questions & answers", href: "/#faq" },
+  { label: "Source on GitHub", href: "https://github.com/velopulent/tako" },
   {
-    label: 'AGPL v3 license',
-    href: 'https://github.com/velopulent/tako/blob/main/LICENSE',
+    label: "AGPL v3 license",
+    href: "https://github.com/velopulent/tako/blob/main/LICENSE",
   },
-];
+]
 ---
 
 <footer class="site-footer">
   <div class="footer-main wrap">
     <div class="footer-companion">
       <div class="footer-art" aria-hidden="true">
-        <span class="footer-orbit"></span><span class="footer-spark spark-a"
-          >✳</span
-        ><span class="footer-spark spark-b">+</span><img
+        <span class="footer-orbit"></span
+        ><span class="footer-spark spark-a">✳</span
+        ><span class="footer-spark spark-b">+</span>
+        <img
           src="/tako-mascot.avif"
           alt=""
           width="1254"
           height="1254"
           loading="lazy"
-        />
-      </div><div>
-        <p class="eyebrow">A good companion for your server</p><h2>
-          Good company.<br /><em>For your Linux.</em>
-        </h2><p>For the people and agents<br />looking after Linux.</p>
+        >
+      </div>
+      <div>
+        <p class="eyebrow">A good companion for your server</p>
+        <h2>Good company.<br><em>For your Linux.</em></h2>
+        <p>For the people and agents<br>looking after Linux.</p>
       </div>
     </div>
     <nav class="footer-nav" aria-label="Footer navigation">
       <div>
-        <h3>Explore Tako</h3>{
-          explore.map((link) => <a href={link.href}>{link.label}</a>)
-        }
-      </div><div>
-        <h3>The project</h3>{
-          project.map((link) => <a href={link.href}>{link.label}</a>)
-        }
+        <h3>Explore Tako</h3>
+        {explore.map((link) => <a href={link.href}>{link.label}</a>)}
+      </div>
+      <div>
+        <h3>The project</h3>
+        {project.map((link) => <a href={link.href}>{link.label}</a>)}
       </div>
     </nav>
   </div>
   <div class="footer-signoff wrap">
     <a class="footer-wordmark" href="/" aria-label="Tako home"
       >tako<span>.</span></a
-    ><div class="footer-signoff-note">
-      <p>Made for Linux.<br />Built in the open.</p><a
-        href="https://github.com/velopulent/tako"
+    >
+    <div class="footer-signoff-note">
+      <p>Made for Linux.<br>Built in the open.</p>
+      <a href="https://github.com/velopulent/tako"
         >Come build with us <Icon name="external" size={18} /></a
       >
-    </div><a class="footer-top" href="#" aria-label="Back to top">↑</a>
+    </div>
+    <a class="footer-top" href="#main" aria-label="Back to top">↑</a>
   </div>
   <div class="footer-bottom wrap">
-    <span>© {new Date().getFullYear()} Tako contributors</span><a
-      href="https://github.com/velopulent/tako/blob/main/LICENSE"
+    <span>© {new Date().getFullYear()} Tako contributors</span
+    ><a href="https://github.com/velopulent/tako/blob/main/LICENSE"
       >Free software, licensed under AGPL v3.</a
-    ><span>A product by <a href="https://velopulent.com?utm_source=tako" target="_blank" rel="noopener noreferrer">Velopulent</a></span>
+    ><span
+      >A product by
+      <a
+        href="https://velopulent.com?utm_source=tako"
+        target="_blank"
+        rel="noopener noreferrer"
+        >Velopulent</a
+      ></span
+    >
   </div>
 </footer>
 <script>
-  const footer = document.querySelector('.site-footer');
-  if (
-    footer &&
-    !matchMedia('(prefers-reduced-motion: reduce)').matches &&
-    'IntersectionObserver' in window
-  ) {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          footer.classList.add('footer-in-view');
-          observer.disconnect();
-        }
-      },
-      { threshold: 0.12 },
-    );
-    observer.observe(footer);
-  }
+const footer = document.querySelector(".site-footer")
+if (
+  footer &&
+  !matchMedia("(prefers-reduced-motion: reduce)").matches &&
+  "IntersectionObserver" in window
+) {
+  const observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        footer.classList.add("footer-in-view")
+        observer.disconnect()
+      }
+    },
+    { threshold: 0.12 }
+  )
+  observer.observe(footer)
+}
 </script>
 <style>
-  .site-footer {
-    background: var(--soft);
-    border-top: 1px solid var(--line);
-    overflow: clip;
-    padding-top: 65px;
+.site-footer {
+  background: var(--soft);
+  border-top: 1px solid var(--line);
+  overflow: clip;
+  padding-top: 65px;
+}
+.footer-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 60px;
+}
+.footer-companion {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-width: 0;
+}
+.footer-companion h2 {
+  font-size: clamp(30px, 3vw, 42px);
+  margin: 14px 0 16px;
+}
+.footer-companion p:not(.eyebrow) {
+  font-size: 15px;
+  line-height: 1.8;
+}
+.footer-art {
+  position: relative;
+  width: 155px;
+  flex-shrink: 0;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+.footer-art img {
+  width: 100%;
+  height: auto;
+  position: relative;
+  z-index: 1;
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.footer-art:hover img {
+  transform: translateY(-10px) rotate(10deg);
+}
+.footer-orbit {
+  position: absolute;
+  width: 125%;
+  height: 75%;
+  border: 1px dashed var(--accent);
+  border-radius: 50%;
+  transform: rotate(-25deg);
+  opacity: 0.4;
+}
+.footer-spark {
+  position: absolute;
+  color: var(--accent);
+}
+.spark-a {
+  left: 0;
+  top: -15px;
+  font-size: 25px;
+}
+.spark-b {
+  right: -10px;
+  bottom: 10px;
+  font-size: 26px;
+}
+.footer-nav {
+  display: flex;
+  gap: 60px;
+  flex-shrink: 0;
+}
+.footer-nav > div {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.footer-nav h3 {
+  font: 500 12px var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.footer-nav a {
+  font-size: 15px;
+}
+.footer-nav a:hover {
+  color: var(--accent);
+}
+.footer-signoff {
+  display: flex;
+  align-items: center;
+  gap: 50px;
+  border-bottom: 1px solid var(--line);
+  margin-top: 52px;
+  padding-bottom: 25px;
+}
+.footer-wordmark {
+  font: 500 clamp(110px, 18vw, 245px) / 0.9 var(--serif);
+  letter-spacing: -0.08em;
+  color: var(--ink);
+  padding-right: 0.08em;
+}
+.footer-wordmark span {
+  color: var(--accent);
+}
+.footer-signoff-note {
+  margin-top: 22px;
+}
+.footer-signoff-note p {
+  font-size: 16px;
+  line-height: 1.7;
+}
+.footer-signoff-note a {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 14px;
+  margin-top: 18px;
+  color: var(--accent);
+}
+.footer-top {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 25px;
+  transition:
+    background 0.2s,
+    transform 0.2s;
+}
+.footer-top:hover {
+  background: var(--paper);
+  transform: translateY(-4px);
+}
+.footer-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  padding-block: 24px 30px;
+}
+.footer-bottom a:hover {
+  color: var(--accent);
+}
+.footer-in-view .footer-art img {
+  animation: footer-wave 1.6s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+.footer-in-view .footer-wordmark {
+  animation: wordmark-arrive 1s 0.15s both;
+}
+.footer-in-view .footer-spark {
+  animation: spark-arrive 1.3s 0.35s backwards;
+}
+@keyframes footer-wave {
+  0% {
+    opacity: 0;
+    transform: translateY(30px) rotate(-12deg);
   }
+  45% {
+    opacity: 1;
+    transform: translateY(-12px) rotate(10deg);
+  }
+  70% {
+    transform: translateY(0) rotate(-5deg);
+  }
+  100% {
+    transform: none;
+  }
+}
+@keyframes wordmark-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(45px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes spark-arrive {
+  from {
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (max-width: 1000px) {
   .footer-main {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 60px;
+    align-items: flex-start;
+    gap: 35px;
   }
   .footer-companion {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    min-width: 0;
-  }
-  .footer-companion h2 {
-    font-size: clamp(30px, 3vw, 42px);
-    margin: 14px 0 16px;
-  }
-  .footer-companion p:not(.eyebrow) {
-    font-size: 15px;
-    line-height: 1.8;
+    flex-direction: column;
+    align-items: flex-start;
   }
   .footer-art {
-    position: relative;
-    width: 155px;
-    flex-shrink: 0;
-    aspect-ratio: 1;
-    display: grid;
-    place-items: center;
-  }
-  .footer-art img {
-    width: 100%;
-    height: auto;
-    position: relative;
-    z-index: 1;
-    transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
-  }
-  .footer-art:hover img {
-    transform: translateY(-10px) rotate(10deg);
-  }
-  .footer-orbit {
-    position: absolute;
-    width: 125%;
-    height: 75%;
-    border: 1px dashed var(--accent);
-    border-radius: 50%;
-    transform: rotate(-25deg);
-    opacity: 0.4;
-  }
-  .footer-spark {
-    position: absolute;
-    color: var(--accent);
-  }
-  .spark-a {
-    left: 0;
-    top: -15px;
-    font-size: 25px;
-  }
-  .spark-b {
-    right: -10px;
-    bottom: 10px;
-    font-size: 26px;
+    width: 125px;
   }
   .footer-nav {
-    display: flex;
-    gap: 60px;
-    flex-shrink: 0;
+    gap: 35px;
+    padding-top: 25px;
   }
-  .footer-nav > div {
-    display: flex;
+}
+@media (max-width: 640px) {
+  .site-footer {
+    padding-top: 40px;
+  }
+  .footer-main {
     flex-direction: column;
-    gap: 12px;
+    gap: 32px;
   }
-  .footer-nav h3 {
-    font: 500 12px var(--sans);
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--muted);
-    margin-bottom: 8px;
+  .footer-companion {
+    flex-direction: row;
+    gap: 20px;
+  }
+  .footer-art {
+    width: 95px;
+  }
+  .footer-companion h2 {
+    font-size: 30px;
+  }
+  .footer-companion .eyebrow {
+    font-size: 12px;
+  }
+  .footer-companion p:not(.eyebrow) {
+    font-size: 14px;
+  }
+  .footer-nav {
+    justify-content: space-between;
+    width: 100%;
+    padding-top: 10px;
+    gap: 25px;
   }
   .footer-nav a {
-    font-size: 15px;
-  }
-  .footer-nav a:hover {
-    color: var(--accent);
+    font-size: 14px;
   }
   .footer-signoff {
-    display: flex;
-    align-items: center;
-    gap: 50px;
-    border-bottom: 1px solid var(--line);
-    margin-top: 52px;
-    padding-bottom: 25px;
-  }
-  .footer-wordmark {
-    font: 500 clamp(110px, 18vw, 245px)/0.9 var(--serif);
-    letter-spacing: -0.08em;
-    color: var(--ink);
-    padding-right: 0.08em;
-  }
-  .footer-wordmark span {
-    color: var(--accent);
-  }
-  .footer-signoff-note {
-    margin-top: 22px;
-  }
-  .footer-signoff-note p {
-    font-size: 16px;
-    line-height: 1.7;
-  }
-  .footer-signoff-note a {
-    display: inline-flex;
-    gap: 10px;
-    align-items: center;
-    font-size: 14px;
-    margin-top: 18px;
-    color: var(--accent);
-  }
-  .footer-top {
-    margin-left: auto;
-    display: grid;
-    place-items: center;
-    width: 52px;
-    height: 52px;
-    border: 1px solid var(--line);
-    border-radius: 50%;
-    font-size: 25px;
-    transition:
-      background 0.2s,
-      transform 0.2s;
-  }
-  .footer-top:hover {
-    background: var(--paper);
-    transform: translateY(-4px);
-  }
-  .footer-bottom {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    margin-top: 45px;
     gap: 22px;
     flex-wrap: wrap;
+  }
+  .footer-wordmark {
+    font-size: clamp(110px, 35vw, 190px);
+  }
+  .footer-signoff-note {
+    order: 3;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 15px;
+    margin-top: 0;
+  }
+  .footer-signoff-note p {
+    font-size: 14px;
+  }
+  .footer-signoff-note a {
+    font-size: 13px;
+    margin-top: 0;
+  }
+  .footer-top {
+    width: 44px;
+    height: 44px;
+  }
+  .footer-bottom {
+    gap: 12px;
     font-size: 12px;
-    color: var(--muted);
-    padding-block: 24px 30px;
+    flex-direction: column;
   }
-  .footer-bottom a:hover {
-    color: var(--accent);
+}
+@media (max-width: 360px) {
+  .footer-art {
+    width: 75px;
   }
-  .footer-in-view .footer-art img {
-    animation: footer-wave 1.6s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  .footer-companion {
+    gap: 14px;
   }
-  .footer-in-view .footer-wordmark {
-    animation: wordmark-arrive 1s 0.15s both;
+  .footer-companion h2 {
+    font-size: 27px;
   }
+  .footer-signoff-note {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .footer-in-view .footer-art img,
+  .footer-in-view .footer-wordmark,
   .footer-in-view .footer-spark {
-    animation: spark-arrive 1.3s 0.35s backwards;
+    animation: none;
   }
-  @keyframes footer-wave {
-    0% {
-      opacity: 0;
-      transform: translateY(30px) rotate(-12deg);
-    }
-    45% {
-      opacity: 1;
-      transform: translateY(-12px) rotate(10deg);
-    }
-    70% {
-      transform: translateY(0) rotate(-5deg);
-    }
-    100% {
-      transform: none;
-    }
+  .footer-art img,
+  .footer-top {
+    transition: none;
   }
-  @keyframes wordmark-arrive {
-    from {
-      opacity: 0;
-      transform: translateY(45px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  @keyframes spark-arrive {
-    from {
-      opacity: 0;
-      transform: rotate(-90deg) scale(0.2);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  @media (max-width: 1000px) {
-    .footer-main {
-      align-items: flex-start;
-      gap: 35px;
-    }
-    .footer-companion {
-      flex-direction: column;
-      align-items: flex-start;
-    }
-    .footer-art {
-      width: 125px;
-    }
-    .footer-nav {
-      gap: 35px;
-      padding-top: 25px;
-    }
-  }
-  @media (max-width: 640px) {
-    .site-footer {
-      padding-top: 40px;
-    }
-    .footer-main {
-      flex-direction: column;
-      gap: 32px;
-    }
-    .footer-companion {
-      flex-direction: row;
-      gap: 20px;
-    }
-    .footer-art {
-      width: 95px;
-    }
-    .footer-companion h2 {
-      font-size: 30px;
-    }
-    .footer-companion .eyebrow {
-      font-size: 12px;
-    }
-    .footer-companion p:not(.eyebrow) {
-      font-size: 14px;
-    }
-    .footer-nav {
-      justify-content: space-between;
-      width: 100%;
-      padding-top: 10px;
-      gap: 25px;
-    }
-    .footer-nav a {
-      font-size: 14px;
-    }
-    .footer-signoff {
-      margin-top: 45px;
-      gap: 22px;
-      flex-wrap: wrap;
-    }
-    .footer-wordmark {
-      font-size: clamp(110px, 35vw, 190px);
-    }
-    .footer-signoff-note {
-      order: 3;
-      width: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 15px;
-      margin-top: 0;
-    }
-    .footer-signoff-note p {
-      font-size: 14px;
-    }
-    .footer-signoff-note a {
-      font-size: 13px;
-      margin-top: 0;
-    }
-    .footer-top {
-      width: 44px;
-      height: 44px;
-    }
-    .footer-bottom {
-      gap: 12px;
-      font-size: 12px;
-      flex-direction: column;
-    }
-  }
-  @media (max-width: 360px) {
-    .footer-art {
-      width: 75px;
-    }
-    .footer-companion {
-      gap: 14px;
-    }
-    .footer-companion h2 {
-      font-size: 27px;
-    }
-    .footer-signoff-note {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .footer-in-view .footer-art img,
-    .footer-in-view .footer-wordmark,
-    .footer-in-view .footer-spark {
-      animation: none;
-    }
-    .footer-art img,
-    .footer-top {
-      transition: none;
-    }
-  }
+}
 </style>
