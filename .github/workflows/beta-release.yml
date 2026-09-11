@@ -85,10 +85,13 @@ jobs:
       - name: Generate release checksums
         run: |
           set -euo pipefail
+          checksums_tmp=$(mktemp)
+          trap 'rm -f "$checksums_tmp"' EXIT
           cd release
           find . -maxdepth 1 -type f ! -name checksums.txt -print0 \
             | sort -z \
-            | xargs -0 sha256sum > checksums.txt
+            | xargs -0 sha256sum > "$checksums_tmp"
+          mv "$checksums_tmp" checksums.txt
       - uses: sigstore/cosign-installer@v3
       - name: Sign the release checksum manifest
         run: |
