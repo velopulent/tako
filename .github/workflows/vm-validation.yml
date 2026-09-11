@@ -2,7 +2,6 @@ name: Packaging VM validation
 
 on:
   workflow_call:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,6 +40,7 @@ jobs:
     # These labels are an explicit operator prerequisite. A beta release stays
     # blocked while a target VM runner is missing or offline.
     runs-on: [self-hosted, linux, "${{ matrix.vm_label }}"]
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Download native package
