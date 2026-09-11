@@ -17,12 +17,22 @@ export function SystemTerminal() {
         "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       fontSize: 14,
       scrollback: 5000,
-      theme: {
-        background: "#09090b",
-        foreground: "#fafafa",
-        cursor: "#fafafa",
-        selectionBackground: "#3f3f4680",
-      },
+    })
+    const applyTheme = () => {
+      const styles = getComputedStyle(document.documentElement)
+      const token = (name: string) => styles.getPropertyValue(name).trim()
+      terminal.options.theme = {
+        background: token("--terminal"),
+        foreground: token("--terminal-foreground"),
+        cursor: token("--terminal-foreground"),
+        selectionBackground: token("--terminal-selection"),
+      }
+    }
+    applyTheme()
+    const themeObserver = new MutationObserver(applyTheme)
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
     })
     const fit = new FitAddon()
     terminal.loadAddon(fit)
@@ -61,6 +71,7 @@ export function SystemTerminal() {
     observer.observe(container.current)
 
     return () => {
+      themeObserver.disconnect()
       observer.disconnect()
       input.dispose()
       resize.dispose()
@@ -70,8 +81,8 @@ export function SystemTerminal() {
   }, [])
 
   return (
-    <div className="overflow-hidden rounded-xl border bg-zinc-950 shadow-sm">
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2 text-xs text-zinc-400">
+    <div className="overflow-hidden rounded-xl border border-terminal-border bg-terminal text-terminal-foreground shadow-sm">
+      <div className="flex items-center justify-between border-b border-terminal-border px-4 py-2 text-xs text-terminal-muted">
         <span>Authenticated shell</span>
         <span aria-live="polite">{state}</span>
       </div>
