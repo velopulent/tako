@@ -16,6 +16,13 @@ jobs:
     permissions:
       contents: read
 
+  integration:
+    name: Required VM integration
+    needs: ci
+    uses: ./.github/workflows/integration.yml
+    permissions:
+      contents: read
+
   native-packages:
     name: Native package matrix
     needs: ci
@@ -40,7 +47,7 @@ jobs:
 
   evidence-gate:
     name: Verify all VM evidence
-    needs: [ci, native-packages, vm-validation, lifecycle-validation]
+    needs: [ci, integration, native-packages, vm-validation, lifecycle-validation]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -70,16 +77,18 @@ jobs:
           path: incoming
           merge-multiple: true
       - name: Fail closed unless every manifest target passed in a VM
-        run: TAKO_VM_COMMIT="$GITHUB_SHA" ./tools/release-gate incoming
+        run: TAKO_VM_COMMIT="$GITHUB_SHA" ./tools/release-gate incoming incoming
       - name: Assemble packages from the manifest
         run: bun tools/release-assemble incoming release
       - name: Record dependency inventory
         run: bun tools/release-dependencies release/dependency-inventory.json
       - name: Generate release checksums
         run: |
-          find release -maxdepth 1 -type f ! -name checksums.txt -print0 \
+          set -euo pipefail
+          cd release
+          find . -maxdepth 1 -type f ! -name checksums.txt -print0 \
             | sort -z \
-            | xargs -0 sha256sum > release/checksums.txt
+            | xargs -0 sha256sum > checksums.txt
       - uses: sigstore/cosign-installer@v3
       - name: Sign the release checksum manifest
         run: |
@@ -105,8 +114,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
