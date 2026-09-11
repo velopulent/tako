@@ -228,12 +228,11 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - name: Install GoReleaser for static configuration checks
-        env:
-          GOBIN: ${{ runner.temp }}/bin
-        run: |
-          mkdir -p "$GOBIN"
-          go install github.com/goreleaser/goreleaser/v2@v${{ vars.GORELEASER_VERSION || '2.18.0' }}
-          echo "$GOBIN" >> "$GITHUB_PATH"
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v${{ vars.GORELEASER_VERSION || '2.18.0' }}"
+          install-only: true
       - run: bun run package:check
       - run: bun run test:packaging
 
