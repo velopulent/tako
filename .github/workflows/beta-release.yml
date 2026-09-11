@@ -23,6 +23,13 @@ jobs:
     permissions:
       contents: read
 
+  lifecycle-validation:
+    name: Representative lifecycle validation
+    needs: ci
+    uses: ./.github/workflows/packaging-lifecycle.yml
+    permissions:
+      contents: read
+
   vm-validation:
     name: Disposable VM validation matrix
     needs: native-packages
@@ -33,7 +40,7 @@ jobs:
 
   evidence-gate:
     name: Verify all VM evidence
-    needs: [ci, native-packages, vm-validation]
+    needs: [ci, native-packages, vm-validation, lifecycle-validation]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -46,11 +53,20 @@ jobs:
         with:
           go-version-file: apps/backend/go.mod
           cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
       - uses: actions/download-artifact@v4
         with:
+          pattern: package-*
+          path: incoming
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vm-evidence-*
           path: incoming
           merge-multiple: true
       - name: Fail closed unless every manifest target passed in a VM
