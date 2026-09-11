@@ -494,11 +494,9 @@ func (server *Server) jobDetail(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	payload := map[string]any{"job": job}
-	// Software-update jobs carry a live observation of the PackageKit
-	// transaction so the UI can render real progress even though sessiond
-	// performs the update.
+	// Software-update jobs include current normalized manager progress.
 	if job.Kind == softwareUpdateJob {
-		observation := auth.UpdateObservation{Live: platform.InactiveUpdateLive()}
+		observation := auth.UpdateObservation{Progress: platform.UpdateProgress{Phase: "idle", Percent: -1, Message: "No update is running."}, Output: []platform.UpdateOutput{}}
 		if server.readUpdateLiveFn != nil {
 			if current, readErr := server.readUpdateLiveFn(request.Context()); readErr == nil {
 				observation = current
@@ -517,6 +515,11 @@ func (server *Server) cancelJob(writer http.ResponseWriter, request *http.Reques
 	}
 	if server.jobs == nil {
 		problem(writer, http.StatusServiceUnavailable, "jobs-unavailable", "Diagnostic jobs are unavailable")
+		return
+	}
+	current, lookupErr := server.jobs.GetJob(id)
+	if lookupErr == nil && current.Kind == softwareUpdateJob && current.State == JobRunning && current.Progress >= 20 {
+		problem(writer, http.StatusConflict, "update-not-cancelable", "Package commit has started and cannot be canceled safely")
 		return
 	}
 	job, err := server.jobs.Cancel(request.Context(), id)

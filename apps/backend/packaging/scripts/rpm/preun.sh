@@ -1,13 +1,10 @@
 #!/bin/sh
 set -eu
 
-if [ "${1:-0}" -eq 0 ]; then
-    for unit in tako.service tako-sessiond.service tako.socket tako-sessiond.socket; do
-        systemctl stop "$unit" >/dev/null 2>&1 || true
-    done
-    for unit in tako.service tako.socket tako-sessiond.socket; do
-        systemctl disable "$unit" >/dev/null 2>&1 || true
-    done
+systemd_runtime_dir="${TAKO_SYSTEMD_RUNTIME_DIR:-/run/systemd/system}"
+if [ "${1:-0}" -eq 0 ] && [ -d "$systemd_runtime_dir" ]; then
+    systemctl stop tako.service tako-sessiond.service tako.socket tako-sessiond.socket >/dev/null 2>&1 || true
+    systemctl disable tako-sessiond.socket tako.socket >/dev/null 2>&1 || true
 fi
 
 exit 0

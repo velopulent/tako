@@ -7,27 +7,69 @@ before:
     - bun nx build dashboard
 
 builds:
-  - id: tako
+  - &distro_build
+    id: debian13-amd64
     dir: apps/backend
     main: ./cmd/tako
     binary: tako
-    targets:
-      - linux_amd64_v1
-    env:
-      - CGO_ENABLED=1
-    flags:
-      - -trimpath
-      - -buildvcs=false
-    ldflags:
-      - -s -w -X github.com/velopulent/tako/internal/version.Value={{ .Version }}
+    goos: [linux]
+    goarch: [amd64]
+    env: [CGO_ENABLED=1]
+    flags: [-trimpath, -buildvcs=false]
+    tags: [debian]
+    ldflags: ["-s -w -X github.com/velopulent/tako/internal/version.Value={{ .Version }}"]
+  - <<: *distro_build
+    id: debian13-arm64
+    goarch: [arm64]
+  - <<: *distro_build
+    id: ubuntu2604-amd64
+    tags: [ubuntu]
+  - <<: *distro_build
+    id: ubuntu2604-arm64
+    goarch: [arm64]
+    tags: [ubuntu]
+  - <<: *distro_build
+    id: fedora44-amd64
+    tags: [fedora]
+  - <<: *distro_build
+    id: fedora44-arm64
+    goarch: [arm64]
+    tags: [fedora]
+  - <<: *distro_build
+    id: rhel102-amd64
+    tags: [rhel]
+  - <<: *distro_build
+    id: rhel102-arm64
+    goarch: [arm64]
+    tags: [rhel]
+  - <<: *distro_build
+    id: rocky102-amd64
+    tags: [rocky]
+  - <<: *distro_build
+    id: rocky102-arm64
+    goarch: [arm64]
+    tags: [rocky]
+  - <<: *distro_build
+    id: almalinux102-amd64
+    tags: [almalinux]
+  - <<: *distro_build
+    id: almalinux102-arm64
+    goarch: [arm64]
+    tags: [almalinux]
+  - <<: *distro_build
+    id: arch-rolling-amd64
+    tags: [archlinux]
+  - <<: *distro_build
+    id: opensuse160-amd64
+    tags: [opensuse]
+  - <<: *distro_build
+    id: opensuse160-arm64
+    goarch: [arm64]
+    tags: [opensuse]
 
 archives:
-  - formats:
-      - tar.gz
-    format_overrides:
-      - goos: linux
-        formats:
-          - none
+  - formats: [none]
+
 signs: []
 sboms: []
 
@@ -36,14 +78,12 @@ checksum:
   algorithm: sha256
 
 nfpms:
-  - id: tako
-    ids:
-      - tako
+  - &debian_package
+    id: debian-package
+    ids: [debian13-amd64, debian13-arm64]
     package_name: tako
-    formats:
-      - deb
-      - rpm
-    file_name_template: "{{ .ConventionalFileName }}"
+    formats: [deb]
+    file_name_template: "tako_{{ .Version }}_debian_{{ .Arch }}"
     bindir: /usr/bin
     vendor: Velopulent
     homepage: https://tako.velopulent.com
@@ -52,102 +92,160 @@ nfpms:
     license: AGPL-3.0-only
     section: admin
     priority: optional
+    dependencies: [systemd, libnss-systemd, libpam0g, dbus, polkitd, init-system-helpers, apt]
+    scripts:
+      postinstall: apps/backend/packaging/scripts/deb/postinst.sh
+      preremove: apps/backend/packaging/scripts/deb/prerm.sh
+      postremove: apps/backend/packaging/scripts/deb/postrm.sh
     contents:
-      - src: apps/backend/packaging/systemd/tako.service
-        dst: /usr/lib/systemd/system/tako.service
-      - src: apps/backend/packaging/systemd/tako.socket
-        dst: /usr/lib/systemd/system/tako.socket
-      - src: apps/backend/packaging/systemd/tako-sessiond.service
-        dst: /usr/lib/systemd/system/tako-sessiond.service
-      - src: apps/backend/packaging/systemd/tako-sessiond.socket
-        dst: /usr/lib/systemd/system/tako-sessiond.socket
-      - src: apps/backend/packaging/sysusers.d/tako.conf
-        dst: /usr/lib/sysusers.d/tako.conf
-      - src: apps/backend/packaging/tmpfiles.d/tako.conf
-        dst: /usr/lib/tmpfiles.d/tako.conf
-      - src: apps/backend/packaging/polkit/org.velopulent.tako.policy
-        dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy
-      - src: apps/backend/config.example.toml
-        dst: /usr/share/doc/tako/config.example.toml
-      - src: apps/backend/packaging/pam/tako.debian
-        dst: /etc/pam.d/tako
-        type: config|noreplace
-        packager: deb
-      - src: apps/backend/packaging/pam/tako.redhat
-        dst: /etc/pam.d/tako
-        type: config|noreplace
-        packager: rpm
-      - src: apps/backend/packaging/branding/debian.png
-        dst: /usr/share/tako/branding/debian.png
-        packager: deb
-        file_info:
-          mode: 0644
-          owner: root
-          group: root
-      - src: apps/backend/packaging/branding/ubuntu.png
-        dst: /usr/share/tako/branding/ubuntu.png
-        packager: deb
-        file_info:
-          mode: 0644
-          owner: root
-          group: root
-      - src: apps/backend/packaging/branding/almalinux.png
-        dst: /usr/share/tako/branding/almalinux.png
-        packager: rpm
-        file_info:
-          mode: 0644
-          owner: root
-          group: root
-      - src: apps/backend/packaging/branding/fedora.png
-        dst: /usr/share/tako/branding/fedora.png
-        packager: rpm
-        file_info:
-          mode: 0644
-          owner: root
-          group: root
-      - src: apps/backend/packaging/branding/opensuse.png
-        dst: /usr/share/tako/branding/opensuse.png
-        packager: rpm
-        file_info:
-          mode: 0644
-          owner: root
-          group: root
-      - src: apps/backend/packaging/branding/rockylinux.png
-        dst: /usr/share/tako/branding/rockylinux.png
-        packager: rpm
-        file_info:
-          mode: 0644
-          owner: root
-          group: root
-      - src: apps/backend/packaging/branding/rhel.png
-        dst: /usr/share/tako/branding/rhel.png
-        packager: rpm
-        file_info:
-          mode: 0644
-          owner: root
-          group: root
-    overrides:
-      deb:
-        dependencies:
-          - systemd
-          - libpam0g
-          - dbus
-          - polkitd
-          - packagekit
-          - packagekit-tools
-          - init-system-helpers
-        scripts:
-          postinstall: apps/backend/packaging/scripts/deb/postinst.sh
-          preremove: apps/backend/packaging/scripts/deb/prerm.sh
-          postremove: apps/backend/packaging/scripts/deb/postrm.sh
-      rpm:
-        dependencies:
-          - systemd
-          - pam
-          - dbus
-          - polkit
-          - PackageKit
-        scripts:
-          postinstall: apps/backend/packaging/scripts/rpm/post.sh
-          preremove: apps/backend/packaging/scripts/rpm/preun.sh
-          postremove: apps/backend/packaging/scripts/rpm/postun.sh
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako.debian, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/debian.png, dst: /usr/share/tako/branding/debian.png }
+
+  - <<: *debian_package
+    id: ubuntu-package
+    ids: [ubuntu2604-amd64, ubuntu2604-arm64]
+    file_name_template: "tako_{{ .Version }}_ubuntu_{{ .Arch }}"
+    contents:
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako.debian, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/ubuntu.png, dst: /usr/share/tako/branding/ubuntu.png }
+
+  - &fedora_package
+    id: fedora-package
+    ids: [fedora44-amd64, fedora44-arm64]
+    package_name: tako
+    formats: [rpm]
+    file_name_template: "tako_{{ .Version }}_fedora_{{ .Arch }}"
+    bindir: /usr/bin
+    vendor: Velopulent
+    homepage: https://tako.velopulent.com
+    maintainer: Tako maintainers
+    description: Linux administration dashboard
+    license: AGPL-3.0-only
+    section: admin
+    priority: optional
+    dependencies: [systemd, pam, dbus, polkit, dnf]
+    scripts: &rpm_scripts
+      postinstall: apps/backend/packaging/scripts/rpm/post.sh
+      preremove: apps/backend/packaging/scripts/rpm/preun.sh
+      postremove: apps/backend/packaging/scripts/rpm/postun.sh
+    contents:
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako.redhat, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/fedora.png, dst: /usr/share/tako/branding/fedora.png }
+
+  - <<: *fedora_package
+    id: rhel-package
+    ids: [rhel102-amd64, rhel102-arm64]
+    file_name_template: "tako_{{ .Version }}_rhel_{{ .Arch }}"
+    contents:
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako.redhat, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/rhel.png, dst: /usr/share/tako/branding/rhel.png }
+
+  - <<: *fedora_package
+    id: rocky-package
+    ids: [rocky102-amd64, rocky102-arm64]
+    file_name_template: "tako_{{ .Version }}_rocky_{{ .Arch }}"
+    contents:
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako.redhat, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/rocky.png, dst: /usr/share/tako/branding/rocky.png }
+
+  - <<: *fedora_package
+    id: almalinux-package
+    ids: [almalinux102-amd64, almalinux102-arm64]
+    file_name_template: "tako_{{ .Version }}_almalinux_{{ .Arch }}"
+    contents:
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako.redhat, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/almalinux.png, dst: /usr/share/tako/branding/almalinux.png }
+
+  - <<: *fedora_package
+    id: opensuse-package
+    ids: [opensuse160-amd64, opensuse160-arm64]
+    file_name_template: "tako_{{ .Version }}_opensuse_{{ .Arch }}"
+    dependencies: [systemd, pam, dbus-1, polkit, zypper]
+    contents:
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako.opensuse, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/opensuse.png, dst: /usr/share/tako/branding/opensuse.png }
+
+  - id: arch-package
+    ids: [arch-rolling-amd64]
+    package_name: tako
+    formats: [archlinux]
+    file_name_template: "tako_{{ .Version }}_archlinux_{{ .Arch }}"
+    bindir: /usr/bin
+    vendor: Velopulent
+    homepage: https://tako.velopulent.com
+    maintainer: Tako maintainers
+    description: Linux administration dashboard
+    license: AGPL-3.0-only
+    section: admin
+    priority: optional
+    dependencies: [systemd, pam, dbus, polkit, pacman, pacman-contrib]
+    scripts:
+      postinstall: apps/backend/packaging/scripts/arch/post.sh
+      preremove: apps/backend/packaging/scripts/arch/preun.sh
+    contents:
+      - { src: apps/backend/packaging/systemd/tako.service, dst: /usr/lib/systemd/system/tako.service }
+      - { src: apps/backend/packaging/systemd/tako.socket, dst: /usr/lib/systemd/system/tako.socket }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.service, dst: /usr/lib/systemd/system/tako-sessiond.service }
+      - { src: apps/backend/packaging/systemd/tako-sessiond.socket, dst: /usr/lib/systemd/system/tako-sessiond.socket }
+      - { src: apps/backend/packaging/sysusers.d/tako.conf, dst: /usr/lib/sysusers.d/tako.conf }
+      - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
+      - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
+      - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
+      - { src: apps/backend/packaging/pam/tako, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/branding/archlinux.png, dst: /usr/share/tako/branding/archlinux.png }

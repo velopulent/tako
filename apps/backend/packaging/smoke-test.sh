@@ -11,9 +11,12 @@ session_service_unit="${TAKO_SESSION_SERVICE_UNIT:-tako-sessiond.service}"
 base_url="${TAKO_BASE_URL:-https://127.0.0.1:9090}"
 
 test -x "$binary"
-systemctl is-enabled "$gateway_unit" >/dev/null
 systemctl is-enabled "$gateway_socket_unit" >/dev/null
 systemctl is-enabled "$session_socket_unit" >/dev/null
+gateway_unit_state="$(systemctl show -p UnitFileState --value "$gateway_unit")"
+session_unit_state="$(systemctl show -p UnitFileState --value "$session_service_unit")"
+test "$gateway_unit_state" = static
+test "$session_unit_state" = static
 systemctl is-active "$gateway_socket_unit" >/dev/null
 systemctl is-active "$session_socket_unit" >/dev/null
 if systemctl is-active --quiet "$gateway_unit"; then
@@ -67,5 +70,9 @@ fi
 systemctl stop "$gateway_unit" "$session_service_unit"
 systemctl is-active "$gateway_socket_unit" >/dev/null
 systemctl is-active "$session_socket_unit" >/dev/null
+if systemctl is-failed --quiet "$gateway_socket_unit" "$session_socket_unit"; then
+    echo "Tako socket entered failed state" >&2
+    exit 1
+fi
 
 echo "Tako packaging smoke test passed"

@@ -90,7 +90,9 @@ export function DataTable<T extends RowData>({
   toolbar,
   search,
   onSearchChange,
+  onScrollPosition,
 }: {
+  onScrollPosition?: (top: number) => void
   data: T[]
   columns: ColumnDef<DataTableFeatures, T>[]
   searchPlaceholder?: string
@@ -130,14 +132,18 @@ export function DataTable<T extends RowData>({
     },
   })
   const rows = table.getRowModel().rows
+  const virtualized = rows.length > 40
   const virtualizer = useVirtualizer({
+    enabled: virtualized,
     count: rows.length,
     getScrollElement: () => viewport.current,
     estimateSize: () => 42,
     overscan: 12,
     measureElement: (element) => element.getBoundingClientRect().height,
   })
-  const virtualRows = virtualizer.getVirtualItems()
+  const virtualRows = virtualized
+    ? virtualizer.getVirtualItems()
+    : rows.map((_, index) => ({ index, start: 0 }))
   const totalSize = table.getTotalSize()
   return (
     <div className="flex flex-col gap-3">
@@ -187,6 +193,9 @@ export function DataTable<T extends RowData>({
       </div>
       <ScrollArea
         viewportRef={viewport}
+        onViewportScroll={(event) =>
+          onScrollPosition?.(event.currentTarget.scrollTop)
+        }
         className="rounded-lg border"
         style={{ height }}
       >
@@ -249,7 +258,7 @@ export function DataTable<T extends RowData>({
           </TableHeader>
           <TableBody
             style={{
-              height: `${virtualizer.getTotalSize()}px`,
+              height: virtualized ? `${virtualizer.getTotalSize()}px` : "auto",
               position: "relative",
             }}
           >
@@ -260,7 +269,7 @@ export function DataTable<T extends RowData>({
                   key={row.id}
                   data-index={virtualRow.index}
                   ref={(node) => {
-                    virtualizer.measureElement(node)
+                    if (virtualized) virtualizer.measureElement(node)
                   }}
                   tabIndex={onRowClick ? 0 : undefined}
                   className={cn("flex", onRowClick && "cursor-pointer")}
@@ -273,8 +282,10 @@ export function DataTable<T extends RowData>({
                       onRowClick(row.original)
                   }}
                   style={{
-                    position: "absolute",
-                    transform: `translateY(${virtualRow.start}px)`,
+                    position: virtualized ? "absolute" : "relative",
+                    transform: virtualized
+                      ? `translateY(${virtualRow.start}px)`
+                      : undefined,
                     width: "100%",
                     minWidth: totalSize,
                     display: "flex",

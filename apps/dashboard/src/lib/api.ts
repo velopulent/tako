@@ -40,7 +40,11 @@ export type FileEntry = {
 }
 
 export type FileResult = {
+  uploadId?: string
   directory?: {
+    parent?: string
+    nextOffset?: number
+    hasMore?: boolean
     path: string
     entries: FileEntry[]
     showHidden: boolean
@@ -62,6 +66,14 @@ export type FileResult = {
   fingerprint?: string
   warnings?: string[]
   message?: string
+  uploads?: {
+    uploadId: string
+    path: string
+    offset: number
+    total: number
+    expiresAt: string
+    completed?: boolean
+  }[]
 }
 
 export type LoginPrompt = {
@@ -453,6 +465,7 @@ export type LocalGroupPreview = {
 export type MountPoint = {
   target: string
   root?: string
+  readOnly?: boolean
 }
 export type FileSystemInfo = {
   device: string
@@ -465,6 +478,78 @@ export type FileSystemInfo = {
   available: number
   percent: number
   targets: MountPoint[]
+}
+export type StoragePartition = {
+  path: string
+  name?: string
+  size: number
+  filesystem?: string
+  label?: string
+  uuid?: string
+  parent?: string
+  readOnly: boolean
+  mountPoints: MountPoint[]
+}
+export type StorageDevice = {
+  path: string
+  name: string
+  type: string
+  model?: string
+  serial?: string
+  transport?: string
+  size: number
+  readOnly: boolean
+  removable: boolean
+  partitions: StoragePartition[]
+  smart?: {
+    available: boolean
+    passed?: boolean
+    temperatureC?: number
+    powerOnHours?: number
+    failing?: boolean
+    reason?: string
+  }
+  nvme?: {
+    available: boolean
+    temperatureC?: number
+    percentageUsed?: number
+    criticalWarning?: number
+    reason?: string
+  }
+}
+export type StorageSnapshot = {
+  filesystems: FileSystemInfo[]
+  devices: StorageDevice[]
+  fingerprint: string
+  readOnly: boolean
+  reason?: string
+}
+export type StorageInventoryResponse = {
+  items: FileSystemInfo[]
+  devices: StorageDevice[]
+  fingerprint: string
+  readOnly: boolean
+  reason?: string
+}
+export type StorageOperation = {
+  action:
+    | "preview"
+    | "mount"
+    | "unmount"
+    | "persistent-mount"
+    | "persistent-unmount"
+  device: string
+  target?: string
+  filesystem?: string
+  options?: string[]
+  expectedFingerprint?: string
+  confirmation?: string
+}
+export type StorageState = {
+  snapshot: StorageSnapshot
+  action: string
+  applied: boolean
+  warning?: string
 }
 export type StorageSummary = {
   filesystems: number
@@ -518,7 +603,7 @@ export type NetworkResponse = {
   fingerprint?: string
 }
 export type NetworkOperation = {
-  backend: "NetworkManager" | "Netplan" | "systemd-networkd"
+  backend: "NetworkManager" | "Netplan" | "systemd-networkd" | "ifupdown"
   action:
     | "preview"
     | "dhcp"
@@ -532,6 +617,7 @@ export type NetworkOperation = {
   interface?: string
   connection?: string
   address?: string
+  addresses?: string[]
   gateway?: string
   dns?: string[]
   route?: string
@@ -539,6 +625,13 @@ export type NetworkOperation = {
   expectedFingerprint?: string
   confirmation?: string
   reconnectToken?: string
+  checkpoint?: string
+  ipv4Method?: string
+  ipv4Address?: string
+  ipv4Gateway?: string
+  ipv6Method?: string
+  ipv6Address?: string
+  ipv6Gateway?: string
 }
 export type NetworkState = {
   snapshot: NetworkResponse
@@ -546,6 +639,9 @@ export type NetworkState = {
   checkpoint?: string
   committed: boolean
   rollback: boolean
+  reconnectRequired?: boolean
+  reconnectToken?: string
+  rollbackDeadline?: string
   warning?: string
 }
 export type FirewallSnapshot = {
@@ -553,8 +649,12 @@ export type FirewallSnapshot = {
   active: boolean
   version?: string
   defaultZone?: string
+  persistentDefaultZone?: string
   zones: string[]
   rules: string[]
+  runtimeRules?: string[]
+  persistentRules?: string[]
+  synchronized: boolean
   conflicted: boolean
   readOnly: boolean
   reason?: string
@@ -562,7 +662,20 @@ export type FirewallSnapshot = {
 }
 export type FirewallOperation = {
   backend: "auto" | "firewalld" | "UFW"
-  action: string
+  action:
+    | "preview"
+    | "enable"
+    | "disable"
+    | "default-zone"
+    | "add-service"
+    | "remove-service"
+    | "add-port"
+    | "remove-port"
+    | "add-source"
+    | "remove-source"
+    | "reload"
+    | "commit"
+    | "rollback"
   zone?: string
   service?: string
   port?: string
@@ -571,11 +684,19 @@ export type FirewallOperation = {
   expectedFingerprint?: string
   confirmation?: string
   persist?: boolean
+  rollbackSeconds?: number
+  checkpoint?: string
+  rollbackToken?: string
 }
 export type FirewallState = {
   snapshot: FirewallSnapshot
   action: string
   applied: boolean
+  committed?: boolean
+  rollbackRequired?: boolean
+  checkpoint?: string
+  rollbackToken?: string
+  rollbackDeadline?: string
   warning?: string
 }
 export type SecurityFinding = {
@@ -599,11 +720,33 @@ export type SecurityStatus = {
     kernelPresent: boolean
     userspace: boolean
     profiles: string[]
+    profileModes?: Record<string, string>
     denials: string[]
   }
   active: string
   findings: SecurityFinding[]
+  changes?: { field: string; before?: string; after?: string }[]
+  warnings?: string[]
+  stale?: boolean
+  allowed?: boolean
+  requiresConfirmation?: boolean
   fingerprint: string
+}
+export type SecurityOperation = {
+  action:
+    | "inspect"
+    | "selinux-boolean"
+    | "selinux-restorecon"
+    | "apparmor-enforce"
+    | "apparmor-complain"
+    | "apparmor-load"
+  framework: "SELinux" | "AppArmor"
+  boolean?: string
+  value?: boolean
+  path?: string
+  profile?: string
+  expectedFingerprint?: string
+  confirmation?: string
 }
 export type IncidentEvent = {
   id: string
@@ -663,6 +806,7 @@ export type UnitConfiguration = {
   truncated: boolean
 }
 export type LogEntry = {
+  id?: string
   timestamp: string
   priority: string
   unit: string
@@ -734,29 +878,35 @@ export type UpdateRecovery = {
   reason?: string
 }
 export type UpdateOperation = {
-  scope: "all" | "selected"
-  packages?: string[]
-  expectedFingerprint?: string
-  confirmation?: string
-  preview?: boolean
+  expectedFingerprint: string
+  confirmed: boolean
+  riskAccepted?: boolean
+}
+export type UpdateChange = {
+  action: "install" | "upgrade" | "remove" | "downgrade" | "replace" | string
+  name: string
+  architecture?: string
+  currentVersion?: string
+  candidateVersion?: string
+  currentRepository?: string
+  targetRepository?: string
+  currentVendor?: string
+  targetVendor?: string
 }
 export type UpdatePreview = {
-  operation: UpdateOperation
   current: UpdateStatus
-  selected: UpdatePackage[]
-  changes: string[]
+  changes: UpdateChange[]
   warnings: string[]
   fingerprint: string
   stale: boolean
   allowed: boolean
   requiresConfirmation: boolean
+  requiresRiskConfirmation: boolean
   reason?: string
 }
 export type UpdateResult = {
   backend: string
-  scope: "all" | "selected"
-  packages: string[]
-  updated: UpdatePackage[]
+  changes: UpdateChange[]
   verified: boolean
   message: string
   fingerprint: string
@@ -780,49 +930,34 @@ export type UpdatePackage = {
   markdown?: boolean
   groupKey?: string
   dependencies?: string[]
-  packageId?: string
 }
 export type UpdateHistoryEntry = {
   time: number
   packages: Record<string, string>
 }
-export type UpdateActionLogEntry = {
-  status: number
-  statusLabel: string
-  packageId: string
-  timestamp?: string
-}
-export type UpdateLive = {
+export type UpdateProgress = {
+  sequence: number
+  jobId?: string
   active: boolean
-  source?: string
-  percentage: number
-  allowCancel: boolean
-  status?: string
-  currentPackage?: string
-  remainingSeconds?: number
-  transactionPath?: string
+  phase: string
+  package?: string
+  current: number
+  total: number
+  percent: number
+  message: string
+  cancelable: boolean
+  timestamp: string
+}
+export type UpdateOutput = {
+  sequence: number
+  jobId?: string
+  stream: "stdout" | "stderr" | string
+  line: string
+  timestamp: string
 }
 export type UpdateObservation = {
-  live: UpdateLive
-  log: UpdateActionLogEntry[]
-}
-export type AutoUpdatesConfig = {
-  available: boolean
-  supported: boolean
-  installed: boolean
-  enabled: boolean
-  type: "all" | "security"
-  day: "" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
-  time: string
-  provider?: string
-  packageName?: string
-  reason?: string
-}
-export type AutoUpdatesOperation = {
-  enabled?: boolean
-  type?: "all" | "security"
-  day?: "" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
-  time?: string
+  progress: UpdateProgress
+  output: UpdateOutput[]
 }
 export type KpatchStatus = {
   supported: boolean

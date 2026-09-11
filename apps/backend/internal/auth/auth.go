@@ -135,11 +135,11 @@ type Request struct {
 	PasswordChange      *PasswordChangeOperation              `json:"passwordChange,omitempty"`
 	SSHKeys             *platform.SSHKeyOperation             `json:"sshKeys,omitempty"`
 	Updates             *platform.UpdateOperation             `json:"updates,omitempty"`
-	AutoUpdates         *platform.AutoUpdatesOperation        `json:"autoUpdates,omitempty"`
 	Kpatch              *platform.KpatchOperation             `json:"kpatch,omitempty"`
 	File                *platform.FileOperation               `json:"file,omitempty"`
 	Journal             *platform.JournalQuery                `json:"journal,omitempty"`
 	Network             *platform.NetworkOperation            `json:"network,omitempty"`
+	Storage             *platform.StorageOperation            `json:"storage,omitempty"`
 	Firewall            *platform.FirewallOperation           `json:"firewall,omitempty"`
 	Security            *platform.SecurityOperation           `json:"security,omitempty"`
 	SupportReport       *platform.SupportReportOperation      `json:"supportReport,omitempty"`
@@ -154,11 +154,10 @@ type Request struct {
 	StorageRead         *StorageReadOperation                 `json:"storageRead,omitempty"`
 	NetworkRead         *NetworkReadOperation                 `json:"networkRead,omitempty"`
 	UpdateRead          *UpdateReadOperation                  `json:"updateRead,omitempty"`
+	UpdatePreview       *platform.UpdateOperation             `json:"updatePreview,omitempty"`
 	UpdateRefresh       *UpdateRefreshOperation               `json:"updateRefresh,omitempty"`
 	UpdateHistoryRead   *UpdateHistoryReadOperation           `json:"updateHistoryRead,omitempty"`
 	UpdateLiveRead      *UpdateLiveReadOperation              `json:"updateLiveRead,omitempty"`
-	UpdateCancel        *UpdateCancelOperation                `json:"updateCancel,omitempty"`
-	AutoUpdatesRead     *AutoUpdatesReadOperation             `json:"autoUpdatesRead,omitempty"`
 	KpatchRead          *KpatchReadOperation                  `json:"kpatchRead,omitempty"`
 	CapabilitiesRead    *CapabilitiesReadOperation            `json:"capabilitiesRead,omitempty"`
 	LoginHistoryRead    *LoginHistoryReadOperation            `json:"loginHistoryRead,omitempty"`
@@ -280,11 +279,6 @@ type UpdateRequest struct {
 	Operation  platform.UpdateOperation
 }
 
-type AutoUpdatesRequest struct {
-	AdminToken string
-	Operation  platform.AutoUpdatesOperation
-}
-
 type KpatchRequest struct {
 	AdminToken string
 	Operation  platform.KpatchOperation
@@ -306,6 +300,11 @@ type JournalRequest struct {
 type NetworkRequest struct {
 	AdminToken string
 	Operation  platform.NetworkOperation
+}
+
+type StorageRequest struct {
+	AdminToken string
+	Operation  platform.StorageOperation
 }
 
 type FirewallRequest struct {
@@ -613,32 +612,6 @@ func ApplyUpdates(ctx context.Context, path string, request UpdateRequest) (plat
 	return *response.UpdateResult, nil
 }
 
-// ApplyAutoUpdatesConfig mutates automatic-update configuration through
-// sessiond; the gateway never edits package-manager configuration itself.
-func ApplyAutoUpdatesConfig(ctx context.Context, path string, request AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
-	operation := request.Operation
-	response, err := socketRequest(ctx, path, Request{Operation: "updates-auto", AdminToken: request.AdminToken, AutoUpdates: &operation})
-	if err != nil {
-		return platform.AutoUpdatesConfig{}, err
-	}
-	if response.Error != "" {
-		switch response.Error {
-		case "invalid-auto-updates-operation":
-			return platform.AutoUpdatesConfig{}, platform.ErrInvalidAutoUpdatesOperation
-		case "auto-updates-unavailable":
-			return platform.AutoUpdatesConfig{}, platform.ErrAutoUpdatesUnavailable
-		case "auto-updates-apply-failed":
-			return platform.AutoUpdatesConfig{}, platform.ErrAutoUpdatesApply
-		default:
-			return platform.AutoUpdatesConfig{}, errors.New(response.Error)
-		}
-	}
-	if response.AutoUpdatesConfig == nil {
-		return platform.AutoUpdatesConfig{}, ErrServiceUnavailable
-	}
-	return *response.AutoUpdatesConfig, nil
-}
-
 // ApplyKpatchSettings turns kernel live patching on or off through sessiond.
 func ApplyKpatchSettings(ctx context.Context, path string, request KpatchRequest) (platform.KpatchSettingsStatus, error) {
 	operation := request.Operation
@@ -795,6 +768,36 @@ func ApplyNetwork(ctx context.Context, path string, request NetworkRequest) (pla
 	return *response.NetworkState, nil
 }
 
+func PreviewStorage(ctx context.Context, path string, request StorageRequest) (platform.StorageState, error) {
+	operation := request.Operation
+	operation.Action = "preview"
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "storage", AdminToken: request.AdminToken, Storage: &operation}, 30*time.Second, 8<<20)
+	if err != nil {
+		return platform.StorageState{}, err
+	}
+	if response.Error != "" {
+		return platform.StorageState{}, storageResponseError(response.Error)
+	}
+	if response.StorageState == nil {
+		return platform.StorageState{}, ErrServiceUnavailable
+	}
+	return *response.StorageState, nil
+}
+
+func ApplyStorage(ctx context.Context, path string, request StorageRequest) (platform.StorageState, error) {
+	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "storage", AdminToken: request.AdminToken, Storage: &request.Operation}, 2*time.Minute, 8<<20)
+	if err != nil {
+		return platform.StorageState{}, err
+	}
+	if response.Error != "" {
+		return platform.StorageState{}, storageResponseError(response.Error)
+	}
+	if response.StorageState == nil {
+		return platform.StorageState{}, ErrServiceUnavailable
+	}
+	return *response.StorageState, nil
+}
+
 func PreviewFirewall(ctx context.Context, path string, request FirewallRequest) (platform.FirewallState, error) {
 	operation := request.Operation
 	operation.Action = "preview"
@@ -827,7 +830,9 @@ func ApplyFirewall(ctx context.Context, path string, request FirewallRequest) (p
 
 func PreviewSecurity(ctx context.Context, path string, request SecurityRequest) (platform.SecurityStatus, error) {
 	operation := request.Operation
-	operation.Action = "inspect"
+	if operation.Action == "" {
+		operation.Action = "inspect"
+	}
 	response, err := socketRequestWithLimit(ctx, path, Request{Operation: "security", AdminToken: request.AdminToken, Security: &operation}, 30*time.Second, 512<<10)
 	if err != nil {
 		return platform.SecurityStatus{}, err
@@ -887,6 +892,23 @@ func securityResponseError(code string) error {
 	}
 }
 
+func storageResponseError(code string) error {
+	switch code {
+	case "invalid-storage-operation":
+		return platform.ErrInvalidStorageOperation
+	case "storage-conflict":
+		return platform.ErrStorageConflict
+	case "storage-unsafe":
+		return platform.ErrStorageUnsafe
+	case "storage-busy":
+		return platform.ErrStorageBusy
+	case "storage-unavailable":
+		return platform.ErrStorageUnavailable
+	default:
+		return errors.New(code)
+	}
+}
+
 func firewallResponseError(code string) error {
 	switch code {
 	case "invalid-firewall-operation":
@@ -897,6 +919,8 @@ func firewallResponseError(code string) error {
 		return platform.ErrFirewallOwnership
 	case "firewall-access-risk":
 		return platform.ErrFirewallAccessRisk
+	case "firewall-checkpoint-invalid":
+		return platform.ErrFirewallCheckpoint
 	case "firewall-unavailable":
 		return platform.ErrFirewallUnavailable
 	default:
@@ -912,6 +936,8 @@ func networkResponseError(code string) error {
 		return platform.ErrNetworkConflict
 	case "network-ownership-conflict":
 		return platform.ErrNetworkOwnership
+	case "network-checkpoint-invalid":
+		return platform.ErrNetworkCheckpoint
 	case "network-unavailable":
 		return platform.ErrNetworkUnavailable
 	default:
@@ -1107,12 +1133,13 @@ type Response struct {
 	SSHKeyState            *platform.SSHKeyState               `json:"sshKeyState,omitempty"`
 	SSHKeyPreview          *platform.SSHKeyPreview             `json:"sshKeyPreview,omitempty"`
 	UpdateResult           *platform.UpdateResult              `json:"updateResult,omitempty"`
-	AutoUpdatesConfig      *platform.AutoUpdatesConfig         `json:"autoUpdatesConfig,omitempty"`
+	UpdatePreview          *platform.UpdatePreview             `json:"updatePreview,omitempty"`
 	KpatchSettings         *platform.KpatchSettingsStatus      `json:"kpatchSettings,omitempty"`
 	FileResult             *platform.FileResult                `json:"fileResult,omitempty"`
 	JournalPage            *platform.JournalPage               `json:"journalPage,omitempty"`
 	LogEntry               *platform.LogEntry                  `json:"logEntry,omitempty"`
 	NetworkState           *platform.NetworkState              `json:"networkState,omitempty"`
+	StorageState           *platform.StorageState              `json:"storageState,omitempty"`
 	FirewallState          *platform.FirewallState             `json:"firewallState,omitempty"`
 	SecurityStatus         *platform.SecurityStatus            `json:"securityStatus,omitempty"`
 	SupportReport          *platform.SupportReport             `json:"supportReport,omitempty"`
@@ -1128,11 +1155,11 @@ type Response struct {
 	SignalPreview          *platform.SignalPreview             `json:"signalPreview,omitempty"`
 	IdentityInventory      *platform.IdentityInventory         `json:"identityInventory,omitempty"`
 	Filesystems            []platform.Filesystem               `json:"filesystems,omitempty"`
+	StorageSnapshot        *platform.StorageSnapshot           `json:"storageSnapshot,omitempty"`
 	NetworkSnapshot        *platform.NetworkSnapshot           `json:"networkSnapshot,omitempty"`
 	UpdateStatus           *platform.UpdateStatus              `json:"updateStatus,omitempty"`
 	UpdateHistory          []platform.UpdateHistoryEntry       `json:"updateHistory,omitempty"`
 	UpdateObservation      *UpdateObservation                  `json:"updateObservation,omitempty"`
-	UpdateCanceled         *bool                               `json:"updateCanceled,omitempty"`
 	KpatchStatus           *platform.KpatchStatus              `json:"kpatchStatus,omitempty"`
 	Capabilities           []platform.Capability               `json:"capabilities,omitempty"`
 	LoginHistoryPage       *platform.LoginHistoryPage          `json:"loginHistoryPage,omitempty"`

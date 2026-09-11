@@ -1,6 +1,7 @@
 /bin/
 /dist/
 /coverage/
+/apps/dashboard/coverage/
 /apps/backend/internal/dashboard/dist/*
 !/apps/backend/internal/dashboard/dist/index.html
 node_modules/

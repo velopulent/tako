@@ -9,8 +9,8 @@ Restart=on-failure
 RestartSec=2s
 PrivateTmp=true
 # Sessiond setuid-execs `tako bridge` as the authenticated user. That child
-# inherits this unit's sandbox, so the unit must look like a login helper
-# (cockpit-session), not like the network gateway. It deliberately keeps
+# inherits this unit's sandbox, so the unit must look like a login helper,
+# not like the network gateway. It deliberately keeps
 # /home visible and does not use NoNewPrivileges: PAM and the user bridge need
 # the root helper to retain the authority to establish the authenticated UID.
 ProtectSystem=true

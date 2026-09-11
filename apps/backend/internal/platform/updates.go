@@ -8,23 +8,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
-
-	"github.com/godbus/dbus/v5"
-	"github.com/velopulent/tako/internal/packagekit"
+	"unicode/utf8"
 )
 
 const (
 	MaxUpdatePackages = 500
+	MaxUpdateHistory  = 20
 	maxUpdateOutput   = 4 << 20
+	maxLiveOutput     = 1 << 20
+	maxLiveEvents     = 500
+	maxLiveLine       = 8 << 10
 )
+
+var ansiUpdatePattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 var (
 	ErrInvalidUpdateOperation = errors.New("invalid update operation")
@@ -33,6 +39,7 @@ var (
 	ErrUpdateUnavailable      = errors.New("update backend unavailable")
 	ErrUpdateVerification     = errors.New("update verification failed")
 	ErrUpdateApply            = errors.New("update command failed")
+	ErrUpdateRiskNotAccepted  = errors.New("risky update plan was not accepted")
 )
 
 type UpdatePackage struct {
@@ -53,7 +60,17 @@ type UpdatePackage struct {
 	Markdown         bool     `json:"markdown,omitempty"`
 	GroupKey         string   `json:"groupKey,omitempty"`
 	Dependencies     []string `json:"dependencies,omitempty"`
-	PackageID        string   `json:"packageId,omitempty"`
+}
+
+type UpdateRecovery struct {
+	Authoritative   bool     `json:"authoritative"`
+	RebootRequired  bool     `json:"rebootRequired"`
+	RestartServices []string `json:"restartServices"`
+	RebootPackages  []string `json:"rebootPackages,omitempty"`
+	ManualPackages  []string `json:"manualPackages,omitempty"`
+	Hints           []string `json:"hints"`
+	Source          string   `json:"source"`
+	Reason          string   `json:"reason,omitempty"`
 }
 
 type UpdateStatus struct {
@@ -72,64 +89,192 @@ type UpdateStatus struct {
 	TimeSinceRefresh *int64          `json:"timeSinceRefresh,omitempty"`
 }
 
-// UpdateRecovery describes post-update work without pretending that every
-// package backend can authoritatively determine restart requirements.
-type UpdateRecovery struct {
-	Authoritative   bool     `json:"authoritative"`
-	RebootRequired  bool     `json:"rebootRequired"`
-	RestartServices []string `json:"restartServices"`
-	RebootPackages  []string `json:"rebootPackages,omitempty"`
-	ManualPackages  []string `json:"manualPackages,omitempty"`
-	Hints           []string `json:"hints"`
-	Source          string   `json:"source"`
-	Reason          string   `json:"reason,omitempty"`
+type UpdateChange struct {
+	Action            string `json:"action"`
+	Name              string `json:"name"`
+	Architecture      string `json:"architecture,omitempty"`
+	CurrentVersion    string `json:"currentVersion,omitempty"`
+	CandidateVersion  string `json:"candidateVersion,omitempty"`
+	CurrentRepository string `json:"currentRepository,omitempty"`
+	TargetRepository  string `json:"targetRepository,omitempty"`
+	CurrentVendor     string `json:"currentVendor,omitempty"`
+	TargetVendor      string `json:"targetVendor,omitempty"`
 }
 
-type updateCommandResult struct {
-	Output   string
-	ExitCode int
-	Err      error
+func (change UpdateChange) Risky() bool {
+	return change.Action == "remove" || change.Action == "downgrade" || change.Action == "replace" ||
+		(change.CurrentRepository != "" && change.TargetRepository != "" && change.CurrentRepository != change.TargetRepository) ||
+		(change.CurrentVendor != "" && change.TargetVendor != "" && change.CurrentVendor != change.TargetVendor)
 }
 
-type updateDependencies struct {
-	packageKitAvailable func(context.Context) bool
-	packageKitDBusFetch func(context.Context) ([]UpdatePackage, string, error)
-	packageKitLocked    func(context.Context) bool
-	commandExists       func(string) bool
-	commandVersion      func(context.Context, string, ...string) (string, bool)
-	commandOutput       func(context.Context, string, ...string) updateCommandResult
-	lockHeld            func(string) bool
+type UpdateOperation struct {
+	ExpectedFingerprint string `json:"expectedFingerprint"`
+	Confirmed           bool   `json:"confirmed"`
+	RiskAccepted        bool   `json:"riskAccepted,omitempty"`
+	JobID               string `json:"-"`
 }
 
-// Updates reports read-only installed-software updates. It deliberately does
-// not invoke package installation or refresh package metadata.
-func Updates(ctx context.Context) UpdateStatus {
-	// The inventory budget must cover a cold PackageKit daemon (activation +
-	// GetUpdates + batched GetUpdateDetail) and, when D-Bus is unavailable,
-	// the pkcon CLI fallback. Callers above allow 30s, so 25s keeps us inside
-	// their deadline while giving slow backends a real chance.
+type UpdatePreview struct {
+	Current                  UpdateStatus   `json:"current"`
+	Changes                  []UpdateChange `json:"changes"`
+	Warnings                 []string       `json:"warnings"`
+	Fingerprint              string         `json:"fingerprint"`
+	Stale                    bool           `json:"stale"`
+	Allowed                  bool           `json:"allowed"`
+	RequiresConfirmation     bool           `json:"requiresConfirmation"`
+	RequiresRiskConfirmation bool           `json:"requiresRiskConfirmation"`
+	Reason                   string         `json:"reason,omitempty"`
+}
+
+type UpdateResult struct {
+	Backend     string         `json:"backend"`
+	Changes     []UpdateChange `json:"changes"`
+	Verified    bool           `json:"verified"`
+	Message     string         `json:"message"`
+	Fingerprint string         `json:"fingerprint"`
+	Recovery    UpdateRecovery `json:"recovery"`
+}
+
+type UpdateHistoryEntry struct {
+	Time     int64             `json:"time"`
+	Packages map[string]string `json:"packages"`
+}
+
+type UpdateProgress struct {
+	Sequence   uint64 `json:"sequence"`
+	JobID      string `json:"jobId,omitempty"`
+	Active     bool   `json:"active"`
+	Phase      string `json:"phase"`
+	Package    string `json:"package,omitempty"`
+	Current    int    `json:"current"`
+	Total      int    `json:"total"`
+	Percent    int    `json:"percent"`
+	Message    string `json:"message"`
+	Cancelable bool   `json:"cancelable"`
+	Timestamp  string `json:"timestamp"`
+}
+
+type UpdateOutput struct {
+	Sequence  uint64 `json:"sequence"`
+	JobID     string `json:"jobId,omitempty"`
+	Stream    string `json:"stream"`
+	Line      string `json:"line"`
+	Timestamp string `json:"timestamp"`
+}
+
+type UpdateStreamEvent struct {
+	Kind     string         `json:"kind"`
+	Progress UpdateProgress `json:"progress,omitempty"`
+	Output   UpdateOutput   `json:"output,omitempty"`
+}
+
+type UpdateObservation struct {
+	Progress UpdateProgress      `json:"progress"`
+	Output   []UpdateOutput      `json:"output"`
+	Events   []UpdateStreamEvent `json:"events,omitempty"`
+}
+
+type UpdateProvider interface {
+	Name() string
+	Probe(context.Context) (string, error)
+	Inventory(context.Context) ([]UpdatePackage, error)
+	Refresh(context.Context, bool, func(UpdateStreamEvent)) error
+	Plan(context.Context) ([]UpdateChange, error)
+	Apply(context.Context, func(UpdateStreamEvent)) error
+	History(context.Context, int) ([]UpdateHistoryEntry, error)
+	Recovery(context.Context) UpdateRecovery
+	LockStatus(context.Context) (bool, string)
+}
+
+type updateWorkerEnvelope struct {
+	Event  *UpdateStreamEvent `json:"event,omitempty"`
+	Result *UpdateResult      `json:"result,omitempty"`
+	Error  string             `json:"error,omitempty"`
+}
+
+type updateWorkerJob struct {
+	ExpectedFingerprint string `json:"expectedFingerprint"`
+	Confirmed           bool   `json:"confirmed"`
+	RiskAccepted        bool   `json:"riskAccepted,omitempty"`
+	JobID               string `json:"jobId"`
+}
+
+type UpdateService struct {
+	provider         UpdateProvider
+	operationMu      sync.Mutex
+	mu               sync.Mutex
+	sequence         uint64
+	progress         UpdateProgress
+	events           []UpdateStreamEvent
+	eventBytes       int
+	subscribers      map[chan UpdateStreamEvent]struct{}
+	activeJob        string
+	workerExecutable string
+	eventHook        func(UpdateStreamEvent)
+}
+
+func NewUpdateService(provider UpdateProvider) *UpdateService {
+	return &UpdateService{provider: provider, progress: UpdateProgress{Phase: "idle", Percent: -1, Message: "No update is running."}, subscribers: make(map[chan UpdateStreamEvent]struct{})}
+}
+
+func (service *UpdateService) UseWorker(executable string)               { service.workerExecutable = executable }
+func (service *UpdateService) SetEventHook(hook func(UpdateStreamEvent)) { service.eventHook = hook }
+func (service *UpdateService) ProviderName() string {
+	if service == nil || service.provider == nil {
+		return "none"
+	}
+	return service.provider.Name()
+}
+
+func ValidateUpdateOperation(operation UpdateOperation, applying bool) error {
+	if len(operation.ExpectedFingerprint) != sha256.Size*2 {
+		return ErrInvalidUpdateOperation
+	}
+	if _, err := hex.DecodeString(operation.ExpectedFingerprint); err != nil {
+		return ErrInvalidUpdateOperation
+	}
+	if applying && !operation.Confirmed {
+		return ErrInvalidUpdateOperation
+	}
+	if len(operation.JobID) > 128 || strings.ContainsAny(operation.JobID, "\x00\r\n/") {
+		return ErrInvalidUpdateOperation
+	}
+	return nil
+}
+
+func (service *UpdateService) Status(ctx context.Context) UpdateStatus {
+	if service == nil || service.provider == nil {
+		return unavailableUpdateStatus("No distro update provider was configured")
+	}
 	deadline, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	status := updatesWithDependencies(deadline, defaultUpdateDependencies())
-	status.Fingerprint = UpdateFingerprint(status)
-	// Use a fresh timeout for recovery so inventory time does not starve the
-	// reboot check (the dnf fallback may probe up to three needs-restarting
-	// modes).
-	recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 6*time.Second)
-	defer recoveryCancel()
-	status.Recovery = UpdateRecoveryForBackend(recoveryCtx, status.Backend)
-	// Populate TimeSinceRefresh via GetTimeSinceAction(REFRESH_CACHE)
-	if status.Backend == "PackageKit" {
-		if client, err := packagekit.New(); err == nil {
-			refreshCtx, refreshCancel := context.WithTimeout(ctx, 3*time.Second)
-			if secs, err := client.GetTimeSinceAction(refreshCtx, packagekit.RoleRefreshCache); err == nil {
-				status.TimeSinceRefresh = &secs
-			}
-			refreshCancel()
-			client.Close()
-		}
+	version, err := service.provider.Probe(deadline)
+	if err != nil {
+		return unavailableUpdateStatus(err.Error())
 	}
-	status.LastChecked = time.Now().UTC().Format(time.RFC3339)
+	packages, err := service.provider.Inventory(deadline)
+	if err != nil {
+		status := unavailableUpdateStatus(err.Error())
+		status.Backend, status.Version = service.provider.Name(), version
+		return status
+	}
+	packages = SortUpdatePackages(packages)
+	locked, reason := service.provider.LockStatus(deadline)
+	status := UpdateStatus{Available: true, Backend: service.provider.Name(), Version: version, Contract: "native-distro-provider", Packages: packages, ExternalLock: locked, LockReason: reason, LastChecked: time.Now().UTC().Format(time.RFC3339), Recovery: service.provider.Recovery(deadline)}
+	status.Message = updateMessage(len(packages))
+	status.Fingerprint = UpdateFingerprint(status)
+	normalizeUpdateStatus(&status)
+	return status
+}
+
+func unavailableUpdateStatus(reason string) UpdateStatus {
+	status := UpdateStatus{Backend: "none", Contract: "unavailable", Packages: []UpdatePackage{}, Message: "No supported update backend is available", Reason: reason}
+	normalizeUpdateStatus(&status)
+	status.Fingerprint = UpdateFingerprint(status)
+	return status
+}
+
+func normalizeUpdateStatus(status *UpdateStatus) {
 	if status.Packages == nil {
 		status.Packages = []UpdatePackage{}
 	}
@@ -139,753 +284,491 @@ func Updates(ctx context.Context) UpdateStatus {
 	if status.Recovery.Hints == nil {
 		status.Recovery.Hints = []string{}
 	}
-	return status
 }
 
-func UpdateRecoveryForBackend(ctx context.Context, backend string) UpdateRecovery {
-	recovery := UpdateRecovery{RestartServices: []string{}, Hints: []string{}, Source: "advisory"}
-	if backend == "none" || backend == "" {
-		recovery.Reason = "No update backend is available to assess recovery needs."
-		return recovery
-	}
-	// Try the python tracer first
-	if tracerResult := tryTracerRecovery(ctx); tracerResult != nil {
-		recovery.RebootRequired = len(tracerResult.Reboot) > 0
-		recovery.RestartServices = tracerResult.Daemons
-		if recovery.RestartServices == nil {
-			recovery.RestartServices = []string{}
-		}
-		recovery.RebootPackages = tracerResult.Reboot
-		recovery.ManualPackages = tracerResult.Manual
-		recovery.Authoritative = true
-		recovery.Source = "tracer"
-		if recovery.RebootRequired {
-			recovery.Hints = append(recovery.Hints, "Reboot the host after the update job completes.")
-		} else if len(tracerResult.Daemons) > 0 {
-			recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
-			recovery.Reason = fmt.Sprintf("%d services need restart", len(tracerResult.Daemons))
-		} else if len(tracerResult.Manual) > 0 {
-			recovery.Hints = append(recovery.Hints, "Some software needs to be restarted manually.")
-			recovery.Reason = "Some software needs manual restart"
-		} else {
-			recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
-		}
-		// Include manual as hints detail
-		if len(tracerResult.Manual) > 0 {
-			recovery.Hints = append(recovery.Hints, "Manual restart: "+strings.Join(tracerResult.Manual, ", "))
-		}
-		return recovery
-	}
-	// Fallback to dnf needs-restarting for dnf, else file check
-	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
-		recovery.RebootRequired = true
-		recovery.Authoritative = true
-		recovery.Source = "/var/run/reboot-required"
-		recovery.Hints = append(recovery.Hints, "Reboot the host after the update job completes.")
-	}
-	if backend == "dnf" {
-		if detail, available := dnfNeedsRestartingDetail(ctx); available {
-			// Fine-grained restart facts when the plugin
-			// supports them; fall back to a coarse boolean otherwise.
-			recovery.Source = "needs-restarting"
-			if len(detail.RebootPackages) > 0 {
-				recovery.RebootRequired = true
-				recovery.Authoritative = true
-				recovery.RebootPackages = append(recovery.RebootPackages, detail.RebootPackages...)
-				recovery.Hints = append(recovery.Hints, "Reboot the host after the update job completes.")
-			}
-			if len(detail.Services) > 0 {
-				recovery.RestartServices = append(recovery.RestartServices, detail.Services...)
-				recovery.Authoritative = true
-			}
-			if len(detail.Manual) > 0 {
-				recovery.ManualPackages = append(recovery.ManualPackages, detail.Manual...)
-				recovery.Authoritative = true
-			}
-			if recovery.Authoritative && !recovery.RebootRequired {
-				recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
-			}
-		} else if result := runUpdateCommand(ctx, "needs-restarting", "-r"); result.Err == nil && result.ExitCode == 1 {
-			recovery.RebootRequired = true
-			recovery.Authoritative = true
-			recovery.Source = "needs-restarting"
-			recovery.Hints = append(recovery.Hints, "A reboot is required according to needs-restarting.")
-		} else if services := tryDnfNeedsRestartingServices(ctx); len(services) > 0 {
-			recovery.RestartServices = services
-			recovery.Authoritative = true
-			recovery.Source = "needs-restarting"
-			recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
-		}
-	}
-	if !recovery.RebootRequired {
-		recovery.Hints = append(recovery.Hints, "Restart services affected by updated libraries before relying on the new versions.")
-	}
-	return recovery
-}
-
-type tracerResult struct {
-	Reboot  []string `json:"reboot"`
-	Daemons []string `json:"daemons"`
-	Manual  []string `json:"manual"`
-}
-
-func tryTracerRecovery(ctx context.Context) *tracerResult {
-	// Run the python tracer
-	tracerScript := "from tracer.query import Query\nimport json\nq=Query()\napps=q.affected_applications().get()\n"
-	tracerScript += "def f(apps,t): return [a.name for a in apps if a.type==t]\n"
-	tracerScript += "print(json.dumps({\"reboot\":f(apps,\"static\"),\"daemons\":f(apps,\"daemon\"),\"manual\":f(apps,\"application\")}))\n"
-	result := runUpdateCommand(ctx, "python3", "-c", tracerScript)
-	if result.Err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Output) == "" {
-		return nil
-	}
-	var res tracerResult
-	if err := json.Unmarshal([]byte(strings.TrimSpace(result.Output)), &res); err != nil {
-		return nil
-	}
-	// Deduplicate and shorten cockpit-wsinstance entries
-	res.Reboot = deduplicateAndShorten(res.Reboot)
-	res.Daemons = deduplicateAndShorten(res.Daemons)
-	res.Manual = deduplicateAndShorten(res.Manual)
-	return &res
-}
-
-func tryDnfNeedsRestartingServices(ctx context.Context) []string {
-	result := runUpdateCommand(ctx, "dnf", "needs-restarting", "--services")
-	if result.Err != nil || result.ExitCode != 0 {
-		return nil
-	}
-	lines := strings.Split(strings.TrimSpace(result.Output), "\n")
-	var services []string
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if strings.HasSuffix(l, ".service") {
-			services = append(services, l)
-		}
-	}
-	return services
-}
-
-// dnfNeedsRestartingDetail probes needs-restarting's fine-grained flags,
-// which newer plugin versions expose as machine-parseable (though not
-// stable-API) output. It reports whether the fine-grained probing was
-// available at all.
-type dnfRestartDetail struct {
-	RebootPackages []string
-	Services       []string
-	Manual         []string
-}
-
-func dnfNeedsRestartingDetail(ctx context.Context) (dnfRestartDetail, bool) {
-	var detail dnfRestartDetail
-	// --exclude-services was added much later than -r; probe for it first so
-	// ancient plugins fall back to the coarse boolean path.
-	exclusive := runUpdateCommand(ctx, "dnf", "needs-restarting", "--exclude-services")
-	if exclusive.Err != nil || exclusive.ExitCode != 0 {
-		return detail, false
-	}
-	// Format: "pid : argv", e.g. "1234 : mydaemon 3600"
-	for _, line := range strings.Split(exclusive.Output, "\n") {
-		line = strings.TrimSpace(line)
-		if pidArgumentRe.MatchString(line) {
-			detail.Manual = append(detail.Manual, line)
-		}
-	}
-
-	if services := runUpdateCommand(ctx, "dnf", "needs-restarting", "--services"); services.Err == nil && services.ExitCode == 0 {
-		for _, line := range strings.Split(services.Output, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasSuffix(line, ".service") {
-				detail.Services = append(detail.Services, line)
-			}
-		}
-	}
-
-	// --reboothint exits nonzero iff a reboot is required; package names are
-	// printed as "  * kernel-core".
-	if hint := runUpdateCommand(ctx, "dnf", "needs-restarting", "--reboothint"); hint.Err == nil {
-		if hint.ExitCode == 1 {
-			for _, line := range strings.Split(hint.Output, "\n") {
-				if strings.HasPrefix(line, "  * ") {
-					detail.RebootPackages = append(detail.RebootPackages, strings.TrimPrefix(line, "  * "))
-				}
-			}
-		}
-	}
-	return detail, true
-}
-
-func deduplicateAndShorten(list []string) []string {
-	if len(list) == 0 {
-		return list
-	}
-	seen := make(map[string]struct{}, len(list))
-	var out []string
-	for _, v := range list {
-		if strings.HasPrefix(v, "cockpit-wsinstance-https") {
-			v = "cockpit-wsinstance-https@."
-		}
-		if _, ok := seen[v]; !ok {
-			seen[v] = struct{}{}
-			out = append(out, v)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-func defaultUpdateDependencies() updateDependencies {
-	return updateDependencies{
-		packageKitAvailable: packageKitAvailable,
-		packageKitDBusFetch: fetchPackageKitDBus,
-		packageKitLocked:    isPackageKitLocked,
-		commandExists:       commandExists,
-		commandVersion: func(ctx context.Context, name string, arguments ...string) (string, bool) {
-			return (hostProbe{}).CommandVersion(ctx, name, arguments...)
-		},
-		commandOutput: runUpdateCommand,
-		lockHeld:      updateLockHeld,
-	}
-}
-
-func isPackageKitLocked(ctx context.Context) bool {
-	client, err := packagekit.New()
-	if err != nil {
-		return false
-	}
-	defer client.Close()
-	paths, err := client.GetTransactionList(ctx)
-	if err != nil {
-		return false
-	}
-	// Only role-matched live transactions (refresh/update) count as busy;
-	// finished or unrelated transactions linger in the list without holding a
-	// lock, avoiding the false positive where our own inventory query locked
-	// the page.
-	for _, path := range paths {
-		if busy, _ := client.TransactionBusy(ctx, path); busy {
-			return true
-		}
-	}
-	return false
-}
-
-// packageKitLockReason returns a human reason for the first busy transaction,
-// or an empty string when no relevant transaction is running.
-func packageKitLockReason(ctx context.Context) string {
-	client, err := packagekit.New()
-	if err != nil {
-		return ""
-	}
-	defer client.Close()
-	paths, err := client.GetTransactionList(ctx)
-	if err != nil {
-		return ""
-	}
-	for _, path := range paths {
-		if busy, reason := client.TransactionBusy(ctx, path); busy && reason != "" {
-			return reason
-		}
-	}
-	return ""
-}
-
-func fetchPackageKitDBus(ctx context.Context) ([]UpdatePackage, string, error) {
-	client, err := packagekit.New()
-	if err != nil {
-		return nil, "", err
-	}
-	defer client.Close()
-	if !client.Detect(ctx) {
-		return nil, "", ErrUpdateUnavailable
-	}
-	// Get backend version (VersionMajor is uint32)
-	version := ""
-	if conn, err := dbus.ConnectSystemBus(); err == nil {
-		obj := conn.Object("org.freedesktop.PackageKit", "/org/freedesktop/PackageKit")
-		var variant dbus.Variant
-		if err := obj.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, "org.freedesktop.PackageKit", "VersionMajor").Store(&variant); err == nil {
-			if v, ok := variant.Value().(uint32); ok {
-				version = fmt.Sprintf("%d", v)
-			} else if vs, ok := variant.Value().(string); ok {
-				version = vs
-			}
-		}
-		conn.Close()
-	}
-	updates, err := client.GetUpdates(ctx)
-	if err != nil {
-		return nil, version, err
-	}
-	pkgs := make([]UpdatePackage, 0, len(updates))
-	for _, u := range updates {
-		pkgs = append(pkgs, UpdatePackage{
-			Name:             u.Name,
-			Architecture:     u.Arch,
-			CandidateVersion: u.Version,
-			Severity:         u.Severity,
-			Summary:          u.Summary,
-			Description:      u.Description,
-			Markdown:         u.Markdown,
-			CVEUrls:          u.CVEURLs,
-			BugUrls:          u.BugURLs,
-			VendorUrls:       u.VendorURLs,
-			AdvisoryID:       "",
-			GroupKey:         "",
-			PackageID:        u.ID,
-		})
-		if len(u.CVEURLs) > 0 && pkgs[len(pkgs)-1].AdvisoryID == "" {
-			pkgs[len(pkgs)-1].AdvisoryID = u.CVEURLs[0]
-		}
-	}
-	pkgs = sortUpdates(pkgs)
-	if pkgs == nil {
-		pkgs = []UpdatePackage{}
-	}
-	return pkgs, version, nil
-}
-
-func RefreshUpdatesCache(ctx context.Context, force bool) error {
-	client, err := packagekit.New()
-	if err != nil {
+func (service *UpdateService) Refresh(ctx context.Context, force bool) error {
+	if service == nil || service.provider == nil {
 		return ErrUpdateUnavailable
 	}
-	defer client.Close()
-	if !client.Detect(ctx) {
-		return ErrUpdateUnavailable
+	service.operationMu.Lock()
+	defer service.operationMu.Unlock()
+	service.beginJob("refresh-" + strconv.FormatInt(time.Now().UnixNano(), 36))
+	service.emitProgress(UpdateProgress{Active: true, Phase: "refreshing", Percent: -1, Message: "Refreshing package metadata.", Cancelable: true})
+	err := service.provider.Refresh(ctx, force, service.publish)
+	if err != nil {
+		service.emitProgress(UpdateProgress{Phase: "failed", Percent: -1, Message: boundedUpdateError(err, "")})
+		return err
 	}
-	return client.RefreshCache(ctx, force)
+	service.emitProgress(UpdateProgress{Phase: "completed", Percent: 100, Message: "Package metadata refreshed."})
+	return nil
 }
 
-func tryEnrichWithDnfInfo(ctx context.Context, deps updateDependencies, pkgs []UpdatePackage) []UpdatePackage {
-	if deps.commandExists == nil || deps.commandOutput == nil || !deps.commandExists("dnf") {
-		return pkgs
+func (service *UpdateService) Preview(ctx context.Context, operation UpdateOperation) (UpdatePreview, error) {
+	if err := ValidateUpdateOperation(operation, false); err != nil {
+		return UpdatePreview{}, err
 	}
-	result := deps.commandOutput(ctx, "dnf", "updateinfo", "info")
-	if result.Err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Output) == "" {
-		return pkgs
+	service.operationMu.Lock()
+	defer service.operationMu.Unlock()
+	status := service.Status(ctx)
+	preview := UpdatePreview{Current: status, Changes: []UpdateChange{}, Warnings: []string{}}
+	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != status.Fingerprint {
+		preview.Stale, preview.Reason = true, "Available update inventory changed; refresh before applying."
+		return preview, nil
 	}
-	return applyDnfUpdateInfo(pkgs, result.Output)
-}
-
-func applyDnfUpdateInfo(packages []UpdatePackage, infoOutput string) []UpdatePackage {
-	type advisory struct {
-		id          string
-		typ         string
-		severity    string
-		description string
-		bugUrls     []string
-		vendorUrls  []string
-		pkgNames    map[string]bool
+	if !status.Available {
+		preview.Reason = status.Reason
+		return preview, nil
 	}
-	advisories := []*advisory{}
-	var current *advisory
-	var currentField string
-	var descBuilder strings.Builder
-	var inPackages bool
-
-	scanner := bufio.NewScanner(strings.NewReader(infoOutput))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			if inPackages {
-				inPackages = false
-			}
-			continue
-		}
-		if strings.HasPrefix(strings.TrimSpace(line), "Name") && strings.Contains(line, ":") {
-			if current != nil {
-				if descBuilder.Len() > 0 {
-					current.description = strings.TrimSpace(descBuilder.String())
-					descBuilder.Reset()
-				}
-				advisories = append(advisories, current)
-			}
-			current = &advisory{pkgNames: make(map[string]bool)}
-			currentField = ""
-			inPackages = false
-		}
-		if current == nil {
-			continue
-		}
-		trimmedLine := line
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-		rawField := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		fieldIsEmpty := rawField == ""
-		var field string
-		if fieldIsEmpty {
-			field = currentField
-		} else {
-			field = rawField
-			currentField = field
-			if field == "Packages" {
-				inPackages = true
-			} else if inPackages && field != "" && field != "Packages" {
-				inPackages = false
-			}
-		}
-		if inPackages && (field == "Packages" || fieldIsEmpty) {
-			if value != "" && value != ":" {
-				token := strings.Fields(value)[0]
-				if token != "" && token != ":" {
-					name, _, _ := parsePkconPackageToken(token)
-					if name == "" {
-						name = token
-					}
-					current.pkgNames[name] = true
-					base := strings.Split(name, ".")[0]
-					current.pkgNames[base] = true
-				}
-			}
-			continue
-		}
-		switch field {
-		case "Name":
-			if current.id == "" {
-				current.id = value
-			}
-		case "Type":
-			if current.typ == "" && !inPackages && descBuilder.Len() == 0 {
-				current.typ = strings.ToLower(value)
-			}
-			if strings.EqualFold(value, "bugzilla") {
-				// will capture Url next
-			}
-		case "Severity":
-			if current.severity == "" {
-				current.severity = strings.ToLower(value)
-			}
-		case "Description":
-			if descBuilder.Len() == 0 {
-				descBuilder.WriteString(value)
-			} else {
-				descBuilder.WriteString("\n" + value)
-			}
-		case "":
-			if currentField == "Description" {
-				if descBuilder.Len() > 0 {
-					descBuilder.WriteString("\n" + value)
-				} else {
-					descBuilder.WriteString(value)
-				}
-			}
-		case "Url":
-			if strings.Contains(value, "bugzilla") {
-				current.bugUrls = append(current.bugUrls, value)
-			} else if strings.Contains(value, "cve") || strings.Contains(value, "access.redhat") {
-				current.vendorUrls = append(current.vendorUrls, value)
-			} else if value != "" {
-				current.vendorUrls = append(current.vendorUrls, value)
-			}
-		}
-		if field == "Description" && !fieldIsEmpty {
-			// already handled
-		}
-		_ = trimmedLine
+	if status.ExternalLock {
+		preview.Reason = status.LockReason
+		return preview, nil
 	}
-	if current != nil {
-		if descBuilder.Len() > 0 {
-			current.description = strings.TrimSpace(descBuilder.String())
-		}
-		advisories = append(advisories, current)
+	changes, err := service.provider.Plan(ctx)
+	if err != nil {
+		return preview, err
 	}
-
-	pkgMap := make(map[string]*advisory)
-	for _, adv := range advisories {
-		for name := range adv.pkgNames {
-			pkgMap[name] = adv
-		}
+	preview.Changes = SortUpdateChanges(changes)
+	preview.Fingerprint = UpdatePlanFingerprint(service.provider.Name(), preview.Changes)
+	if len(preview.Changes) == 0 {
+		preview.Reason = "No updates are available."
+		return preview, nil
 	}
-
-	result := make([]UpdatePackage, len(packages))
-	copy(result, packages)
-	for idx := range result {
-		pkg := &result[idx]
-		adv, ok := pkgMap[pkg.Name]
-		if !ok {
-			continue
-		}
-		if adv.id != "" {
-			pkg.AdvisoryID = adv.id
-		}
-		if adv.typ != "" {
-			switch adv.typ {
-			case "security":
-				pkg.Severity = "security"
-			case "bugfix":
-				pkg.Severity = "bugfix"
-			case "enhancement":
-				pkg.Severity = "enhancement"
-			}
-		}
-		if adv.description != "" {
-			pkg.Description = adv.description
-			pkg.Details = adv.description
-			if pkg.Summary == "" || pkg.Summary == "(updates)" {
-				firstLine := strings.Split(strings.TrimSpace(adv.description), "\n")[0]
-				if len(firstLine) > 120 {
-					firstLine = firstLine[:120]
-				}
-				pkg.Summary = firstLine
-			}
-			if cves := cvePattern.FindAllString(adv.description, -1); len(cves) > 0 {
-				seen := make(map[string]struct{})
-				for _, cve := range cves {
-					if _, exists := seen[cve]; exists {
-						continue
-					}
-					seen[cve] = struct{}{}
-					url := "https://cve.mitre.org/cgi-bin/cvename.cgi?name=" + cve
-					already := false
-					for _, existing := range pkg.CVEUrls {
-						if existing == url {
-							already = true
-							break
-						}
-					}
-					if !already {
-						pkg.CVEUrls = append(pkg.CVEUrls, url)
-					}
-					if pkg.AdvisoryID == "" {
-						pkg.AdvisoryID = cve
-					}
-				}
-			}
-		}
-		if len(adv.bugUrls) > 0 {
-			pkg.BugUrls = append(pkg.BugUrls, adv.bugUrls...)
-		}
-		if len(adv.vendorUrls) > 0 {
-			pkg.VendorUrls = append(pkg.VendorUrls, adv.vendorUrls...)
-		}
-		if pkg.GroupKey == "" && adv.id != "" {
-			pkg.GroupKey = adv.id + "@" + pkg.CandidateVersion
-		}
-	}
-
-	return result
-}
-
-func updatesWithDependencies(ctx context.Context, dependencies updateDependencies) UpdateStatus {
-	if dependencies.packageKitAvailable != nil && dependencies.packageKitAvailable(ctx) {
-		status := UpdateStatus{Available: true, Backend: "PackageKit", Contract: "dbus-read-only", Packages: []UpdatePackage{}}
-		if dependencies.commandVersion != nil {
-			status.Version, _ = dependencies.commandVersion(ctx, "pkcon", "--version")
-		}
-		// Prefer D-Bus transaction over CLI parsing
-		if dependencies.packageKitDBusFetch != nil {
-			if pkgs, version, err := dependencies.packageKitDBusFetch(ctx); err == nil {
-				if version != "" {
-					status.Version = version
-				}
-				status.Packages = pkgs
-				// D-Bus already includes CVE/bug/vendor enrichment
-				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
-				status.Packages = sortUpdates(status.Packages)
-				if dependencies.packageKitLocked != nil && dependencies.packageKitLocked(ctx) {
-					status.ExternalLock = true
-					status.LockReason = packageKitLockReason(ctx)
-					if status.LockReason == "" {
-						status.LockReason = "PackageKit transaction in progress"
-					}
-				}
-				status.Message = updateMessage(len(status.Packages))
-				if len(status.Packages) == MaxUpdatePackages {
-					status.Message += " Package list truncated at 500."
-				}
-				return status
-			}
-		}
-		if dependencies.commandExists != nil && dependencies.commandOutput != nil && dependencies.commandExists("pkcon") {
-			result := dependencies.commandOutput(ctx, "pkcon", "--noninteractive", "get-updates")
-			if result.Err == nil && result.ExitCode == 0 {
-				status.Packages = parsePackageKitUpdates(result.Output)
-				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
-				status.Packages = sortUpdates(status.Packages)
-				if dependencies.packageKitLocked != nil && dependencies.packageKitLocked(ctx) {
-					status.ExternalLock = true
-					status.LockReason = packageKitLockReason(ctx)
-					if status.LockReason == "" {
-						status.LockReason = "PackageKit transaction in progress"
-					}
-				}
-				status.Message = updateMessage(len(status.Packages))
-				if len(status.Packages) == MaxUpdatePackages {
-					status.Message += " Package list truncated at 500."
-				}
-				return status
-			}
-		}
-		status.Message = "PackageKit is available; update inventory could not be read"
-		status.Reason = "The PackageKit read-only query did not complete"
-		return status
-	}
-
-	if dependencies.commandVersion != nil {
-		if version, ok := dependencies.commandVersion(ctx, "apt-get", "--version"); ok && versionAtLeast(version, 1) {
-			status := commandUpdateStatus("apt-get", version, dependencies, aptLockPaths)
-			if dependencies.commandExists != nil && dependencies.commandExists("apt") {
-				result := dependencies.commandOutput(ctx, "apt", "list", "--upgradable")
-				if result.Err == nil && result.ExitCode == 0 {
-					status.Packages = parseAPTUpdates(result.Output)
-					status.Message = updateMessage(len(status.Packages))
-					if len(status.Packages) == MaxUpdatePackages {
-						status.Message += " Package list truncated at 500."
-					}
-					return status
-				}
-			}
-			result := dependencies.commandOutput(ctx, "apt-get", "--just-print", "--simulate", "upgrade")
-			if result.Err == nil && result.ExitCode == 0 {
-				status.Packages = parseAPTGetUpdates(result.Output)
-				status.Message = updateMessage(len(status.Packages))
-				if len(status.Packages) == MaxUpdatePackages {
-					status.Message += " Package list truncated at 500."
-				}
-				return status
-			}
-			status.Message = "APT is available; update inventory could not be read"
-			status.Reason = "The bounded APT read-only query did not complete"
-			return status
-		}
-		if version, ok := dependencies.commandVersion(ctx, "dnf", "--version"); ok && versionAtLeast(version, 4) {
-			status := commandUpdateStatus("dnf", version, dependencies, dnfLockPaths)
-			result := dependencies.commandOutput(ctx, "dnf", "--assumeno", "check-update")
-			if (result.Err == nil && (result.ExitCode == 0 || result.ExitCode == 100)) || result.ExitCode == 100 {
-				status.Packages = parseDNFUpdates(result.Output)
-				status.Packages = tryEnrichWithDnfInfo(ctx, dependencies, status.Packages)
-				status.Packages = sortUpdates(status.Packages)
-				status.Message = updateMessage(len(status.Packages))
-				if len(status.Packages) == MaxUpdatePackages {
-					status.Message += " Package list truncated at 500."
-				}
-				return status
-			}
-			status.Message = "DNF is available; update inventory could not be read"
-			status.Reason = "The bounded DNF read-only query did not complete"
-			return status
-		}
-	}
-	return UpdateStatus{Available: false, Backend: "none", Contract: "unavailable", Packages: []UpdatePackage{}, Message: "No supported read-only update backend detected", Reason: "PackageKit, APT, and DNF are unavailable"}
-}
-
-func commandUpdateStatus(backend, version string, dependencies updateDependencies, paths func() []string) UpdateStatus {
-	status := UpdateStatus{Available: true, Backend: backend, Version: version, Contract: "bounded-command-read-only", Packages: []UpdatePackage{}}
-	for _, path := range paths() {
-		if dependencies.lockHeld != nil && dependencies.lockHeld(path) {
-			status.ExternalLock = true
-			status.LockReason = "A package-manager lock file exists: " + path
+	preview.Allowed, preview.RequiresConfirmation = true, true
+	for _, change := range preview.Changes {
+		if change.Risky() {
+			preview.RequiresRiskConfirmation = true
 			break
 		}
 	}
-	return status
+	preview.Warnings = append(preview.Warnings, "Updates can restart services or require a host reboot.")
+	if preview.RequiresRiskConfirmation {
+		preview.Warnings = append(preview.Warnings, "Plan contains removals, replacements, downgrades, or repository/vendor changes.")
+	}
+	return preview, nil
 }
 
-func updateLockHeld(path string) bool {
+// PreviewUpdateStatus provides a deterministic preview for cached readers.
+// Authoritative mutation still replans through UpdateService immediately
+// before commit and requires the exact plan fingerprint.
+func PreviewUpdateStatus(status UpdateStatus, operation UpdateOperation) (UpdatePreview, error) {
+	if err := ValidateUpdateOperation(operation, false); err != nil {
+		return UpdatePreview{}, err
+	}
+	changes := make([]UpdateChange, 0, len(status.Packages))
+	for _, item := range status.Packages {
+		changes = append(changes, UpdateChange{Action: "upgrade", Name: item.Name, Architecture: item.Architecture, CurrentVersion: item.CurrentVersion, CandidateVersion: item.CandidateVersion})
+	}
+	changes = SortUpdateChanges(changes)
+	preview := UpdatePreview{Current: status, Changes: changes, Warnings: []string{}, Fingerprint: UpdatePlanFingerprint(status.Backend, changes), Allowed: status.Available && !status.ExternalLock && len(changes) > 0, RequiresConfirmation: len(changes) > 0}
+	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != status.Fingerprint && operation.ExpectedFingerprint != preview.Fingerprint {
+		preview.Stale = true
+		preview.Allowed = false
+		preview.Reason = "Available update inventory changed; refresh before applying."
+	}
+	if status.ExternalLock {
+		preview.Reason = status.LockReason
+	}
+	return preview, nil
+}
+
+func (service *UpdateService) Apply(ctx context.Context, operation UpdateOperation) (UpdateResult, error) {
+	if err := ValidateUpdateOperation(operation, true); err != nil {
+		return UpdateResult{}, err
+	}
+	if service == nil || service.provider == nil {
+		return UpdateResult{}, ErrUpdateUnavailable
+	}
+	service.operationMu.Lock()
+	defer service.operationMu.Unlock()
+	if service.workerExecutable != "" {
+		return service.applyWithWorker(ctx, operation)
+	}
+	return service.applyDirect(ctx, operation)
+}
+
+func (service *UpdateService) applyDirect(ctx context.Context, operation UpdateOperation) (UpdateResult, error) {
+	locked, _ := service.provider.LockStatus(ctx)
+	if locked {
+		return UpdateResult{}, ErrUpdateLocked
+	}
+	changes, err := service.provider.Plan(ctx)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	changes = SortUpdateChanges(changes)
+	if UpdatePlanFingerprint(service.provider.Name(), changes) != operation.ExpectedFingerprint {
+		return UpdateResult{}, ErrUpdateConflict
+	}
+	for _, change := range changes {
+		if change.Risky() && !operation.RiskAccepted {
+			return UpdateResult{}, ErrUpdateRiskNotAccepted
+		}
+	}
+	jobID := operation.JobID
+	if jobID == "" {
+		jobID = strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	service.beginJob(jobID)
+	applyCtx := context.WithoutCancel(ctx)
+	service.emitProgress(UpdateProgress{JobID: jobID, Active: true, Phase: "applying", Total: len(changes), Percent: -1, Message: "Applying system updates.", Cancelable: false})
+	if err := service.provider.Apply(applyCtx, service.publish); err != nil {
+		service.emitProgress(UpdateProgress{JobID: jobID, Phase: "failed", Total: len(changes), Percent: -1, Message: boundedUpdateError(err, "")})
+		return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(err, ""))
+	}
+	service.emitProgress(UpdateProgress{JobID: jobID, Active: true, Phase: "verifying", Total: len(changes), Percent: -1, Message: "Verifying update result."})
+	final := service.Status(applyCtx)
+	if !final.Available {
+		return UpdateResult{}, ErrUpdateVerification
+	}
+	service.emitProgress(UpdateProgress{JobID: jobID, Phase: "completed", Current: len(changes), Total: len(changes), Percent: 100, Message: "System updates completed."})
+	return UpdateResult{Backend: service.provider.Name(), Changes: changes, Verified: true, Message: "Updates applied and verified.", Fingerprint: final.Fingerprint, Recovery: final.Recovery}, nil
+}
+
+func (service *UpdateService) applyWithWorker(ctx context.Context, operation UpdateOperation) (UpdateResult, error) {
+	jobFile, err := writeUpdateWorkerJob(operation)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	defer os.Remove(jobFile)
+	jobID := operation.JobID
+	if jobID == "" {
+		jobID = strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	service.beginJob(jobID)
+	service.emitProgress(UpdateProgress{JobID: jobID, Active: true, Phase: "starting", Percent: -1, Message: "Starting privileged update worker.", Cancelable: false})
+	unit := "tako-update-" + safeUnitFragment(operation.JobID)
+	if strings.HasSuffix(unit, "-") {
+		unit += strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	arguments := []string{"--quiet", "--pipe", "--wait", "--collect", "--service-type=exec", "--unit=" + unit, "--property=User=root", "--property=PrivateTmp=true", "--property=ProtectHome=true", "--property=ProtectKernelTunables=true", "--property=ProtectKernelModules=true", service.workerExecutable, "update-worker", "--job-file", jobFile}
+	command := exec.CommandContext(context.WithoutCancel(ctx), "systemd-run", arguments...)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	if err := command.Start(); err != nil {
+		return UpdateResult{}, err
+	}
+	go streamUpdateOutput(stderr, "stderr", operation.JobID, service.publish)
+	var result UpdateResult
+	var workerError string
+	scanner := bufio.NewScanner(io.LimitReader(stdout, maxUpdateOutput))
+	scanner.Buffer(make([]byte, 64<<10), 256<<10)
+	for scanner.Scan() {
+		var envelope updateWorkerEnvelope
+		if json.Unmarshal(scanner.Bytes(), &envelope) != nil {
+			continue
+		}
+		if envelope.Event != nil {
+			service.publish(*envelope.Event)
+		}
+		if envelope.Result != nil {
+			result = *envelope.Result
+		}
+		if envelope.Error != "" {
+			workerError = envelope.Error
+		}
+	}
+	waitErr := command.Wait()
+	if workerError != "" {
+		return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, workerError)
+	}
+	if waitErr != nil {
+		return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(waitErr, ""))
+	}
+	if !result.Verified {
+		return UpdateResult{}, ErrUpdateVerification
+	}
+	return result, nil
+}
+
+func writeUpdateWorkerJob(operation UpdateOperation) (string, error) {
+	if os.Geteuid() != 0 {
+		return "", errors.New("update worker jobs require root")
+	}
+	file, err := os.CreateTemp("/run/tako", "update-job-*.json")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		os.Remove(path)
+		return "", err
+	}
+	encoder := json.NewEncoder(file)
+	document := updateWorkerJob{ExpectedFingerprint: operation.ExpectedFingerprint, Confirmed: operation.Confirmed, RiskAccepted: operation.RiskAccepted, JobID: operation.JobID}
+	if err := encoder.Encode(document); err != nil {
+		file.Close()
+		os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func ReadUpdateWorkerJob(path string) (UpdateOperation, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return UpdateOperation{}, ErrInvalidUpdateOperation
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		return UpdateOperation{}, ErrInvalidUpdateOperation
+	}
 	file, err := os.Open(path)
 	if err != nil {
-		return false
+		return UpdateOperation{}, err
 	}
 	defer file.Close()
-	fd := int(file.Fd())
-	// Try flock first; PackageKit lock detection covers D-Bus, the CLI
-	// fallback needs a real file lock
-	if err := syscall.Flock(fd, syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
-		return true
+	decoder := json.NewDecoder(io.LimitReader(file, 16<<10))
+	decoder.DisallowUnknownFields()
+	var document updateWorkerJob
+	if err := decoder.Decode(&document); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return UpdateOperation{}, ErrInvalidUpdateOperation
 	}
-	_ = syscall.Flock(fd, syscall.LOCK_UN)
-	// Dpkg uses fcntl OFD locks, not flock, so also try fcntl (apt/dnf locks)
-	// Use non-blocking F_SETLK to test if lock held
-	flock := &syscall.Flock_t{
-		Type:   syscall.F_WRLCK,
-		Whence: 0,
-		Start:  0,
-		Len:    0,
-		Pid:    0,
+	operation := UpdateOperation{ExpectedFingerprint: document.ExpectedFingerprint, Confirmed: document.Confirmed, RiskAccepted: document.RiskAccepted, JobID: document.JobID}
+	if ValidateUpdateOperation(operation, true) != nil {
+		return UpdateOperation{}, ErrInvalidUpdateOperation
 	}
-	if err := syscall.FcntlFlock(uintptr(fd), syscall.F_SETLK, flock); err != nil {
-		return true
-	}
-	// Unlock fcntl
-	flock.Type = syscall.F_UNLCK
-	_ = syscall.FcntlFlock(uintptr(fd), syscall.F_SETLK, flock)
-	return false
+	return operation, nil
 }
 
-func aptLockPaths() []string {
-	return []string{"/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock", "/var/lib/apt/lists/lock", "/var/cache/apt/archives/lock"}
+func safeUnitFragment(value string) string {
+	var result strings.Builder
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' {
+			result.WriteRune(character)
+		}
+	}
+	if result.Len() > 48 {
+		return result.String()[:48]
+	}
+	return result.String()
 }
 
-func dnfLockPaths() []string {
-	return []string{"/var/cache/dnf/metadata_lock.pid", "/var/cache/dnf/lock.pid", "/var/run/dnf.pid"}
-}
-
-func packageKitAvailable(ctx context.Context) bool {
-	conn, err := dbus.ConnectSystemBus()
+func (service *UpdateService) RunWorker(ctx context.Context, operation UpdateOperation, output io.Writer) error {
+	encoder := json.NewEncoder(output)
+	service.SetEventHook(func(event UpdateStreamEvent) { _ = encoder.Encode(updateWorkerEnvelope{Event: &event}) })
+	result, err := service.Apply(ctx, operation)
 	if err != nil {
-		return false
+		_ = encoder.Encode(updateWorkerEnvelope{Error: err.Error()})
+		return err
 	}
-	defer conn.Close()
-	var active []string
-	if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.ListNames", 0).Store(&active); err == nil {
-		for _, name := range active {
-			if name == "org.freedesktop.PackageKit" {
-				return true
+	return encoder.Encode(updateWorkerEnvelope{Result: &result})
+}
+
+func (service *UpdateService) History(ctx context.Context) ([]UpdateHistoryEntry, error) {
+	if service == nil || service.provider == nil {
+		return nil, ErrUpdateUnavailable
+	}
+	return service.provider.History(ctx, MaxUpdateHistory)
+}
+
+func (service *UpdateService) Snapshot() UpdateObservation {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	output := make([]UpdateOutput, 0)
+	for _, event := range service.events {
+		if event.Kind == "output" {
+			output = append(output, event.Output)
+		}
+	}
+	events := append([]UpdateStreamEvent(nil), service.events...)
+	return UpdateObservation{Progress: service.progress, Output: output, Events: events}
+}
+
+func (service *UpdateService) Subscribe(after uint64) (<-chan UpdateStreamEvent, func()) {
+	channel := make(chan UpdateStreamEvent, maxLiveEvents)
+	service.mu.Lock()
+	for _, event := range service.events {
+		sequence := event.Progress.Sequence
+		if event.Kind == "output" {
+			sequence = event.Output.Sequence
+		}
+		if sequence > after {
+			channel <- event
+		}
+	}
+	service.subscribers[channel] = struct{}{}
+	service.mu.Unlock()
+	return channel, func() {
+		service.mu.Lock()
+		if _, ok := service.subscribers[channel]; ok {
+			delete(service.subscribers, channel)
+			close(channel)
+		}
+		service.mu.Unlock()
+	}
+}
+
+func (service *UpdateService) beginJob(jobID string) {
+	service.mu.Lock()
+	service.events = nil
+	service.eventBytes = 0
+	service.activeJob = jobID
+	service.mu.Unlock()
+}
+func (service *UpdateService) emitProgress(progress UpdateProgress) {
+	service.publish(UpdateStreamEvent{Kind: "progress", Progress: progress})
+}
+
+func (service *UpdateService) publish(event UpdateStreamEvent) {
+	if service == nil {
+		return
+	}
+	service.mu.Lock()
+	service.sequence++
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if event.Kind == "output" {
+		event.Output.Sequence, event.Output.Timestamp = service.sequence, now
+		event.Output.Line = sanitizeUpdateLine(event.Output.Line)
+		if event.Output.JobID == "" {
+			event.Output.JobID = service.activeJob
+		}
+		service.eventBytes += len(event.Output.Line)
+	} else {
+		event.Kind = "progress"
+		event.Progress.Sequence, event.Progress.Timestamp = service.sequence, now
+		if event.Progress.JobID == "" {
+			event.Progress.JobID = service.activeJob
+		}
+		service.progress = event.Progress
+		if !event.Progress.Active && (event.Progress.Phase == "completed" || event.Progress.Phase == "failed" || event.Progress.Phase == "canceled") {
+			service.activeJob = ""
+		}
+	}
+	service.events = append(service.events, event)
+	for len(service.events) > maxLiveEvents || service.eventBytes > maxLiveOutput {
+		removed := service.events[0]
+		service.events = service.events[1:]
+		if removed.Kind == "output" {
+			service.eventBytes -= len(removed.Output.Line)
+		}
+	}
+	for subscriber := range service.subscribers {
+		select {
+		case subscriber <- event:
+		default:
+		}
+	}
+	hook := service.eventHook
+	service.mu.Unlock()
+	if hook != nil {
+		hook(event)
+	}
+}
+
+func sanitizeUpdateLine(line string) string {
+	if !utf8.ValidString(line) {
+		line = strings.ToValidUTF8(line, "�")
+	}
+	line = ansiUpdatePattern.ReplaceAllString(line, "")
+	line = strings.Map(func(r rune) rune {
+		if r == '\t' || r >= 0x20 {
+			return r
+		}
+		return -1
+	}, line)
+	if len(line) > maxLiveLine {
+		line = line[:maxLiveLine]
+		for !utf8.ValidString(line) {
+			line = line[:len(line)-1]
+		}
+	}
+	return line
+}
+
+type UpdateCommandResult struct {
+	Output   string
+	ExitCode int
+	Err      error
+}
+
+func RunUpdateCommand(ctx context.Context, name string, arguments []string, environment []string, emit func(UpdateStreamEvent)) UpdateCommandResult {
+	if err := ctx.Err(); err != nil {
+		return UpdateCommandResult{ExitCode: -1, Err: err}
+	}
+	command := exec.CommandContext(ctx, name, arguments...)
+	command.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	command.Env = append(command.Env, environment...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return UpdateCommandResult{ExitCode: -1, Err: err}
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return UpdateCommandResult{ExitCode: -1, Err: err}
+	}
+	if err := command.Start(); err != nil {
+		return UpdateCommandResult{ExitCode: -1, Err: err}
+	}
+	var output strings.Builder
+	var mu sync.Mutex
+	copyStream := func(reader io.Reader, stream string) {
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 32<<10), maxUpdateOutput)
+		for scanner.Scan() {
+			line := sanitizeUpdateLine(scanner.Text())
+			mu.Lock()
+			if output.Len() < maxUpdateOutput {
+				remaining := maxUpdateOutput - output.Len()
+				if len(line)+1 > remaining {
+					line = line[:max(0, remaining-1)]
+					for !utf8.ValidString(line) {
+						line = line[:len(line)-1]
+					}
+				}
+				output.WriteString(line)
+				output.WriteByte('\n')
+			}
+			mu.Unlock()
+			if emit != nil {
+				emit(UpdateStreamEvent{Kind: "output", Output: UpdateOutput{Stream: stream, Line: line}})
 			}
 		}
 	}
-	var activatable []string
-	if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.ListActivatableNames", 0).Store(&activatable); err != nil {
-		return false
-	}
-	for _, name := range activatable {
-		if name == "org.freedesktop.PackageKit" {
-			return true
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() { defer wait.Done(); copyStream(stdout, "stdout") }()
+	go func() { defer wait.Done(); copyStream(stderr, "stderr") }()
+	err = command.Wait()
+	wait.Wait()
+	exitCode := 0
+	if err != nil {
+		exitCode = -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
 		}
 	}
-	return false
+	return UpdateCommandResult{Output: output.String(), ExitCode: exitCode, Err: err}
 }
 
-func commandExists(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
+func streamUpdateOutput(reader io.Reader, stream, jobID string, emit func(UpdateStreamEvent)) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 32<<10), maxLiveLine*2)
+	for scanner.Scan() {
+		emit(UpdateStreamEvent{Kind: "output", Output: UpdateOutput{JobID: jobID, Stream: stream, Line: scanner.Text()}})
+	}
 }
+func CommandExists(name string) bool { _, err := exec.LookPath(name); return err == nil }
+func commandExists(name string) bool { return CommandExists(name) }
+
+// Kept private because kpatch shares the same bounded command runner without
+// becoming coupled to a distro update adapter.
+type updateCommandResult = UpdateCommandResult
 
 func runUpdateCommand(ctx context.Context, name string, arguments ...string) updateCommandResult {
-	// Inventory fallbacks (pkcon/apt/dnf) routinely take 10s+ against a cold
-	// daemon; the caller's context still bounds us where it is tighter.
-	commandCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	command := exec.CommandContext(commandCtx, name, arguments...)
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return updateCommandResult{Err: err, ExitCode: -1}
-	}
-	if err := command.Start(); err != nil {
-		return updateCommandResult{Err: err, ExitCode: -1}
-	}
-	output, readErr := readBounded(stdout, maxUpdateOutput)
-	waitErr := command.Wait()
-	if commandCtx.Err() != nil {
-		return updateCommandResult{Err: commandCtx.Err(), ExitCode: -1}
-	}
-	result := updateCommandResult{Output: string(output), ExitCode: 0}
-	if readErr != nil {
-		result.Err = readErr
-	}
-	if waitErr != nil {
-		result.Err = waitErr
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			result.ExitCode = exitErr.ExitCode()
-		} else {
-			result.ExitCode = -1
-		}
-	}
-	return result
+	return RunUpdateCommand(ctx, name, arguments, nil, nil)
 }
 
 var versionAtLeastPattern = regexp.MustCompile(`(?:^|\s)([0-9]+)(?:\.[0-9]+)?`)
@@ -899,831 +782,84 @@ func versionAtLeast(version string, minimumMajor int) bool {
 	return err == nil && major >= minimumMajor
 }
 
+func UpdateLockHeld(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		return true
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return false
+}
+
+func UpdateFingerprint(status UpdateStatus) string {
+	packages := SortUpdatePackages(append([]UpdatePackage(nil), status.Packages...))
+	payload, _ := json.Marshal(struct {
+		Backend      string
+		Packages     []UpdatePackage
+		ExternalLock bool
+	}{status.Backend, packages, status.ExternalLock})
+	hash := sha256.Sum256(payload)
+	return hex.EncodeToString(hash[:])
+}
+func UpdatePlanFingerprint(backend string, changes []UpdateChange) string {
+	payload, _ := json.Marshal(struct {
+		Backend string
+		Changes []UpdateChange
+	}{backend, SortUpdateChanges(append([]UpdateChange(nil), changes...))})
+	hash := sha256.Sum256(payload)
+	return hex.EncodeToString(hash[:])
+}
+func SortUpdatePackages(packages []UpdatePackage) []UpdatePackage {
+	if packages == nil {
+		return []UpdatePackage{}
+	}
+	sort.Slice(packages, func(i, j int) bool {
+		if packages[i].Name != packages[j].Name {
+			return packages[i].Name < packages[j].Name
+		}
+		return packages[i].Architecture < packages[j].Architecture
+	})
+	return packages
+}
+func SortUpdateChanges(changes []UpdateChange) []UpdateChange {
+	if changes == nil {
+		return []UpdateChange{}
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Name != changes[j].Name {
+			return changes[i].Name < changes[j].Name
+		}
+		if changes[i].Action != changes[j].Action {
+			return changes[i].Action < changes[j].Action
+		}
+		return changes[i].Architecture < changes[j].Architecture
+	})
+	return changes
+}
 func updateMessage(count int) string {
 	if count == 0 {
 		return "No installed-software updates are currently available."
 	}
-	return fmt.Sprintf("%d installed-software update%s available.", count, pluralSuffix(count))
-}
-
-func pluralSuffix(count int) string {
+	suffix := "s"
 	if count == 1 {
-		return ""
+		suffix = ""
 	}
-	return "s"
+	return fmt.Sprintf("%d installed-software update%s available.", count, suffix)
 }
-
-type UpdateOperation struct {
-	Scope               string   `json:"scope"`
-	Packages            []string `json:"packages,omitempty"`
-	ExpectedFingerprint string   `json:"expectedFingerprint,omitempty"`
-	Confirmation        string   `json:"confirmation,omitempty"`
-	Preview             bool     `json:"preview,omitempty"`
-}
-
-type UpdatePreview struct {
-	Operation            UpdateOperation `json:"operation"`
-	Current              UpdateStatus    `json:"current"`
-	Selected             []UpdatePackage `json:"selected"`
-	Changes              []string        `json:"changes"`
-	Warnings             []string        `json:"warnings"`
-	Fingerprint          string          `json:"fingerprint"`
-	Stale                bool            `json:"stale"`
-	Allowed              bool            `json:"allowed"`
-	RequiresConfirmation bool            `json:"requiresConfirmation"`
-	Reason               string          `json:"reason,omitempty"`
-}
-
-type UpdateResult struct {
-	Backend     string          `json:"backend"`
-	Scope       string          `json:"scope"`
-	Packages    []string        `json:"packages"`
-	Updated     []UpdatePackage `json:"updated"`
-	Verified    bool            `json:"verified"`
-	Message     string          `json:"message"`
-	Fingerprint string          `json:"fingerprint"`
-	Recovery    UpdateRecovery  `json:"recovery"`
-}
-
-func ValidateUpdateOperation(operation UpdateOperation) error {
-	if operation.Scope != "all" && operation.Scope != "selected" {
-		return ErrInvalidUpdateOperation
-	}
-	if len(operation.Packages) > MaxUpdatePackages {
-		return ErrInvalidUpdateOperation
-	}
-	seen := make(map[string]struct{}, len(operation.Packages))
-	for _, name := range operation.Packages {
-		if !validPackageName(name) || len(name) > 256 {
-			return ErrInvalidUpdateOperation
-		}
-		if _, exists := seen[name]; exists {
-			return ErrInvalidUpdateOperation
-		}
-		seen[name] = struct{}{}
-	}
-	if operation.Scope == "all" && len(operation.Packages) != 0 {
-		return ErrInvalidUpdateOperation
-	}
-	if operation.Scope == "selected" && len(operation.Packages) == 0 {
-		return ErrInvalidUpdateOperation
-	}
-	if operation.ExpectedFingerprint != "" {
-		if len(operation.ExpectedFingerprint) != sha256.Size*2 {
-			return ErrInvalidUpdateOperation
-		}
-		if _, err := hex.DecodeString(operation.ExpectedFingerprint); err != nil {
-			return ErrInvalidUpdateOperation
-		}
-	}
-	if len(operation.Confirmation) > 128 || strings.ContainsAny(operation.Confirmation, "\x00\r\n") {
-		return ErrInvalidUpdateOperation
-	}
-	// Confirmation is optional; when provided it must be the dialog-confirmed value.
-	// Legacy typed "APPLY UPDATES" still accepted for backward compatibility.
-	if !operation.Preview && operation.Confirmation != "" && operation.Confirmation != "APPLY UPDATES" && operation.Confirmation != "CONFIRM" {
-		return ErrInvalidUpdateOperation
-	}
-	return nil
-}
-
-func UpdateFingerprint(status UpdateStatus) string {
-	packages := append([]UpdatePackage(nil), status.Packages...)
-	sort.Slice(packages, func(left, right int) bool {
-		if packages[left].Name != packages[right].Name {
-			return packages[left].Name < packages[right].Name
-		}
-		if packages[left].Architecture != packages[right].Architecture {
-			return packages[left].Architecture < packages[right].Architecture
-		}
-		return packages[left].CandidateVersion < packages[right].CandidateVersion
-	})
-	// Use stable fields only, not volatile enrichment (Size, Severity, Summary).
-	type stablePackage struct {
-		Name             string `json:"name"`
-		Architecture     string `json:"architecture,omitempty"`
-		CandidateVersion string `json:"candidateVersion"`
-	}
-	stables := make([]stablePackage, len(packages))
-	for i, p := range packages {
-		stables[i] = stablePackage{Name: p.Name, Architecture: p.Architecture, CandidateVersion: p.CandidateVersion}
-	}
-	payload, _ := json.Marshal(struct {
-		Backend      string          `json:"backend"`
-		Packages     []stablePackage `json:"packages"`
-		ExternalLock bool            `json:"externalLock"`
-	}{status.Backend, stables, status.ExternalLock})
-	hash := sha256.Sum256(payload)
-	return hex.EncodeToString(hash[:])
-}
-
-func PreviewUpdates(ctx context.Context, operation UpdateOperation, statusFn func(context.Context) UpdateStatus) (UpdatePreview, error) {
-	operation.Preview = true
-	if err := ValidateUpdateOperation(operation); err != nil {
-		return UpdatePreview{}, err
-	}
-	if statusFn == nil {
-		return UpdatePreview{}, ErrUpdateUnavailable
-	}
-	current := statusFn(ctx)
-	if current.Packages == nil {
-		current.Packages = []UpdatePackage{}
-	}
-	if current.Recovery.RestartServices == nil {
-		current.Recovery.RestartServices = []string{}
-	}
-	if current.Recovery.Hints == nil {
-		current.Recovery.Hints = []string{}
-	}
-	preview := UpdatePreview{Operation: operation, Current: current, Selected: make([]UpdatePackage, 0), Changes: []string{}, Warnings: []string{}, Fingerprint: UpdateFingerprint(current)}
-	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != preview.Fingerprint {
-		preview.Stale = true
-		preview.Reason = "The available update inventory changed; refresh before applying."
-		return preview, nil
-	}
-	if !current.Available {
-		preview.Reason = current.Reason
-		if preview.Reason == "" {
-			preview.Reason = "No supported update backend is available."
-		}
-		return preview, nil
-	}
-	if current.ExternalLock {
-		preview.Reason = current.LockReason
-		if preview.Reason == "" {
-			preview.Reason = "Another package operation currently holds a lock."
-		}
-		preview.Warnings = append(preview.Warnings, preview.Reason)
-		return preview, nil
-	}
-	if operation.Scope == "all" {
-		preview.Selected = append(preview.Selected, current.Packages...)
-	} else {
-		for _, requested := range operation.Packages {
-			found := false
-			for _, available := range current.Packages {
-				if available.Name == requested {
-					preview.Selected = append(preview.Selected, available)
-					found = true
-				}
-			}
-			if !found {
-				preview.Stale = true
-				preview.Reason = "One or more selected packages are no longer available."
-				return preview, nil
-			}
-		}
-	}
-	if len(preview.Selected) == 0 {
-		preview.Reason = "No updates are available for the selected scope."
-		return preview, nil
-	}
-	preview.Allowed = true
-	preview.RequiresConfirmation = true
-	preview.Changes = append(preview.Changes, fmt.Sprintf("update %d package%s", len(preview.Selected), pluralSuffix(len(preview.Selected))))
-	for _, item := range preview.Selected {
-		if item.Name == "tako" {
-			preview.Warnings = append(preview.Warnings, "The web console will restart during this update; the update continues in the background and you can reconnect afterwards.")
-			break
-		}
-	}
-	preview.Warnings = append(preview.Warnings, "Updates can restart services or require a host reboot.", "An interrupted package operation will not be retried automatically.")
-	return preview, nil
-}
-
-func ApplyUpdates(ctx context.Context, operation UpdateOperation) (UpdateResult, error) {
-	if err := ValidateUpdateOperation(operation); err != nil {
-		return UpdateResult{}, err
-	}
-	if operation.Preview {
-		return UpdateResult{}, ErrInvalidUpdateOperation
-	}
-	current := Updates(ctx)
-	if !current.Available {
-		return UpdateResult{}, ErrUpdateUnavailable
-	}
-	fingerprint := UpdateFingerprint(current)
-	if operation.ExpectedFingerprint == "" || operation.ExpectedFingerprint != fingerprint {
-		return UpdateResult{}, ErrUpdateConflict
-	}
-	if current.ExternalLock {
-		return UpdateResult{}, ErrUpdateLocked
-	}
-	selected := make([]UpdatePackage, 0, len(current.Packages))
-	if operation.Scope == "all" {
-		selected = append(selected, current.Packages...)
-	} else {
-		for _, requested := range operation.Packages {
-			found := false
-			for _, available := range current.Packages {
-				if available.Name == requested {
-					selected = append(selected, available)
-					found = true
-				}
-			}
-			if !found {
-				return UpdateResult{}, ErrUpdateConflict
-			}
-		}
-	}
-	if len(selected) == 0 {
-		return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: []string{}, Updated: []UpdatePackage{}, Verified: true, Message: "No updates were available.", Fingerprint: fingerprint, Recovery: UpdateRecoveryForBackend(ctx, current.Backend)}, nil
-	}
-	// Prefer D-Bus UpdatePackages for the PackageKit backend
-	if current.Backend == "PackageKit" {
-		if err := applyViaPackageKitDBus(ctx, selected); err == nil {
-			// D-Bus success, proceed to verification
-		} else if errors.Is(err, ErrUpdateUnavailable) {
-			// Fallback to CLI if D-Bus not available
-			arguments, err := updateApplyArguments(current.Backend, operation.Scope, operation.Packages)
-			if err != nil {
-				return UpdateResult{}, err
-			}
-			result := runLongUpdateCommand(ctx, arguments[0], arguments[1:]...)
-			if result.Err != nil || result.ExitCode != 0 {
-				return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(result.Err, result.Output))
-			}
-		} else {
-			return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(err, ""))
-		}
-	} else {
-		arguments, err := updateApplyArguments(current.Backend, operation.Scope, operation.Packages)
-		if err != nil {
-			return UpdateResult{}, err
-		}
-		result := runLongUpdateCommand(ctx, arguments[0], arguments[1:]...)
-		if result.Err != nil || result.ExitCode != 0 {
-			return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(result.Err, result.Output))
-		}
-	}
-	final := Updates(ctx)
-	if !final.Available {
-		return UpdateResult{}, ErrUpdateVerification
-	}
-	remaining := make(map[string]struct{}, len(final.Packages))
-	for _, item := range final.Packages {
-		key := item.Name + ":" + item.Architecture
-		remaining[key] = struct{}{}
-		remaining[item.Name] = struct{}{} // also keep name-only for backward compat with CLI fallback
-	}
-	for _, item := range selected {
-		key := item.Name + ":" + item.Architecture
-		if _, exists := remaining[key]; exists {
-			return UpdateResult{}, ErrUpdateVerification
-		}
-		if item.Architecture == "" {
-			if _, exists := remaining[item.Name]; exists {
-				return UpdateResult{}, ErrUpdateVerification
-			}
-		}
-	}
-	packages := make([]string, 0, len(selected))
-	updated := make([]UpdatePackage, 0, len(selected))
-	for _, item := range selected {
-		packages = append(packages, item.Name)
-		updated = append(updated, UpdatePackage{
-			Name:             item.Name,
-			Architecture:     item.Architecture,
-			CurrentVersion:   item.CurrentVersion,
-			CandidateVersion: item.CandidateVersion,
-			Severity:         item.Severity,
-			Size:             item.Size,
-		})
-	}
-	return UpdateResult{Backend: current.Backend, Scope: operation.Scope, Packages: packages, Updated: updated, Verified: true, Message: "Updates applied and verified.", Fingerprint: UpdateFingerprint(final), Recovery: UpdateRecoveryForBackend(ctx, current.Backend)}, nil
-}
-
-func applyViaPackageKitDBus(ctx context.Context, selected []UpdatePackage) error {
-	// Full package IDs look like "name;version;arch;repo"
-	var ids []string
-	for _, p := range selected {
-		if p.PackageID == "" {
-			return ErrUpdateUnavailable
-		}
-		ids = append(ids, p.PackageID)
-	}
-	if len(ids) == 0 {
-		return ErrUpdateUnavailable
-	}
-	client, err := packagekit.New()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	if !client.Detect(ctx) {
-		return ErrUpdateUnavailable
-	}
-	// The transaction itself is observed live by the gateway via D-Bus
-	// (UpdateSnapshot), so no progress callback is threaded through here.
-	return client.UpdatePackages(ctx, ids)
-}
-
-func updateApplyArguments(backend, scope string, packages []string) ([]string, error) {
-	if backend == "PackageKit" {
-		arguments := []string{"pkcon", "--noninteractive", "update"}
-		if scope == "selected" {
-			arguments = append(arguments, packages...)
-		}
-		return arguments, nil
-	}
-	if backend == "apt-get" {
-		arguments := []string{"apt-get", "-y", "--no-remove", "--only-upgrade"}
-		if scope == "all" {
-			return append(arguments, "upgrade"), nil
-		}
-		return append(arguments, append([]string{"install", "--"}, packages...)...), nil
-	}
-	if backend == "dnf" {
-		arguments := []string{"dnf", "-y", "upgrade"}
-		if scope == "selected" {
-			arguments = append(arguments, "--")
-			arguments = append(arguments, packages...)
-		}
-		return arguments, nil
-	}
-	return nil, ErrUpdateUnavailable
-}
-
-func validPackageName(value string) bool {
-	if !validPackageField(value) {
-		return false
-	}
-	for _, character := range value {
-		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && !strings.ContainsRune("+_.:@-", character) {
-			return false
-		}
-	}
-	return true
-}
-
-func runLongUpdateCommand(ctx context.Context, name string, arguments ...string) updateCommandResult {
-	if err := ctx.Err(); err != nil {
-		return updateCommandResult{Err: err, ExitCode: -1}
-	}
-	command := exec.Command(name, arguments...)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return updateCommandResult{Err: err, ExitCode: -1}
-	}
-	if err := command.Start(); err != nil {
-		return updateCommandResult{Err: err, ExitCode: -1}
-	}
-	processDone := make(chan struct{})
-	go func(pid int) {
-		select {
-		case <-ctx.Done():
-			if pid > 0 {
-				_ = syscall.Kill(-pid, syscall.SIGTERM)
-				timer := time.NewTimer(time.Second)
-				select {
-				case <-timer.C:
-					_ = syscall.Kill(-pid, syscall.SIGKILL)
-				case <-processDone:
-					_ = timer.Stop()
-				}
-			}
-		case <-processDone:
-		}
-	}(command.Process.Pid)
-	output, readErr := readBounded(stdout, 8<<20)
-	if readErr != nil && ctx.Err() == nil && command.Process != nil {
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-	}
-	waitErr := command.Wait()
-	close(processDone)
-	if ctx.Err() != nil {
-		return updateCommandResult{Err: ctx.Err(), ExitCode: -1, Output: string(output)}
-	}
-	result := updateCommandResult{Output: string(output), ExitCode: 0, Err: readErr}
-	if waitErr != nil {
-		result.Err = waitErr
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			result.ExitCode = exitErr.ExitCode()
-		} else {
-			result.ExitCode = -1
-		}
-	}
-	return result
-}
-
 func boundedUpdateError(err error, output string) string {
 	message := strings.TrimSpace(output)
 	if message == "" && err != nil {
 		message = err.Error()
 	}
-	if len(message) > 512 {
-		message = message[:512]
+	if len(message) > 1024 {
+		message = message[:1024]
 	}
 	if message == "" {
 		return "package manager rejected the update request"
 	}
 	return message
-}
-
-func parseAPTUpdates(output string) []UpdatePackage {
-	updates := make([]UpdatePackage, 0)
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() && len(updates) < MaxUpdatePackages {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 3 || !strings.Contains(fields[0], "/") || strings.EqualFold(fields[0], "Listing...") {
-			continue
-		}
-		name := strings.SplitN(fields[0], "/", 2)[0]
-		if !validPackageField(name) || !validPackageField(fields[1]) {
-			continue
-		}
-		item := UpdatePackage{Name: name, CandidateVersion: fields[1], Architecture: fields[2]}
-		line := scanner.Text()
-		if start := strings.Index(line, "[upgradable from:"); start >= 0 {
-			value := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line[start+len("[upgradable from:"):], "["), "]"))
-			item.CurrentVersion = strings.TrimSpace(value)
-		}
-		updates = append(updates, item)
-	}
-	return sortUpdates(updates)
-}
-
-func parseAPTGetUpdates(output string) []UpdatePackage {
-	updates := make([]UpdatePackage, 0)
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() && len(updates) < MaxUpdatePackages {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 4 || fields[0] != "Inst" || !validPackageField(fields[1]) {
-			continue
-		}
-		item := UpdatePackage{Name: fields[1]}
-		if len(fields) > 2 {
-			item.CurrentVersion = strings.Trim(fields[2], "[]")
-		}
-		if len(fields) > 3 {
-			item.CandidateVersion = strings.Trim(fields[3], "()")
-		}
-		updates = append(updates, item)
-	}
-	return sortUpdates(updates)
-}
-
-func parseDNFUpdates(output string) []UpdatePackage {
-	updates := make([]UpdatePackage, 0)
-	started := false
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() && len(updates) < MaxUpdatePackages {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) >= 4 && strings.EqualFold(fields[0], "Package") && strings.EqualFold(fields[1], "Arch") {
-			started = true
-			continue
-		}
-		if !started || len(fields) < 4 || !validPackageField(fields[0]) || !validPackageField(fields[2]) {
-			continue
-		}
-		updates = append(updates, UpdatePackage{Name: fields[0], Architecture: fields[1], CandidateVersion: fields[2], Summary: strings.Join(fields[3:], " ")})
-	}
-	return sortUpdates(updates)
-}
-
-func mapPkconSeverity(tokens string) string {
-	lower := strings.ToLower(strings.TrimSpace(tokens))
-	switch {
-	case strings.Contains(lower, "security"):
-		return "security"
-	case strings.Contains(lower, "bug"):
-		return "bugfix"
-	case strings.Contains(lower, "normal"):
-		// pkcon/Debian report ordinary upgrades as "Normal"; they are
-		// neither security nor enhancement advisories.
-		return "bugfix"
-	case strings.Contains(lower, "enhancement"):
-		return "enhancement"
-	case strings.Contains(lower, "available"):
-		return "enhancement"
-	default:
-		return ""
-	}
-}
-
-func parsePkconPackageToken(token string) (name, version, arch string) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return "", "", ""
-	}
-	dotIdx := strings.LastIndex(token, ".")
-	if dotIdx != -1 {
-		candidateArch := token[dotIdx+1:]
-		if validArchitecture(candidateArch) {
-			arch = candidateArch
-			token = token[:dotIdx]
-		}
-	}
-	splitIdx := -1
-	for i := 0; i < len(token)-1; i++ {
-		if token[i] == '-' && token[i+1] >= '0' && token[i+1] <= '9' {
-			splitIdx = i
-			break
-		}
-	}
-	if splitIdx != -1 {
-		name = token[:splitIdx]
-		version = token[splitIdx+1:]
-	} else if idx := strings.LastIndex(token, "-"); idx != -1 {
-		name = token[:idx]
-		version = token[idx+1:]
-	} else {
-		name = token
-	}
-	return name, version, arch
-}
-
-func parsePackageKitUpdates(output string) []UpdatePackage {
-	updates := make([]UpdatePackage, 0)
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() && len(updates) < MaxUpdatePackages {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		lowerLine := strings.ToLower(line)
-		if strings.HasPrefix(lowerLine, "transaction:") || strings.HasPrefix(lowerLine, "status:") || strings.HasPrefix(lowerLine, "results:") || strings.HasPrefix(lowerLine, "loading") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		if strings.EqualFold(fields[0], "package") {
-			continue
-		}
-		if strings.Contains(line, ";") && strings.EqualFold(fields[0], "available") {
-			if len(fields) < 3 {
-				continue
-			}
-			if strings.Contains(fields[1], ";") {
-				parts := strings.Split(fields[1], ";")
-				if len(parts) < 3 || !validPackageField(parts[0]) || !validPackageField(parts[1]) {
-					continue
-				}
-				item := UpdatePackage{Name: parts[0], CandidateVersion: parts[1], Architecture: parts[2]}
-				if len(parts) > 3 {
-					item.Summary = strings.Join(append(parts[3:], fields[2:]...), " ")
-				}
-				sev := mapPkconSeverity(fields[0])
-				if sev != "" {
-					item.Severity = sev
-				}
-				updates = append(updates, item)
-				continue
-			}
-		}
-		if strings.Contains(fields[0], ".") {
-			if dotIdx := strings.LastIndex(fields[0], "."); dotIdx != -1 && dotIdx+1 < len(fields[0]) && validArchitecture(fields[0][dotIdx+1:]) {
-				if len(fields) >= 2 && !strings.HasPrefix(fields[1], "(") && strings.ContainsAny(fields[1], "0123456789") {
-					namePart := fields[0][:dotIdx]
-					archPart := fields[0][dotIdx+1:]
-					if validPackageField(namePart) && validArchitecture(archPart) && validPackageField(fields[1]) {
-						item := UpdatePackage{Name: namePart, Architecture: archPart, CandidateVersion: fields[1], Summary: strings.Join(fields[2:], " ")}
-						if strings.Contains(strings.ToLower(item.Summary), "security") {
-							item.Severity = "security"
-						}
-						updates = append(updates, item)
-						continue
-					}
-				}
-			}
-		}
-		packageIdx := -1
-		for i, f := range fields {
-			if strings.HasPrefix(f, "(") {
-				continue
-			}
-			if strings.Contains(f, ".") && strings.Contains(f, "-") {
-				dotIdx := strings.LastIndex(f, ".")
-				if dotIdx != -1 && dotIdx+1 < len(f) {
-					candidateArch := f[dotIdx+1:]
-					if validArchitecture(candidateArch) {
-						packageIdx = i
-						break
-					}
-				}
-			}
-		}
-		if packageIdx == -1 {
-			if len(fields) >= 4 && strings.EqualFold(fields[0], "available") && validPackageField(fields[1]) && validPackageField(fields[2]) {
-				updates = append(updates, UpdatePackage{Name: fields[1], CandidateVersion: fields[2], Architecture: fields[3], Summary: strings.Join(fields[4:], " "), Severity: mapPkconSeverity(fields[0])})
-			}
-			continue
-		}
-		severityRaw := strings.Join(fields[:packageIdx], " ")
-		severity := mapPkconSeverity(severityRaw)
-		packageToken := fields[packageIdx]
-		repo := ""
-		if packageIdx+1 < len(fields) {
-			tail := strings.Join(fields[packageIdx+1:], " ")
-			repo = strings.TrimSpace(strings.Trim(tail, "()"))
-		}
-		name, version, arch := parsePkconPackageToken(packageToken)
-		if !validPackageField(name) || !validPackageField(version) {
-			continue
-		}
-		item := UpdatePackage{
-			Name:             name,
-			Architecture:     arch,
-			CandidateVersion: version,
-			Severity:         severity,
-			Summary:          repo,
-			Details:          "",
-		}
-		if item.Severity == "" {
-			item.Severity = "enhancement"
-		}
-		updates = append(updates, item)
-	}
-	return sortUpdates(updates)
-}
-
-var (
-	cvePattern   = regexp.MustCompile(`CVE-\d{4}-\d{4,7}`)
-	bugIDPattern = regexp.MustCompile(`(?i)(?:bug|bz|rhbz)[^0-9]*([0-9]{5,8})`)
-	// HACK: dnf prints manual-restart lines as "pid : argv"; RHEL-84657 can
-	// also emit malformed entries, so require the pid prefix.
-	pidArgumentRe = regexp.MustCompile(`^\d+ : `)
-)
-
-func enrichUpdatePackages(updates []UpdatePackage) []UpdatePackage {
-	for index := range updates {
-		pkg := &updates[index]
-		sourceText := strings.Join([]string{pkg.Summary, pkg.Details, pkg.Description}, " ")
-		lower := strings.ToLower(sourceText)
-
-		// Sub-classify security severity from vendor errata anchors
-		// (#Critical/#Important/#Moderate/#Low).
-		pkg.SecSeverity = secSeverityFromURLs(pkg.VendorUrls)
-
-		if pkg.Severity == "" {
-			if strings.Contains(lower, "security") || cvePattern.MatchString(sourceText) {
-				pkg.Severity = "security"
-			} else if strings.Contains(lower, "bug") && strings.Contains(lower, "fix") || strings.Contains(lower, "bugfix") {
-				pkg.Severity = "bugfix"
-			} else if strings.Contains(lower, "enhancement") {
-				pkg.Severity = "enhancement"
-			}
-		} else {
-			normalized := strings.ToLower(strings.TrimSpace(pkg.Severity))
-			switch normalized {
-			case "critical", "important", "security", "sec", "cve":
-				pkg.Severity = "security"
-			case "bug", "bugfix", "bug-fix", "important-bug":
-				pkg.Severity = "bugfix"
-			case "enhancement", "feature", "recommended":
-				pkg.Severity = "enhancement"
-			default:
-				pkg.Severity = normalized
-			}
-		}
-
-		if pkg.Description == "" {
-			if pkg.Details != "" {
-				pkg.Description = pkg.Details
-			} else if pkg.Summary != "" {
-				pkg.Description = pkg.Summary
-			}
-		}
-
-		foundCVEs := cvePattern.FindAllString(sourceText, -1)
-		if len(foundCVEs) > 0 {
-			seen := make(map[string]struct{}, len(foundCVEs))
-			for _, cve := range foundCVEs {
-				if _, exists := seen[cve]; exists {
-					continue
-				}
-				seen[cve] = struct{}{}
-				url := "https://cve.mitre.org/cgi-bin/cvename.cgi?name=" + cve
-				already := false
-				for _, existing := range pkg.CVEUrls {
-					if existing == url {
-						already = true
-						break
-					}
-				}
-				if !already {
-					pkg.CVEUrls = append(pkg.CVEUrls, url)
-				}
-				if pkg.AdvisoryID == "" {
-					pkg.AdvisoryID = cve
-				}
-			}
-		}
-
-		if strings.Contains(lower, "rhsa") || strings.Contains(lower, "errata") {
-			if pkg.AdvisoryID == "" {
-				re := regexp.MustCompile(`(?i)(RHSA-\d{4}:\d+)`)
-				if match := re.FindString(sourceText); match != "" {
-					pkg.AdvisoryID = strings.ToUpper(match)
-					pkg.VendorUrls = append(pkg.VendorUrls, "https://access.redhat.com/errata/"+pkg.AdvisoryID)
-				}
-			}
-		}
-
-		matches := bugIDPattern.FindAllStringSubmatch(sourceText, 5)
-		for _, match := range matches {
-			if len(match) < 2 {
-				continue
-			}
-			id := match[1]
-			url := "https://bugzilla.redhat.com/show_bug.cgi?id=" + id
-			already := false
-			for _, existing := range pkg.BugUrls {
-				if existing == url {
-					already = true
-					break
-				}
-			}
-			if !already {
-				pkg.BugUrls = append(pkg.BugUrls, url)
-			}
-		}
-
-		if pkg.AdvisoryID != "" {
-			pkg.GroupKey = pkg.AdvisoryID + "@" + pkg.CandidateVersion
-		} else if pkg.Summary != "" {
-			summaryKey := pkg.Summary
-			if len(summaryKey) > 64 {
-				summaryKey = summaryKey[:64]
-			}
-			pkg.GroupKey = pkg.CandidateVersion + "@" + summaryKey
-		} else {
-			pkg.GroupKey = pkg.CandidateVersion
-		}
-	}
-
-	groups := make(map[string][]int)
-	for idx, pkg := range updates {
-		if pkg.GroupKey == "" {
-			continue
-		}
-		groups[pkg.GroupKey] = append(groups[pkg.GroupKey], idx)
-	}
-	for _, indices := range groups {
-		if len(indices) < 2 {
-			continue
-		}
-		names := make([]string, 0, len(indices))
-		for _, idx := range indices {
-			names = append(names, updates[idx].Name)
-		}
-		for _, idx := range indices {
-			peers := make([]string, 0, len(names)-1)
-			for _, name := range names {
-				if name != updates[idx].Name {
-					peers = append(peers, name)
-				}
-			}
-			updates[idx].Dependencies = peers
-		}
-	}
-	return updates
-}
-
-func sortUpdates(updates []UpdatePackage) []UpdatePackage {
-	sort.Slice(updates, func(left, right int) bool {
-		if updates[left].Name == updates[right].Name {
-			return updates[left].Architecture < updates[right].Architecture
-		}
-		return updates[left].Name < updates[right].Name
-	})
-	return enrichUpdatePackages(updates)
-}
-
-func validPackageField(value string) bool {
-	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\x00\r\n")
-}
-
-// secSeverityFromURLs extracts the errata severity anchor (#Critical and
-// friends) from vendor URLs.
-func secSeverityFromURLs(urls []string) string {
-	for _, url := range urls {
-		hash := strings.LastIndex(url, "#")
-		if hash == -1 {
-			continue
-		}
-		switch strings.ToLower(url[hash+1:]) {
-		case "critical":
-			return "critical"
-		case "important":
-			return "important"
-		case "moderate":
-			return "moderate"
-		case "low":
-			return "low"
-		}
-	}
-	return ""
-}
-
-func validArchitecture(value string) bool {
-	return validPackageField(value) && len(value) <= 32 && !strings.ContainsAny(value, "/[]:")
 }

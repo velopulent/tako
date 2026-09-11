@@ -3,6 +3,8 @@ package platform
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -193,13 +195,7 @@ func Interfaces() ([]Interface, error) {
 		for _, address := range addresses {
 			values = append(values, address.String())
 		}
-		manager := "kernel"
-		if fileExists("/run/NetworkManager") {
-			manager = "NetworkManager"
-		} else if fileExists("/run/systemd/netif") {
-			manager = "systemd-networkd"
-		}
-		result = append(result, Interface{Name: item.Name, Index: item.Index, MTU: item.MTU, Hardware: item.HardwareAddr.String(), Addresses: values, Up: item.Flags&net.FlagUp != 0, RX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/rx_bytes")), TX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/tx_bytes")), Manager: manager})
+		result = append(result, Interface{Name: item.Name, Index: item.Index, MTU: item.MTU, Hardware: item.HardwareAddr.String(), Addresses: values, Up: item.Flags&net.FlagUp != 0, RX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/rx_bytes")), TX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/tx_bytes")), Manager: "kernel"})
 	}
 	return result, nil
 }
@@ -390,6 +386,7 @@ func unitNameFromObjectPath(path dbus.ObjectPath) string {
 }
 
 type LogEntry struct {
+	ID        string            `json:"id"`
 	Timestamp string            `json:"timestamp"`
 	Priority  string            `json:"priority"`
 	Unit      string            `json:"unit"`
@@ -431,6 +428,10 @@ func parseLogEntryWithDetails(payload []byte, details bool) (LogEntry, bool) {
 		unit = stringValue(row["_SYSTEMD_USER_UNIT"])
 	}
 	entry := LogEntry{Timestamp: time.UnixMicro(micros).UTC().Format(time.RFC3339Nano), Priority: stringValue(row["PRIORITY"]), Unit: unit, Message: stringValue(row["MESSAGE"]), Cursor: stringValue(row["__CURSOR"])}
+	if entry.Cursor != "" {
+		digest := sha256.Sum256([]byte(entry.Cursor))
+		entry.ID = hex.EncodeToString(digest[:16])
+	}
 	if details {
 		const maxDetailBytes = 64 << 10
 		const maxDetailValue = 16 << 10

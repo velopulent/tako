@@ -1,134 +1,314 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import type { ColumnDef } from "@tanstack/react-table"
 import {
-  CopyIcon,
-  DownloadIcon,
+  ArrowUpIcon,
   FileIcon,
   FolderIcon,
   MoreHorizontalIcon,
+  PlusIcon,
   RefreshCwIcon,
-  Trash2Icon,
   UploadIcon,
 } from "lucide-react"
 import * as React from "react"
+import { DataTable, type DataTableFeatures } from "@/components/data-table"
 import { MediaPreview } from "@/components/media-preview"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty"
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Progress } from "@/components/ui/progress"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, type FileEntry, type FileResult } from "@/lib/api"
+import { bytes } from "@/lib/page"
 
-const encodePath = (path: string) => encodeURIComponent(path)
-
-function formatBytes(size: number) {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`
-  if (size < 1024 * 1024 * 1024)
-    return `${(size / (1024 * 1024)).toFixed(1)} MiB`
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+type Action = { action: string; entry?: FileEntry; kind?: string }
+type Transfer = {
+  file: File
+  path: string
+  scope: string
+  offset: number
+  id: string
 }
-
-function parentPath(path: string) {
-  const parts = path.split("/").filter(Boolean)
+const parentPath = (path: string) => {
+  const absolute = path.startsWith("/")
+  const parts = path.split("/").filter((part) => part && part !== ".")
   parts.pop()
-  return parts.length ? `/${parts.join("/")}` : "."
+  return parts.length
+    ? `${absolute ? "/" : ""}${parts.join("/")}`
+    : absolute
+      ? "/"
+      : "."
 }
+const joinPath = (path: string, name: string) =>
+  path === "." ? name : `${path.replace(/\/$/, "")}/${name}`
 
-export function FileBrowser({ csrfToken }: { csrfToken: string }) {
-  const queryClient = useQueryClient()
+export function FileBrowser({
+  csrfToken,
+  administrative = false,
+}: {
+  csrfToken: string
+  administrative?: boolean
+}) {
+  const client = useQueryClient()
+  const [scope, setScope] = React.useState("home")
   const [path, setPath] = React.useState(".")
-  const [showHidden, setShowHidden] = React.useState(false)
-  const [query, setQuery] = React.useState("")
+  const [location, setLocation] = React.useState(".")
+  const [hidden, setHidden] = React.useState(false)
+  const [pages, setPages] = React.useState<number[]>([0])
+  const [fingerprint, setFingerprint] = React.useState("")
+  const [filter, setFilter] = React.useState("")
+  const [search, setSearch] = React.useState("")
   const [selected, setSelected] = React.useState<FileEntry | null>(null)
+  const [selectedPaths, setSelectedPaths] = React.useState<Set<string>>(
+    new Set()
+  )
+  const [dirty, setDirty] = React.useState(false)
+  const [discardPreview, setDiscardPreview] = React.useState(false)
+  const [action, setAction] = React.useState<Action | null>(null)
+  const [value, setValue] = React.useState("")
+  const [overwrite, setOverwrite] = React.useState(false)
+  const [owner, setOwner] = React.useState("")
+  const [group, setGroup] = React.useState("")
+  const [error, setError] = React.useState("")
+  const [transfer, setTransfer] = React.useState<Transfer | null>(null)
+  const transferRef = React.useRef<Transfer | null>(null)
   const [uploading, setUploading] = React.useState(false)
-  const inputRef = React.useRef<HTMLInputElement>(null)
-  const files = useQuery({
-    queryKey: ["files", path, showHidden],
-    queryFn: () =>
+  const controller = React.useRef<AbortController | null>(null)
+  const input = React.useRef<HTMLInputElement>(null)
+  const offset = pages[pages.length - 1]
+  const query = useQuery({
+    queryKey: ["files", scope, path, hidden, offset, search],
+    queryFn: ({ signal }) =>
       api<FileResult>(
-        `/files?path=${encodePath(path)}&hidden=${String(showHidden)}`
+        search
+          ? `/files/search?${new URLSearchParams({ scope, path, query: search, maxEntries: "500" })}`
+          : `/files?${new URLSearchParams({ scope, path, hidden: String(hidden), offset: String(offset), limit: "200", ...(offset ? { fingerprint } : {}) })}`,
+        { signal }
       ),
   })
+  const refresh = () => {
+    setPages([0])
+    setFingerprint("")
+    setSelectedPaths(new Set())
+    void client.invalidateQueries({ queryKey: ["files"] })
+  }
+  const navigate = (next: string) => {
+    setSelected(null)
+    setPath(next)
+    setLocation(next)
+    setPages([0])
+    setFingerprint("")
+    setSearch("")
+    setFilter("")
+    setError("")
+    setSelectedPaths(new Set())
+  }
   const mutation = useMutation({
     mutationFn: (operation: Record<string, unknown>) =>
       api<FileResult>("/files", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
-        body: JSON.stringify(operation),
+        body: JSON.stringify({ ...operation, scope }),
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["files"] })
+      setAction(null)
+      setSelected(null)
+      refresh()
     },
   })
-
-  const entries = (files.data?.directory?.entries ?? []).filter((entry) =>
-    entry.name.toLowerCase().includes(query.toLowerCase())
-  )
-  const open = (entry: FileEntry) => {
-    if (entry.permissionDenied) return
-    if (entry.kind === "directory") {
+  React.useEffect(() => () => controller.current?.abort(), [])
+  React.useEffect(() => {
+    if (scope === "system" && !administrative) {
+      setScope("home")
+      setPath(".")
+      setLocation(".")
+      setPages([0])
       setSelected(null)
-      setPath(entry.path)
-    } else setSelected(entry)
-  }
+    }
+  }, [scope, administrative])
+  const items =
+    query.data?.search?.entries ?? query.data?.directory?.entries ?? []
+  const bulkMutation = useMutation({
+    mutationFn: async (operation: "trash" | "delete") => {
+      const entries = items.filter((entry) => selectedPaths.has(entry.path))
+      for (const entry of entries) {
+        await api<FileResult>("/files", {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken },
+          body: JSON.stringify({
+            action: operation,
+            path: entry.path,
+            scope,
+            expectedFingerprint: entry.fingerprint,
+            confirmation: "CONFIRM FILE OPERATION",
+            permanent: operation === "delete",
+            recursive: entry.kind === "directory",
+          }),
+        })
+      }
+    },
+    onSuccess: refresh,
+  })
   const download = (entry: FileEntry) => {
     const anchor = document.createElement("a")
-    const token = entry.previewToken
-      ? `&token=${encodePath(entry.previewToken)}`
-      : ""
-    anchor.href = `/api/v1/files/content?path=${encodePath(entry.path)}${token}`
+    anchor.href = `/api/v1/files/content?${new URLSearchParams({ path: entry.path, scope, ...(entry.previewToken ? { token: entry.previewToken } : {}) })}`
     anchor.download = entry.name
     anchor.click()
   }
-  const upload = async (file: File) => {
+  const open = (entry: FileEntry) => {
+    if (entry.permissionDenied) return
+    if (entry.kind === "directory") navigate(entry.path)
+    else setSelected(entry)
+  }
+  const choose = (next: Action) => {
+    mutation.reset()
+    setAction(next)
+    setOverwrite(false)
+    setValue(
+      next.action === "metadata"
+        ? (next.entry?.mode.toString(8) ?? "644")
+        : next.action === "rename"
+          ? (next.entry?.name ?? "")
+          : next.action === "archive"
+            ? joinPath(path, `${next.entry?.name ?? "archive"}.tar.gz`)
+            : next.action === "extract"
+              ? path
+              : ""
+    )
+    setOwner("")
+    setGroup("")
+  }
+  const runAction = () => {
+    if (!action) return
+    const operation: Record<string, unknown> = {
+      action: action.action,
+      path:
+        action.action === "extract"
+          ? value
+          : (action.entry?.path ?? joinPath(path, value)),
+      expectedFingerprint: action.entry?.fingerprint,
+      confirmation: overwrite
+        ? "CONFIRM FILE OVERWRITE"
+        : "CONFIRM FILE OPERATION",
+    }
+    if (overwrite) operation.overwrite = true
+    if (action.action === "create") operation.kind = action.kind
+    if (["rename", "move", "copy"].includes(action.action))
+      operation.destination =
+        action.action === "rename"
+          ? joinPath(parentPath(action.entry?.path ?? path), value)
+          : value
+    if (action.action === "archive") operation.archivePath = value
+    if (action.action === "extract") operation.archivePath = action.entry?.path
+    if (action.action === "metadata") {
+      operation.mode = Number.parseInt(value, 8)
+      operation.owner = owner.trim() || undefined
+      operation.group = group.trim() || undefined
+    }
+    if (
+      ["move", "copy"].includes(action.action) &&
+      action.entry?.kind === "directory"
+    ) {
+      operation.recursive = true
+    }
+    if (action.action === "delete") {
+      operation.permanent = true
+      operation.recursive = action.entry?.kind === "directory"
+    }
+    mutation.mutate(operation)
+  }
+  const upload = async (task: Transfer) => {
+    controller.current = new AbortController()
     setUploading(true)
+    setError("")
+    transferRef.current = task
+    setTransfer({ ...task })
     try {
-      const destination = path === "." ? file.name : `${path}/${file.name}`
-      if (file.size === 0) {
+      const recovery = await api<FileResult>("/files", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({
+          action: "upload-status",
+          path: task.path,
+          scope: task.scope,
+          ...(task.id ? { uploadId: task.id } : {}),
+        }),
+      })
+      const candidates =
+        recovery.uploads?.filter((item) => item.total === task.file.size) ?? []
+      const resumable =
+        candidates.find((item) => item.completed) ?? candidates[0]
+      if (resumable?.completed) {
+        setTransfer(null)
+        transferRef.current = null
+        refresh()
+        return
+      }
+      if (resumable) {
+        task.id = resumable.uploadId
+        task.offset = resumable.offset
+      } else if (task.id) {
+        // The staging file expired or was removed. A new upload must restart
+        // at offset zero; the server still refuses to replace an existing
+        // destination without its original fingerprint.
+        task.id = ""
+        task.offset = 0
+      }
+      if (task.file.size === 0) {
         await api<FileResult>("/files", {
           method: "POST",
           headers: { "X-CSRF-Token": csrfToken },
           body: JSON.stringify({
             action: "create",
-            path: destination,
             kind: "file",
+            path: task.path,
+            scope: task.scope,
           }),
         })
-        void queryClient.invalidateQueries({ queryKey: ["files"] })
-        return
       }
-      let offset = 0
-      const chunkSize = 4 * 1024 * 1024
-      while (offset < file.size || (file.size === 0 && offset === 0)) {
-        const chunk = file.slice(offset, offset + chunkSize)
-        const payload = await chunk.arrayBuffer()
-        const digest = await crypto.subtle.digest("SHA-256", payload)
-        const checksum = Array.from(new Uint8Array(digest))
-          .map((value) => value.toString(16).padStart(2, "0"))
-          .join("")
+      while (task.offset < task.file.size) {
+        const payload = await task.file
+          .slice(task.offset, task.offset + 4 * 1024 * 1024)
+          .arrayBuffer()
+        const hash = await crypto.subtle.digest("SHA-256", payload)
+        const checksum = Array.from(new Uint8Array(hash), (byte) =>
+          byte.toString(16).padStart(2, "0")
+        ).join("")
         const response = await fetch(
-          `/api/v1/files/upload?path=${encodePath(destination)}&offset=${offset}&total=${file.size}`,
+          `/api/v1/files/upload?${new URLSearchParams({ path: task.path, scope: task.scope, offset: String(task.offset), total: String(task.file.size), uploadId: task.id })}`,
           {
             method: "POST",
             credentials: "same-origin",
+            signal: controller.current.signal,
             headers: {
               "X-CSRF-Token": csrfToken,
               "X-Content-SHA256": checksum,
@@ -137,277 +317,678 @@ export function FileBrowser({ csrfToken }: { csrfToken: string }) {
             body: payload,
           }
         )
-        if (!response.ok) throw new Error("upload failed")
-        const result = (await response.json()) as { offset?: number }
-        offset = result.offset ?? offset + payload.byteLength
-        if (file.size === 0) break
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.detail ?? "Upload failed")
+        if (
+          !Number.isFinite(result.offset) ||
+          result.offset <= task.offset ||
+          result.offset > task.file.size
+        )
+          throw new Error("Server returned an invalid upload offset")
+        task.id = result.uploadId
+        task.offset = result.offset
+        setTransfer({ ...task })
       }
-      void queryClient.invalidateQueries({ queryKey: ["files"] })
+      setTransfer(null)
+      transferRef.current = null
+      refresh()
+    } catch (cause) {
+      setError(
+        cause instanceof Error && cause.name === "AbortError"
+          ? "Upload paused. Retry to resume or discard it."
+          : cause instanceof Error
+            ? cause.message
+            : "Upload failed"
+      )
     } finally {
       setUploading(false)
-      if (inputRef.current) inputRef.current.value = ""
+      if (input.current) input.current.value = ""
     }
   }
-
-  return (
-    <Card>
-      <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <CardTitle>Files</CardTitle>
-          <CardDescription>
-            Browse under your authenticated UNIX authority. Locked entries stay
-            visible without leaking content.
-          </CardDescription>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void files.refetch()}
-            aria-label="Refresh files"
-          >
-            <RefreshCwIcon aria-hidden="true" />
-            Refresh
-          </Button>
+  const discard = async () => {
+    const task = transferRef.current
+    if (task?.id) {
+      try {
+        await api("/files", {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken },
+          body: JSON.stringify({
+            action: "cancel-upload",
+            path: task.path,
+            scope: task.scope,
+            uploadId: task.id,
+          }),
+        })
+      } catch (cause) {
+        setError(
+          cause instanceof Error ? cause.message : "Could not discard upload"
+        )
+        return
+      }
+    }
+    transferRef.current = null
+    setTransfer(null)
+    setError("")
+  }
+  const columns: ColumnDef<DataTableFeatures, FileEntry>[] = [
+    {
+      id: "select",
+      header: "Select",
+      enableSorting: false,
+      size: 72,
+      cell: ({ row }) => {
+        const entry = row.original
+        return (
           <input
-            ref={inputRef}
-            type="file"
-            className="hidden"
+            type="checkbox"
+            aria-label={`Select ${entry.name}`}
+            checked={selectedPaths.has(entry.path)}
+            onClick={(event) => event.stopPropagation()}
             onChange={(event) => {
-              const file = event.target.files?.[0]
-              if (file) void upload(file)
+              setSelectedPaths((current) => {
+                const next = new Set(current)
+                if (event.target.checked) next.add(entry.path)
+                else next.delete(entry.path)
+                return next
+              })
             }}
           />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => inputRef.current?.click()}
-            disabled={uploading}
+        )
+      },
+    },
+    {
+      accessorKey: "name",
+      header: "Name",
+      size: 320,
+      cell: ({ row }) => (
+        <Button
+          variant="ghost"
+          onClick={() => open(row.original)}
+          disabled={row.original.permissionDenied}
+          className="max-w-full justify-start"
+        >
+          <span aria-hidden="true">
+            {row.original.kind === "directory" ? <FolderIcon /> : <FileIcon />}
+          </span>
+          <span className="truncate">{row.original.name}</span>
+        </Button>
+      ),
+    },
+    {
+      accessorKey: "size",
+      header: "Size",
+      size: 110,
+      cell: ({ row }) =>
+        row.original.kind === "directory" ? "—" : bytes(row.original.size),
+    },
+    {
+      accessorKey: "modifiedAt",
+      header: "Modified",
+      size: 180,
+      cell: ({ row }) => new Date(row.original.modifiedAt).toLocaleString(),
+    },
+    {
+      accessorKey: "mode",
+      header: "Permissions",
+      size: 120,
+      cell: ({ row }) =>
+        row.original.permissionDenied ? (
+          <Badge variant="outline">Locked</Badge>
+        ) : (
+          <code>{row.original.mode.toString(8).padStart(3, "0")}</code>
+        ),
+    },
+    {
+      id: "actions",
+      header: "",
+      size: 60,
+      cell: ({ row }) => (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Actions for ${row.original.name}`}
+              />
+            }
           >
-            <UploadIcon aria-hidden="true" />{" "}
-            {uploading ? "Uploading…" : "Upload"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowHidden((value) => !value)}
-            aria-pressed={showHidden}
-          >
-            {showHidden ? "Hide hidden" : "Show hidden"}
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setPath(parentPath(path))}
-            disabled={path === "."}
-          >
-            Up
-          </Button>
-          <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-sm">
-            {path}
-          </code>
+            <MoreHorizontalIcon />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuGroup>
+              <DropdownMenuItem
+                disabled={row.original.permissionDenied}
+                onClick={() => open(row.original)}
+              >
+                Open
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={
+                  row.original.permissionDenied || row.original.kind !== "file"
+                }
+                onClick={() => download(row.original)}
+              >
+                Download
+              </DropdownMenuItem>
+              {[
+                "rename",
+                "move",
+                "copy",
+                ...(row.original.kind === "file" ||
+                row.original.kind === "directory"
+                  ? ["archive"]
+                  : []),
+                ...(row.original.kind === "file" ? ["extract"] : []),
+                ...(path.includes(".local/share/Trash/files")
+                  ? ["restore", "delete"]
+                  : ["trash"]),
+                ...(scope === "system" ? ["metadata"] : []),
+              ].map((name) => (
+                <DropdownMenuItem
+                  key={name}
+                  disabled={row.original.permissionDenied}
+                  onClick={() => choose({ action: name, entry: row.original })}
+                >
+                  {name === "metadata"
+                    ? "Permissions"
+                    : name === "trash"
+                      ? "Move to trash"
+                      : name === "archive"
+                        ? "Create archive"
+                        : name === "extract"
+                          ? "Extract archive"
+                          : name[0].toUpperCase() + name.slice(1)}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ),
+    },
+  ]
+  const needsValue =
+    action &&
+    [
+      "create",
+      "rename",
+      "move",
+      "copy",
+      "metadata",
+      "archive",
+      "extract",
+    ].includes(action.action)
+  const canOverwrite =
+    action !== null &&
+    ["rename", "move", "copy"].includes(action.action) &&
+    action.entry?.kind === "file"
+  const validValue =
+    !needsValue ||
+    (value.trim() !== "" &&
+      (action.action !== "metadata" || /^[0-7]{3,4}$/.test(value)))
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={scope === "system" ? "destructive" : "secondary"}>
+          {scope === "system" ? "System · elevated" : "Home"}
+        </Badge>
+        <Button
+          variant="outline"
+          onClick={() => {
+            setScope(scope === "home" ? "system" : "home")
+            navigate(scope === "home" ? "/" : ".")
+          }}
+          disabled={!administrative && scope === "home"}
+        >
+          {scope === "home" ? "System files" : "My files"}
+        </Button>
+        <Button
+          variant="ghost"
+          onClick={() =>
+            navigate(
+              scope === "system"
+                ? "/root/.local/share/Trash/files"
+                : ".local/share/Trash/files"
+            )
+          }
+        >
+          Trash
+        </Button>
+        <div className="flex-1" />
+        <Button
+          variant="outline"
+          onClick={() => setHidden(!hidden)}
+          aria-pressed={hidden}
+        >
+          {hidden ? "Hide hidden" : "Show hidden"}
+        </Button>
+        <Button variant="outline" onClick={refresh} aria-label="Refresh files">
+          <RefreshCwIcon />
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" />}>
+            <PlusIcon data-icon="inline-start" />
+            New
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuGroup>
+              <DropdownMenuItem
+                onClick={() => choose({ action: "create", kind: "directory" })}
+              >
+                Folder
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => choose({ action: "create", kind: "file" })}
+              >
+                File
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <input
+          type="file"
+          ref={input}
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            if (file)
+              void upload({
+                file,
+                path: joinPath(path, file.name),
+                scope,
+                offset: 0,
+                id: "",
+              })
+          }}
+        />
+        <Button
+          onClick={() => input.current?.click()}
+          disabled={transfer !== null}
+        >
+          <UploadIcon data-icon="inline-start" />
+          Upload
+        </Button>
+      </div>
+      <form
+        className="flex items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          navigate(location.trim() || ".")
+        }}
+      >
+        <Button
+          variant="outline"
+          type="button"
+          aria-label="Up"
+          onClick={() =>
+            navigate(query.data?.directory?.parent ?? parentPath(path))
+          }
+          disabled={path === "." || path === "/"}
+        >
+          <ArrowUpIcon />
+        </Button>
+        <Field className="flex-1">
+          <FieldLabel htmlFor="file-location">Location</FieldLabel>
           <Input
-            className="w-full sm:max-w-xs"
-            placeholder="Filter this folder"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            aria-label="Filter files"
+            id="file-location"
+            value={location}
+            onChange={(event) => setLocation(event.target.value)}
+          />
+        </Field>
+        <Button variant="outline" type="submit">
+          Go
+        </Button>
+      </form>
+      <nav aria-label="Folder breadcrumbs" className="flex flex-wrap gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => navigate(scope === "system" ? "/" : ".")}
+        >
+          {scope === "system" ? "System" : "Home"}
+        </Button>
+        {path
+          .split("/")
+          .filter((part) => part && part !== ".")
+          .map((part, index, parts) => (
+            <Button
+              key={parts.slice(0, index + 1).join("/")}
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                navigate(
+                  `${scope === "system" ? "/" : ""}${parts.slice(0, index + 1).join("/")}`
+                )
+              }
+            >
+              {part}
+            </Button>
+          ))}
+      </nav>
+      {transfer && (
+        <div className="flex flex-col gap-2" aria-live="polite">
+          <div className="flex items-center gap-2">
+            <span className="flex-1 truncate">
+              {transfer.file.name} · {bytes(transfer.offset)} /{" "}
+              {bytes(transfer.file.size)}
+            </span>
+            {uploading ? (
+              <Button
+                variant="outline"
+                onClick={() => controller.current?.abort()}
+              >
+                Pause
+              </Button>
+            ) : (
+              <>
+                <Button
+                  onClick={() =>
+                    transferRef.current && void upload(transferRef.current)
+                  }
+                >
+                  Retry
+                </Button>
+                <Button variant="outline" onClick={() => void discard()}>
+                  Discard
+                </Button>
+              </>
+            )}
+          </div>
+          <Progress
+            value={
+              transfer.file.size
+                ? (transfer.offset / transfer.file.size) * 100
+                : 0
+            }
           />
         </div>
-        {files.isPending && <Skeleton className="h-64" />}
-        {files.isError && (
-          <Alert variant="destructive">
-            <AlertTitle>Files unavailable</AlertTitle>
-            <AlertDescription>
-              The authenticated UNIX bridge could not read this folder. Try
-              refreshing or use the terminal.
-            </AlertDescription>
-          </Alert>
-        )}
-        {!files.isPending && !files.isError && entries.length === 0 && (
-          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-            This folder is empty or no entries match the filter.
-          </div>
-        )}
-        {!files.isPending && !files.isError && entries.length > 0 && (
-          <>
-            {/* biome-ignore lint/a11y/useSemanticElements: entries are interactive rows (keyboard operable, context menu), not tabular data with headers; a table/treegrid conversion is out of scope */}
-            <div
-              className="divide-y rounded-lg border"
-              role="table"
-              aria-label="Files"
-            >
-              {entries.map((entry) => (
-                <ContextMenu key={`${entry.path}:${entry.fingerprint}`}>
-                  <ContextMenuTrigger className="contents">
-                    {/* biome-ignore lint/a11y/useSemanticElements: see container note above; this row is an interactive entry, not a table row */}
-                    <div
-                      className="flex min-h-14 items-center gap-3 px-3 py-2 hover:bg-muted/50"
-                      role="row"
-                      tabIndex={0}
-                      onDoubleClick={() => open(entry)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault()
-                          open(entry)
-                        }
-                      }}
-                    >
-                      {entry.kind === "directory" ? (
-                        <FolderIcon
-                          className="size-5 text-muted-foreground"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <FileIcon
-                          className="size-5 text-muted-foreground"
-                          aria-hidden="true"
-                        />
-                      )}
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 truncate text-left font-medium"
-                        onClick={() => open(entry)}
-                      >
-                        {entry.name}
-                      </button>
-                      {entry.permissionDenied && (
-                        <span className="text-xs text-muted-foreground">
-                          Locked
-                        </span>
-                      )}
-                      <span className="hidden text-xs text-muted-foreground sm:inline">
-                        {formatBytes(entry.size)}
-                      </span>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger
-                          render={
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Actions for ${entry.name}`}
-                            />
-                          }
-                        >
-                          <MoreHorizontalIcon aria-hidden="true" />
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => open(entry)}
-                            disabled={entry.permissionDenied}
-                          >
-                            <FileIcon aria-hidden="true" /> Open
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => download(entry)}
-                            disabled={
-                              entry.permissionDenied ||
-                              entry.kind === "directory"
-                            }
-                          >
-                            <DownloadIcon aria-hidden="true" /> Download
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() =>
-                              mutation.mutate({
-                                action: "copy",
-                                path: entry.path,
-                                destination: `${entry.path}.copy`,
-                                expectedFingerprint: entry.fingerprint,
-                              })
-                            }
-                            disabled={
-                              entry.permissionDenied ||
-                              entry.kind === "directory"
-                            }
-                          >
-                            <CopyIcon aria-hidden="true" /> Copy here
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() =>
-                              mutation.mutate({
-                                action: "trash",
-                                path: entry.path,
-                                expectedFingerprint: entry.fingerprint,
-                              })
-                            }
-                            disabled={entry.permissionDenied}
-                          >
-                            <Trash2Icon aria-hidden="true" /> Move to trash
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </ContextMenuTrigger>
-                  <ContextMenuContent>
-                    <ContextMenuItem
-                      onClick={() => open(entry)}
-                      disabled={entry.permissionDenied}
-                    >
-                      <FileIcon aria-hidden="true" /> Open
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      onClick={() => download(entry)}
-                      disabled={
-                        entry.permissionDenied || entry.kind === "directory"
-                      }
-                    >
-                      <DownloadIcon aria-hidden="true" /> Download
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      onClick={() =>
-                        mutation.mutate({
-                          action: "copy",
-                          path: entry.path,
-                          destination: `${entry.path}.copy`,
-                          expectedFingerprint: entry.fingerprint,
-                        })
-                      }
-                      disabled={
-                        entry.permissionDenied || entry.kind === "directory"
-                      }
-                    >
-                      <CopyIcon aria-hidden="true" /> Copy here
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      className="text-destructive"
-                      onClick={() =>
-                        mutation.mutate({
-                          action: "trash",
-                          path: entry.path,
-                          expectedFingerprint: entry.fingerprint,
-                        })
-                      }
-                      disabled={entry.permissionDenied}
-                    >
-                      <Trash2Icon aria-hidden="true" /> Move to trash
-                    </ContextMenuItem>
-                  </ContextMenuContent>
-                </ContextMenu>
-              ))}
-            </div>
-          </>
-        )}
-        <MediaPreview entry={selected} csrfToken={csrfToken} />
-        {mutation.isError && (
-          <Alert variant="destructive">
-            <AlertTitle>File action failed</AlertTitle>
-            <AlertDescription>
-              Refresh the folder and retry after checking the item is still
-              present.
-            </AlertDescription>
-          </Alert>
-        )}
-        <p className="flex items-center gap-2 text-xs text-muted-foreground">
-          <UploadIcon className="size-3.5" aria-hidden="true" /> Uploads use
-          resumable 4 MiB chunks with per-chunk SHA-256 verification.
+      )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertTitle>Transfer interrupted</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      {bulkMutation.isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Bulk file action interrupted</AlertTitle>
+          <AlertDescription>
+            {bulkMutation.error.message} Some selected items may already have
+            been changed; refresh before retrying.
+          </AlertDescription>
+        </Alert>
+      )}
+      {query.isPending && <Skeleton className="h-80" />}
+      {query.isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Files unavailable</AlertTitle>
+          <AlertDescription>
+            {query.error.message}
+            <Button variant="outline" onClick={refresh}>
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {!query.isPending && !query.isError && items.length === 0 && (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>This folder is empty</EmptyTitle>
+            <EmptyDescription>
+              {search
+                ? "No matching names found. Clear search or choose another folder."
+                : "Create a folder or upload a file to get started."}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+      {!query.isPending && !query.isError && (
+        <DataTable
+          data={items}
+          columns={columns}
+          height="52vh"
+          search={filter}
+          onSearchChange={setFilter}
+          searchPlaceholder="Filter names on this page"
+          toolbar={
+            <>
+              {selectedPaths.size > 0 && (
+                <>
+                  <Badge variant="secondary">
+                    {selectedPaths.size} selected
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={bulkMutation.isPending}
+                    onClick={() => bulkMutation.mutate("trash")}
+                  >
+                    Move selected to trash
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={bulkMutation.isPending}
+                    onClick={() => bulkMutation.mutate("delete")}
+                  >
+                    Delete selected
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="outline"
+                disabled={!filter.trim()}
+                onClick={() => {
+                  setSearch(filter)
+                  setPages([0])
+                }}
+              >
+                Search subfolders
+              </Button>
+              {search && (
+                <Button variant="ghost" onClick={() => setSearch("")}>
+                  Clear search
+                </Button>
+              )}
+            </>
+          }
+        />
+      )}
+      {query.data?.search?.limited && (
+        <p className="text-sm text-muted-foreground">
+          Search limit reached. Choose a narrower folder.
         </p>
-      </CardContent>
-    </Card>
+      )}
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">
+          {items.length} items on this page
+        </span>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            disabled={pages.length === 1}
+            onClick={() => setPages(pages.slice(0, -1))}
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!query.data?.directory?.hasMore}
+            onClick={() => {
+              setFingerprint(query.data?.directory?.fingerprint ?? "")
+              setPages([...pages, query.data?.directory?.nextOffset ?? 0])
+            }}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+      <Sheet
+        open={selected !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            if (dirty) setDiscardPreview(true)
+            else setSelected(null)
+          }
+        }}
+      >
+        <SheetContent className="overflow-y-auto sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle>{selected?.name ?? "File details"}</SheetTitle>
+            <SheetDescription>{selected?.path}</SheetDescription>
+          </SheetHeader>
+          <div className="p-4">
+            <MediaPreview
+              key={`${scope}:${selected?.path}`}
+              entry={selected}
+              csrfToken={csrfToken}
+              scope={scope}
+              onDirtyChange={setDirty}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+      <Dialog open={discardPreview} onOpenChange={setDiscardPreview}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Discard unsaved changes?</DialogTitle>
+            <DialogDescription>
+              Your edits have not been saved.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDiscardPreview(false)}>
+              Keep editing
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setDiscardPreview(false)
+                setSelected(null)
+                setDirty(false)
+              }}
+            >
+              Discard changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={action !== null}
+        onOpenChange={(open) => {
+          if (!open && !mutation.isPending) setAction(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {action?.action === "create"
+                ? `New ${action.kind}`
+                : action?.action === "metadata"
+                  ? "Change permissions"
+                  : `${action?.action ?? "File action"} ${action?.entry?.name ?? ""}`}
+            </DialogTitle>
+            <DialogDescription>
+              {action?.action === "delete"
+                ? "This permanently deletes the item and cannot be undone."
+                : action?.action === "trash"
+                  ? "Move this item to trash. Restore it later from Trash."
+                  : action?.action === "archive"
+                    ? "Create a bounded gzip tar archive without following symlinks."
+                    : action?.action === "extract"
+                      ? "Extract a bounded gzip tar archive into the selected destination."
+                      : overwrite
+                        ? "The destination file will be replaced. This cannot be undone."
+                        : "Review the destination and apply this file change."}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault()
+              runAction()
+            }}
+          >
+            {needsValue && (
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="file-action-value">
+                    {action.action === "metadata"
+                      ? "Permissions (octal)"
+                      : ["archive", "extract"].includes(action.action)
+                        ? action.action === "archive"
+                          ? "Archive path"
+                          : "Destination path"
+                        : ["move", "copy"].includes(action.action)
+                          ? "Destination path"
+                          : "Name"}
+                  </FieldLabel>
+                  <Input
+                    id="file-action-value"
+                    value={value}
+                    onChange={(event) => setValue(event.target.value)}
+                    required
+                  />
+                </Field>
+              </FieldGroup>
+            )}
+            {action?.action === "metadata" && (
+              <FieldGroup className="grid gap-4 md:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="file-owner">Owner</FieldLabel>
+                  <Input
+                    id="file-owner"
+                    value={owner}
+                    onChange={(event) => setOwner(event.target.value)}
+                    placeholder="username"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="file-group">Group</FieldLabel>
+                  <Input
+                    id="file-group"
+                    value={group}
+                    onChange={(event) => setGroup(event.target.value)}
+                    placeholder="groupname"
+                  />
+                </Field>
+              </FieldGroup>
+            )}
+            {canOverwrite && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={overwrite}
+                  onChange={(event) => setOverwrite(event.target.checked)}
+                />
+                Replace an existing regular file
+              </label>
+            )}
+            {mutation.isError && (
+              <Alert variant="destructive">
+                <AlertTitle>File action failed</AlertTitle>
+                <AlertDescription>{mutation.error.message}</AlertDescription>
+              </Alert>
+            )}
+            <DialogFooter>
+              <Button
+                variant="outline"
+                type="button"
+                disabled={mutation.isPending}
+                onClick={() => setAction(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={!validValue || mutation.isPending}
+              >
+                {mutation.isPending ? "Applying…" : "Apply"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }

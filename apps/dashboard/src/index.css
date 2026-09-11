@@ -5,6 +5,10 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --color-terminal: var(--terminal);
+  --color-terminal-foreground: var(--terminal-foreground);
+  --color-terminal-muted: var(--terminal-muted);
+  --color-terminal-border: var(--terminal-border);
   --font-heading: var(--font-sans);
   --font-sans: "Geist Variable", sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
@@ -55,6 +59,11 @@
 }
 
 :root {
+  --terminal: #09090b;
+  --terminal-foreground: #fafafa;
+  --terminal-muted: #a1a1aa;
+  --terminal-border: #27272a;
+  --terminal-selection: #3f3f4680;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -135,6 +144,99 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+}
+
+/* Keep the shell dark so ANSI output remains readable in either Tako mode. */
+.tako-light,
+.tako-dark {
+  --terminal: #1b1b19;
+  --terminal-foreground: #eeeae0;
+  --terminal-muted: #aaa79b;
+  --terminal-border: #3d3c36;
+  --terminal-selection: #aaa79b40;
+}
+
+/* Tako uses the paper, ink, and terracotta palette from apps/web. */
+.tako-light {
+  --chart-cpu: #467583;
+  --chart-memory: #52755d;
+  --chart-swap: #8a6b34;
+  --chart-disk-read: #836283;
+  --chart-disk-write: #b0472e;
+  --chart-network-rx: #397c78;
+  --chart-network-tx: #a06432;
+
+  --background: #f6f5f0;
+  --foreground: #191918;
+  --card: #fbfaf7;
+  --popover: #fbfaf7;
+  --primary: #b0472e;
+  --primary-foreground: #fbfaf7;
+  --secondary: #e9e7de;
+  --muted: #e9e7de;
+  --muted-foreground: #68675f;
+  --accent: #e9e7de;
+  --accent-foreground: #923a26;
+  --border: #d8d6cc;
+  --input: #d8d6cc;
+  --ring: #b0472e;
+  --sidebar: #e9e7de;
+  --sidebar-accent: #dedbd0;
+  --chart-1: #b0472e;
+  --chart-2: #52755d;
+  --chart-3: #467583;
+  --chart-4: #8a6b34;
+  --chart-5: #836283;
+  --card-foreground: #191918;
+  --popover-foreground: #191918;
+  --secondary-foreground: #191918;
+  --sidebar-foreground: #191918;
+  --sidebar-primary: #b0472e;
+  --sidebar-primary-foreground: #fbfaf7;
+  --sidebar-accent-foreground: #923a26;
+  --sidebar-border: #d8d6cc;
+  --sidebar-ring: #b0472e;
+}
+
+.tako-dark {
+  --chart-cpu: #86b5c1;
+  --chart-memory: #9bbc99;
+  --chart-swap: #d2b275;
+  --chart-disk-read: #ba9abc;
+  --chart-disk-write: #ee8969;
+  --chart-network-rx: #81beb5;
+  --chart-network-tx: #dba06e;
+
+  --background: #1b1b19;
+  --foreground: #eeeae0;
+  --card: #22221f;
+  --popover: #22221f;
+  --primary: #ee8969;
+  --primary-foreground: #1b1b19;
+  --secondary: #2a2a26;
+  --muted: #2a2a26;
+  --muted-foreground: #aaa79b;
+  --accent: #2a2a26;
+  --accent-foreground: #ee8969;
+  --border: #3d3c36;
+  --input: #4a4941;
+  --ring: #ee8969;
+  --sidebar: #22221f;
+  --sidebar-accent: #33332d;
+  --chart-1: #ee8969;
+  --chart-2: #9bbc99;
+  --chart-3: #86b5c1;
+  --chart-4: #d2b275;
+  --chart-5: #ba9abc;
+  --card-foreground: #eeeae0;
+  --popover-foreground: #eeeae0;
+  --secondary-foreground: #eeeae0;
+  --sidebar-foreground: #eeeae0;
+  --sidebar-primary: #ee8969;
+  --sidebar-primary-foreground: #1b1b19;
+  --sidebar-accent-foreground: #ee8969;
+  --sidebar-border: #3d3c36;
+  --sidebar-ring: #ee8969;
 }
 
 @layer base {

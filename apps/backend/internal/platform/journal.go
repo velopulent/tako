@@ -149,7 +149,7 @@ func QueryLogs(ctx context.Context, query JournalQuery) (JournalPage, error) {
 
 // QueryLogsAs runs journalctl with optional UNIX credentials. A nil credential
 // keeps the caller identity. sessiond passes the authenticated operator, or
-// nil when an administrative grant is active (root journal, Cockpit-style).
+// nil when an administrative grant is active (root journal access).
 func QueryLogsAs(ctx context.Context, query JournalQuery, cred *syscall.Credential) (JournalPage, error) {
 	if query.Limit == 0 {
 		query.Limit = 200
@@ -170,6 +170,9 @@ func QueryLogsAs(ctx context.Context, query JournalQuery, cred *syscall.Credenti
 		return JournalPage{}, err
 	}
 	output, readErr := readBounded(stdout, maxJournalOutput)
+	if readErr != nil {
+		_ = command.Process.Kill()
+	}
 	waitErr := command.Wait()
 	if readErr != nil {
 		return JournalPage{}, readErr
@@ -279,6 +282,8 @@ func FollowJournalAs(ctx context.Context, query JournalQuery, cred *syscall.Cred
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
 		return err
 	}
 	err = command.Wait()

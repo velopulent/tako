@@ -72,8 +72,6 @@ type Server struct {
 	readUpdatesFn          func(context.Context) (platform.UpdateStatus, error)
 	previewUpdatesFn       func(context.Context, platform.UpdateOperation) (platform.UpdatePreview, error)
 	applyUpdatesFn         func(context.Context, auth.UpdateRequest) (platform.UpdateResult, error)
-	autoUpdatesFn          func(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error)
-	autoUpdatesStatusFn    func(context.Context) platform.AutoUpdatesConfig
 	kpatchSettingsFn       func(context.Context, auth.KpatchRequest) (platform.KpatchSettingsStatus, error)
 	updateTokensMu         sync.Mutex
 	updateTokens           map[string]string
@@ -83,6 +81,7 @@ type Server struct {
 	readProcessesFn        func(context.Context) ([]platform.Process, error)
 	readIdentityFn         func(context.Context) (platform.IdentityInventory, error)
 	readFilesystemsFn      func(context.Context) ([]platform.Filesystem, error)
+	readStorageFn          func(context.Context) (platform.StorageSnapshot, error)
 	readNetworkFn          func(context.Context) (platform.NetworkSnapshot, error)
 	previewSignalFn        func(context.Context, platform.SignalOperation) (platform.SignalPreview, error)
 	readMetricHistoryFn    func(context.Context, time.Time, int) ([]metrics.Sample, error)
@@ -90,7 +89,6 @@ type Server struct {
 	readUpdateHistoryFn    func(context.Context) ([]platform.UpdateHistoryEntry, error)
 	readUpdateLiveFn       func(context.Context) (auth.UpdateObservation, error)
 	refreshUpdatesFn       func(context.Context, bool) (platform.UpdateStatus, error)
-	cancelUpdateFn         func(context.Context) (bool, error)
 	applyTimer             func(context.Context, auth.TimerRequest) (platform.TimerState, error)
 	applyOverride          func(context.Context, auth.OverrideRequest) (platform.OverrideState, error)
 	previewAccountFn       func(context.Context, auth.LocalAccountRequest) (platform.LocalAccountPreview, error)
@@ -180,13 +178,6 @@ func New(cfg config.Config) (*Server, error) {
 		applyUpdatesFn: func(ctx context.Context, request auth.UpdateRequest) (platform.UpdateResult, error) {
 			return server.hostBroker().ApplyUpdates(ctx, request)
 		},
-		autoUpdatesFn: func(ctx context.Context, request auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
-			return server.hostBroker().ApplyAutoUpdates(ctx, request)
-		},
-		autoUpdatesStatusFn: func(ctx context.Context) platform.AutoUpdatesConfig {
-			status, _ := server.hostBroker().ReadAutoUpdatesStatus(ctx, credentialsFromContext(ctx))
-			return status
-		},
 		kpatchSettingsFn: func(ctx context.Context, request auth.KpatchRequest) (platform.KpatchSettingsStatus, error) {
 			return server.hostBroker().ApplyKpatch(ctx, request)
 		},
@@ -242,6 +233,9 @@ func New(cfg config.Config) (*Server, error) {
 	server.readFilesystemsFn = func(ctx context.Context) ([]platform.Filesystem, error) {
 		return server.hostBroker().ReadFilesystems(ctx, credentialsFromContext(ctx))
 	}
+	server.readStorageFn = func(ctx context.Context) (platform.StorageSnapshot, error) {
+		return server.hostBroker().ReadStorageSnapshot(ctx, credentialsFromContext(ctx))
+	}
 	server.readNetworkFn = func(ctx context.Context) (platform.NetworkSnapshot, error) {
 		return server.hostBroker().ReadNetworkSnapshot(ctx, credentialsFromContext(ctx))
 	}
@@ -263,10 +257,6 @@ func New(cfg config.Config) (*Server, error) {
 	server.refreshUpdatesFn = func(ctx context.Context, force bool) (platform.UpdateStatus, error) {
 		current, _ := ctx.Value(sessionKey{}).(session.Session)
 		return server.hostBroker().RefreshUpdates(ctx, current.Identity.AdminToken, force)
-	}
-	server.cancelUpdateFn = func(ctx context.Context) (bool, error) {
-		current, _ := ctx.Value(sessionKey{}).(session.Session)
-		return server.hostBroker().CancelUpdate(ctx, current.Identity.AdminToken)
 	}
 	server.detectCapabilities = func(ctx context.Context) []platform.Capability {
 		capabilities, _ := server.hostBroker().ReadCapabilities(ctx, credentialsFromContext(ctx))
@@ -489,9 +479,6 @@ func (server *Server) routes() http.Handler {
 			router.Get("/updates/live", server.updateLiveStatus)
 			router.Get("/updates/kpatch", server.kpatchStatus)
 			router.With(server.requireCSRF).Put("/updates/kpatch", server.applyKpatchSettings)
-			router.Get("/updates/automatic", server.automaticUpdatesStatus)
-			router.With(server.requireCSRF).Post("/updates/cancel", server.cancelRunningUpdate)
-			router.With(server.requireCSRF).Put("/updates/automatic", server.applyAutomaticUpdates)
 			router.Get("/services", server.services)
 			router.Get("/services/{scope}/{unit}", server.serviceDetail)
 			router.Get("/services/{scope}/{unit}/configuration", server.serviceConfiguration)
@@ -502,6 +489,8 @@ func (server *Server) routes() http.Handler {
 			router.With(server.requireCSRF).Post("/timers/preview", server.timerPreview)
 			router.With(server.requireCSRF).Post("/timers", server.timerAction)
 			router.Get("/storage", server.storage)
+			router.With(server.requireCSRF).Post("/storage/preview", server.storagePreview)
+			router.With(server.requireCSRF).Post("/storage", server.storageApply)
 			router.Get("/network", server.network)
 			router.With(server.requireCSRF).Post("/network/preview", server.networkPreview)
 			router.With(server.requireCSRF).Post("/network", server.networkApply)
@@ -751,7 +740,6 @@ func (server *Server) logRequest(next http.Handler) http.Handler {
 			zap.String("request_id", middleware.GetReqID(request.Context())),
 			zap.String("method", request.Method),
 			zap.String("path", request.URL.Path),
-			zap.String("query", request.URL.RawQuery),
 			zap.Int("status", wrapped.Status()),
 			zap.Int("bytes", wrapped.BytesWritten()),
 			zap.String("remote_ip", request.RemoteAddr),
@@ -1159,12 +1147,103 @@ func (server *Server) groups(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (server *Server) storage(writer http.ResponseWriter, request *http.Request) {
-	if server.readFilesystemsFn == nil {
+	if server.readStorageFn == nil && server.readFilesystemsFn == nil {
 		problem(writer, http.StatusServiceUnavailable, "storage-unavailable", "Storage inventory is unavailable")
 		return
 	}
-	items, err := server.readFilesystemsFn(request.Context())
-	server.writeModule(writer, "storage", items, err)
+	var snapshot platform.StorageSnapshot
+	var err error
+	if server.readStorageFn != nil {
+		snapshot, err = server.readStorageFn(request.Context())
+	} else {
+		var filesystems []platform.Filesystem
+		filesystems, err = server.readFilesystemsFn(request.Context())
+		snapshot = platform.StorageSnapshotFromFilesystems(filesystems, "Hardware inventory is unavailable.")
+	}
+	if err != nil {
+		server.writeModule(writer, "storage", nil, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"items": snapshot.Filesystems, "devices": snapshot.Devices,
+		"fingerprint": snapshot.Fingerprint, "readOnly": snapshot.ReadOnly,
+		"reason": snapshot.Reason,
+	})
+}
+
+func decodeStorageOperation(writer http.ResponseWriter, request *http.Request) (platform.StorageOperation, bool) {
+	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var operation platform.StorageOperation
+	if err := decoder.Decode(&operation); err != nil {
+		problem(writer, http.StatusBadRequest, "invalid-storage-operation", "Storage operation is invalid")
+		return platform.StorageOperation{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		problem(writer, http.StatusBadRequest, "invalid-storage-operation", "Storage operation contains trailing data")
+		return platform.StorageOperation{}, false
+	}
+	return operation, true
+}
+
+func (server *Server) storagePreview(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before previewing storage changes")
+		return
+	}
+	operation, ok := decodeStorageOperation(writer, request)
+	if !ok {
+		return
+	}
+	operation.Action = "preview"
+	state, err := server.hostBroker().PreviewStorage(request.Context(), auth.StorageRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeStorageOperationError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (server *Server) storageApply(writer http.ResponseWriter, request *http.Request) {
+	current := request.Context().Value(sessionKey{}).(session.Session)
+	if current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil) {
+		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before changing storage")
+		return
+	}
+	operation, ok := decodeStorageOperation(writer, request)
+	if !ok {
+		return
+	}
+	startedAt := time.Now().UTC()
+	state, err := server.hostBroker().ApplyStorage(request.Context(), auth.StorageRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	if err != nil {
+		writeStorageOperationError(writer, err)
+		server.recordOperation(request.Context(), current.Identity.Username, "storage/"+operation.Action, startedAt, "failed", err.Error(), true)
+		return
+	}
+	server.recordOperation(request.Context(), current.Identity.Username, "storage/"+operation.Action, startedAt, "succeeded", "", true)
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func writeStorageOperationError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, platform.ErrInvalidStorageOperation):
+		problem(writer, http.StatusBadRequest, "invalid-storage-operation", "Storage operation is invalid")
+	case errors.Is(err, platform.ErrStorageConflict):
+		problem(writer, http.StatusConflict, "storage-conflict", "Storage state changed; preview again")
+	case errors.Is(err, platform.ErrStorageUnsafe):
+		problem(writer, http.StatusForbidden, "storage-unsafe", "The selected storage target is protected or read-only")
+	case errors.Is(err, platform.ErrStorageBusy):
+		problem(writer, http.StatusConflict, "storage-busy", "The storage target is busy")
+	case errors.Is(err, platform.ErrStorageUnavailable):
+		problem(writer, http.StatusServiceUnavailable, "storage-unavailable", "UDisks2 storage service is unavailable")
+	case errors.Is(err, auth.ErrServiceUnavailable):
+		problem(writer, http.StatusBadGateway, "storage-service-unavailable", "The privileged storage service is unavailable")
+	default:
+		problem(writer, http.StatusBadGateway, "storage-operation-failed", "The storage operation failed")
+	}
 }
 
 func (server *Server) network(writer http.ResponseWriter, request *http.Request) {
@@ -1251,6 +1330,8 @@ func writeNetworkOperationError(writer http.ResponseWriter, err error) {
 		problem(writer, http.StatusConflict, "network-conflict", "Network state changed; preview again")
 	case errors.Is(err, platform.ErrNetworkOwnership):
 		problem(writer, http.StatusConflict, "network-ownership-conflict", "Network ownership is conflicted; mutations are disabled")
+	case errors.Is(err, platform.ErrNetworkCheckpoint):
+		problem(writer, http.StatusConflict, "network-checkpoint-invalid", "Network reconnect checkpoint is invalid or expired")
 	case errors.Is(err, platform.ErrNetworkUnavailable):
 		problem(writer, http.StatusServiceUnavailable, "network-unavailable", "The selected network adapter is unavailable")
 	case errors.Is(err, auth.ErrServiceUnavailable):
@@ -1340,6 +1421,8 @@ func writeFirewallOperationError(writer http.ResponseWriter, err error) {
 		problem(writer, http.StatusConflict, "firewall-ownership-conflict", "Conflicting firewall ownership detected")
 	case errors.Is(err, platform.ErrFirewallAccessRisk):
 		problem(writer, http.StatusForbidden, "firewall-access-risk", "This change could lock out management access")
+	case errors.Is(err, platform.ErrFirewallCheckpoint):
+		problem(writer, http.StatusConflict, "firewall-checkpoint-invalid", "Firewall rollback checkpoint is invalid or expired")
 	case errors.Is(err, platform.ErrFirewallUnavailable):
 		problem(writer, http.StatusServiceUnavailable, "firewall-unavailable", "No supported active firewall adapter is available")
 	case errors.Is(err, auth.ErrServiceUnavailable):
@@ -1389,7 +1472,6 @@ func (server *Server) securityPreview(writer http.ResponseWriter, request *http.
 	if !ok {
 		return
 	}
-	operation.Action = "inspect"
 	status, err := server.hostBroker().PreviewSecurity(request.Context(), auth.SecurityRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
 	if err != nil {
 		writeSecurityOperationError(writer, err)
@@ -1437,7 +1519,17 @@ func writeSecurityOperationError(writer http.ResponseWriter, err error) {
 }
 
 func (server *Server) filesList(writer http.ResponseWriter, request *http.Request) {
-	operation := platform.FileOperation{Action: "list", Path: request.URL.Query().Get("path"), ShowHidden: request.URL.Query().Get("hidden") == "true"}
+	operation := platform.FileOperation{Action: "list", Path: request.URL.Query().Get("path"), ShowHidden: request.URL.Query().Get("hidden") == "true", ExpectedFingerprint: request.URL.Query().Get("fingerprint")}
+	for name, target := range map[string]*int64{"offset": &operation.Offset, "limit": &operation.Limit} {
+		if raw := request.URL.Query().Get(name); raw != "" {
+			value, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || value < 0 {
+				problem(writer, http.StatusBadRequest, "invalid-file-range", "Directory page is invalid")
+				return
+			}
+			*target = value
+		}
+	}
 	if operation.Path == "" {
 		operation.Path = "."
 	}
@@ -1630,9 +1722,37 @@ func (server *Server) fileContent(writer http.ResponseWriter, request *http.Requ
 		}
 		writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", result.Offset, end, result.Total))
 	}
-	writer.Header().Set("Content-Length", strconv.Itoa(len(result.Content)))
+	fullDownload := status == http.StatusOK && request.URL.Query().Get("offset") == "" && request.URL.Query().Get("limit") == ""
+	length := int64(len(result.Content))
+	if fullDownload {
+		length = result.Total
+	}
+	writer.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 	writer.WriteHeader(status)
-	_, _ = writer.Write(result.Content)
+	if _, err := writer.Write(result.Content); err != nil {
+		return
+	}
+	for next := int64(len(result.Content)); fullDownload && next < result.Total; {
+		current, exists := request.Context().Value(sessionKey{}).(session.Session)
+		if !exists {
+			return
+		}
+		operation := platform.FileOperation{Action: "read", Path: path, Offset: next, Limit: platform.MaxFileChunk, ExpectedFingerprint: result.Fingerprint, Scope: request.URL.Query().Get("scope")}
+		fileRequest := auth.FileRequest{Operation: operation, Token: current.Identity.BridgeToken}
+		if operation.Scope == "system" {
+			fileRequest.Token = ""
+			fileRequest.Administrative = true
+			fileRequest.AdminToken = current.Identity.AdminToken
+		}
+		chunk, err := server.hostBroker().ApplyFileOperation(request.Context(), fileRequest)
+		if err != nil || len(chunk.Content) == 0 {
+			return
+		}
+		if _, err := writer.Write(chunk.Content); err != nil {
+			return
+		}
+		next += int64(len(chunk.Content))
+	}
 }
 
 func (server *Server) fileTextWindow(writer http.ResponseWriter, request *http.Request) {
@@ -1690,7 +1810,7 @@ func (server *Server) fileUpload(writer http.ResponseWriter, request *http.Reque
 	if raw := request.URL.Query().Get("total"); raw != "" && err == nil {
 		total, err = strconv.ParseInt(raw, 10, 64)
 	}
-	if err != nil || offset < 0 || total < 0 || (total > 0 && offset > total) {
+	if err != nil || offset < 0 || total <= 0 || total > 1<<40 || offset > total {
 		problem(writer, http.StatusBadRequest, "invalid-file-range", "The resumable upload range is invalid")
 		return
 	}
@@ -1700,8 +1820,12 @@ func (server *Server) fileUpload(writer http.ResponseWriter, request *http.Reque
 		problem(writer, http.StatusRequestEntityTooLarge, "file-chunk-too-large", "Upload chunks are bounded to 4 MiB")
 		return
 	}
+	if int64(len(content)) > total-offset || len(content) == 0 {
+		problem(writer, http.StatusBadRequest, "invalid-file-range", "Chunk exceeds declared upload size")
+		return
+	}
 	checksum := request.Header.Get("X-Content-SHA256")
-	operation := platform.FileOperation{Action: "write-chunk", Path: path, Offset: offset, TotalSize: total, Content: content, ContentSHA256: checksum}
+	operation := platform.FileOperation{Action: "write-chunk", Path: path, Offset: offset, TotalSize: total, Content: content, ContentSHA256: checksum, UploadID: request.URL.Query().Get("uploadId"), ExpectedFingerprint: request.Header.Get("X-File-Fingerprint")}
 	result, ok := server.applyFileOperation(writer, request, operation)
 	if ok {
 		writer.Header().Set("Upload-Offset", strconv.FormatInt(result.Offset, 10))
@@ -1716,7 +1840,19 @@ func (server *Server) applyFileOperation(writer http.ResponseWriter, request *ht
 		return platform.FileResult{}, false
 	}
 	fileRequest := auth.FileRequest{Operation: operation}
-	administrative := current.Identity.AdminToken != "" && time.Now().Before(current.AdminUntil)
+	if operation.Scope == "" {
+		operation.Scope = request.URL.Query().Get("scope")
+	}
+	if operation.Scope != "" && operation.Scope != "home" && operation.Scope != "system" {
+		problem(writer, http.StatusBadRequest, "invalid-file-scope", "File scope is invalid")
+		return platform.FileResult{}, false
+	}
+	fileRequest.Operation = operation
+	administrative := operation.Scope == "system"
+	if administrative && (current.Identity.AdminToken == "" || !time.Now().Before(current.AdminUntil)) {
+		problem(writer, http.StatusForbidden, "elevation-required", "Elevate before opening system files")
+		return platform.FileResult{}, false
+	}
 	if administrative {
 		fileRequest.AdminToken = current.Identity.AdminToken
 		fileRequest.Administrative = true
@@ -1732,6 +1868,32 @@ func (server *Server) applyFileOperation(writer http.ResponseWriter, request *ht
 		writeFileOperationError(writer, err)
 		server.recordOperation(request.Context(), current.Identity.Username, "file/"+operation.Action, startedAt, "failed", err.Error(), administrative)
 		return platform.FileResult{}, false
+	}
+	if administrative {
+		absolutePath := func(path string) string {
+			if path == "." {
+				return "/"
+			}
+			return "/" + strings.TrimPrefix(path, "/")
+		}
+		absolute := func(entry *platform.FileEntry) {
+			if entry != nil {
+				entry.Path = absolutePath(entry.Path)
+			}
+		}
+		absolute(result.Entry)
+		if result.Directory != nil {
+			result.Directory.Path = absolutePath(result.Directory.Path)
+			result.Directory.Parent = absolutePath(result.Directory.Parent)
+			for i := range result.Directory.Entries {
+				absolute(&result.Directory.Entries[i])
+			}
+		}
+		if result.Search != nil {
+			for i := range result.Search.Entries {
+				absolute(&result.Search.Entries[i])
+			}
+		}
 	}
 	if operation.Action != "list" && operation.Action != "stat" && operation.Action != "read" && operation.Action != "read-window" && operation.Action != "search" {
 		server.recordOperation(request.Context(), current.Identity.Username, "file/"+operation.Action, startedAt, "succeeded", "", administrative)
@@ -2623,10 +2785,11 @@ type loginAttempt struct {
 }
 
 type loginLimiter struct {
-	mu       sync.Mutex
-	limit    int
-	window   time.Duration
-	attempts map[string]loginAttempt
+	mu        sync.Mutex
+	limit     int
+	window    time.Duration
+	attempts  map[string]loginAttempt
+	nextSweep time.Time
 }
 
 func newLoginLimiter(limit int, window time.Duration) *loginLimiter {
@@ -2641,6 +2804,17 @@ func (limiter *loginLimiter) Allow(address string) bool {
 	now := time.Now()
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
+	if now.After(limiter.nextSweep) {
+		for key, value := range limiter.attempts {
+			if now.After(value.until) {
+				delete(limiter.attempts, key)
+			}
+		}
+		limiter.nextSweep = now.Add(time.Minute)
+	}
+	if _, exists := limiter.attempts[host]; !exists && len(limiter.attempts) >= 8192 {
+		return false
+	}
 	attempt := limiter.attempts[host]
 	if now.After(attempt.until) {
 		attempt = loginAttempt{until: now.Add(limiter.window)}

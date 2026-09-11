@@ -1,39 +1,101 @@
-import { Bug, ChevronDown, ChevronRight, Shield, Sparkles } from "lucide-react"
+import {
+  Bug,
+  ChevronDown,
+  ChevronRight,
+  ShieldAlert,
+  Sparkles,
+} from "lucide-react"
 import * as React from "react"
+
 import { AdvisoryMarkdown } from "@/components/advisory-markdown"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Card } from "@/components/ui/card"
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import type { UpdatePackage } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-function getSeverityIcon(severity?: string) {
+function effectiveSeverity(severity?: string, secSeverity?: string) {
   const normalized = (severity ?? "").toLowerCase()
-  if (normalized === "security") {
-    return <Shield className="size-4 text-destructive" aria-hidden />
-  }
-  if (normalized === "bugfix") {
-    return <Bug className="size-4 text-amber-600" aria-hidden />
-  }
-  return <Sparkles className="size-4 text-blue-600" aria-hidden />
-}
-
-function getSeverityLabel(severity?: string) {
-  if (severity === "security") return "security"
-  if (severity === "bugfix") return "bug fix"
+  if (normalized === "security" || secSeverity) return "security"
+  if (normalized === "bugfix") return "bugfix"
   return "enhancement"
 }
 
+function severityVariant(severity: string) {
+  if (severity === "security") return "destructive" as const
+  if (severity === "bugfix") return "secondary" as const
+  return "outline" as const
+}
+
+function severityLabel(severity?: string) {
+  const normalized = (severity ?? "").toLowerCase()
+  if (normalized === "security") return "Security"
+  if (normalized === "bugfix") return "Bug fix"
+  return "Enhancement"
+}
+
+function SeverityBadge({
+  severity,
+  count,
+  secSeverity,
+}: {
+  severity?: string
+  count?: number
+  secSeverity?: string
+}) {
+  const normalized = effectiveSeverity(severity, secSeverity)
+  const Icon =
+    normalized === "security"
+      ? ShieldAlert
+      : normalized === "bugfix"
+        ? Bug
+        : Sparkles
+  const label = severityLabel(severity)
+
+  return (
+    <Badge variant={severityVariant(normalized)}>
+      <Icon data-icon="inline-start" aria-hidden="true" />
+      {label}
+      {count && count > 0 ? ` · ${count}` : ""}
+      {secSeverity ? ` · ${secSeverity}` : ""}
+    </Badge>
+  )
+}
+
 function firstLine(text?: string) {
-  if (!text) return "-"
+  if (!text) return "No additional details."
   const line = text.trim().split("\n")[0] ?? ""
   const clean = line.replace(/^[-*=\s]+/, "").trim()
-  return clean.slice(0, 120) || "-"
+  return clean.slice(0, 140) || "No additional details."
+}
+
+function packageLabel(pkg: UpdatePackage) {
+  return pkg.name + (pkg.architecture ? ` (${pkg.architecture})` : "")
+}
+
+function versionSummary(group: Pick<AdvisoryGroup, "packages" | "version">) {
+  const currentVersions = Array.from(
+    new Set(
+      group.packages
+        .map((pkg) => pkg.currentVersion)
+        .filter((version): version is string => Boolean(version))
+    )
+  )
+  if (currentVersions.length === 0) return group.version
+  return `${currentVersions.join(", ")} → ${group.version}`
 }
 
 type AdvisoryGroup = {
@@ -50,432 +112,369 @@ function buildGroups(packages: UpdatePackage[]): AdvisoryGroup[] {
     const key =
       pkg.groupKey?.trim() ||
       pkg.advisoryId?.trim() ||
-      `${pkg.candidateVersion}::${pkg.summary ?? ""}::${pkg.severity ?? ""}`
+      (pkg.candidateVersion ?? "") +
+        "::" +
+        (pkg.summary ?? "") +
+        "::" +
+        (pkg.severity ?? "")
     const list = map.get(key)
     if (list) list.push(pkg)
     else map.set(key, [pkg])
   }
+
+  const severityRank = (pkg: UpdatePackage) => {
+    const normalized = effectiveSeverity(pkg.severity, pkg.secSeverity)
+    return normalized === "security" ? 3 : normalized === "bugfix" ? 2 : 1
+  }
+
   const groups: AdvisoryGroup[] = []
   for (const [key, pkgs] of map.entries()) {
     pkgs.sort((a, b) => a.name.localeCompare(b.name))
-    const severityRank = (s?: string) =>
-      s === "security" ? 3 : s === "bugfix" ? 2 : 1
     const highest = [...pkgs].sort(
-      (a, b) => severityRank(b.severity) - severityRank(a.severity)
+      (a, b) => severityRank(b) - severityRank(a)
     )[0]
     groups.push({
       key,
       packages: pkgs,
       version: pkgs[0]?.candidateVersion ?? "",
-      severity: highest?.severity ?? "enhancement",
+      severity: effectiveSeverity(highest?.severity, highest?.secSeverity),
       description:
         highest?.description ?? highest?.details ?? highest?.summary ?? "",
     })
   }
+
   groups.sort((a, b) => {
-    const rank = (s: string) => (s === "security" ? 0 : s === "bugfix" ? 1 : 2)
-    const diff = rank(a.severity) - rank(b.severity)
-    if (diff !== 0) return diff
+    const rank = (severity: string) =>
+      severity === "security" ? 0 : severity === "bugfix" ? 1 : 2
+    const difference = rank(a.severity) - rank(b.severity)
+    if (difference !== 0) return difference
     return a.packages[0].name.localeCompare(b.packages[0].name)
   })
   return groups
 }
 
+function uniqueUrls(
+  packages: UpdatePackage[],
+  key: "cveUrls" | "vendorUrls" | "bugUrls"
+) {
+  return Array.from(new Set(packages.flatMap((pkg) => pkg[key] ?? [])))
+}
+
+function ResourceLinks({
+  label,
+  urls,
+  kind,
+}: {
+  label: string
+  urls: string[]
+  kind: "cve" | "errata" | "bug"
+}) {
+  if (urls.length === 0) return null
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <dt className="font-medium text-foreground">{label}</dt>
+      <dd className="flex flex-wrap gap-x-3 gap-y-1">
+        {urls.map((url) => {
+          const linkLabel =
+            kind === "bug"
+              ? (url.match(/[0-9]+$/)?.[0] ?? url)
+              : (url.match(/[^/=]+$/)?.[0] ?? url)
+          return (
+            <a
+              key={`${kind}:${url}`}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="break-all text-xs text-primary underline underline-offset-2"
+            >
+              {linkLabel}
+            </a>
+          )
+        })}
+      </dd>
+    </div>
+  )
+}
+
+function AdvisoryDetails({ group }: { group: AdvisoryGroup }) {
+  const cveUrls = uniqueUrls(group.packages, "cveUrls")
+  const errataUrls = uniqueUrls(group.packages, "vendorUrls")
+  const bugUrls = uniqueUrls(group.packages, "bugUrls")
+
+  return (
+    <div className="grid gap-5 border-t bg-muted/10 p-4 lg:grid-cols-[minmax(14rem,0.7fr)_minmax(0,1.3fr)]">
+      <dl className="flex flex-col gap-4 text-sm">
+        <div className="flex flex-col gap-1.5">
+          <dt className="font-medium text-foreground">Packages</dt>
+          <dd className="break-words text-muted-foreground">
+            {group.packages.map(packageLabel).join(", ")}
+          </dd>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <dt className="font-medium text-foreground">Severity</dt>
+          <dd>
+            <SeverityBadge
+              severity={group.severity}
+              secSeverity={
+                group.packages.find((pkg) => pkg.secSeverity)?.secSeverity
+              }
+            />
+          </dd>
+        </div>
+        <ResourceLinks label="CVE" urls={cveUrls} kind="cve" />
+        <ResourceLinks label="Errata" urls={errataUrls} kind="errata" />
+        <ResourceLinks label="Bugs" urls={bugUrls} kind="bug" />
+      </dl>
+
+      <div className="flex min-w-0 flex-col gap-4 text-sm leading-relaxed">
+        {group.packages.some((pkg) => pkg.markdown) && group.description ? (
+          <AdvisoryMarkdown text={group.description} />
+        ) : (
+          <p className="whitespace-pre-wrap break-words text-muted-foreground">
+            {group.description || "No additional details."}
+          </p>
+        )}
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          {group.packages.map((pkg) => (
+            <div
+              key={packageLabel(pkg)}
+              className="min-w-0 rounded-lg border bg-card p-3"
+            >
+              <div className="break-words font-medium">{packageLabel(pkg)}</div>
+              <div className="break-words font-mono text-xs text-muted-foreground">
+                {pkg.currentVersion
+                  ? `${pkg.currentVersion} → ${pkg.candidateVersion}`
+                  : pkg.candidateVersion}
+              </div>
+              {pkg.dependencies && pkg.dependencies.length > 0 && (
+                <div className="mt-2 break-words text-xs text-muted-foreground">
+                  Dependencies: {pkg.dependencies.join(", ")}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GroupSummary({
+  group,
+  expanded,
+}: {
+  group: AdvisoryGroup
+  expanded: boolean
+}) {
+  const labels = group.packages.map(packageLabel)
+  const visibleLabels = labels.slice(0, 3).join(", ")
+  const remaining = labels.length - Math.min(labels.length, 3)
+  const cveCount = uniqueUrls(group.packages, "cveUrls").length
+  const bugCount = uniqueUrls(group.packages, "bugUrls").length
+  const severityCount =
+    group.severity === "security"
+      ? cveCount || 1
+      : group.severity === "bugfix"
+        ? bugCount || group.packages.length
+        : 0
+  const hasPatch = group.packages.some((pkg) => pkg.name.startsWith("kpatch"))
+  const secSeverity = group.packages.find((pkg) => pkg.secSeverity)?.secSeverity
+
+  return (
+    <div className="flex min-w-0 flex-1 items-start gap-3">
+      <span
+        className="mt-0.5 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      >
+        {expanded ? <ChevronDown /> : <ChevronRight />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 break-words font-medium">
+            {visibleLabels}
+          </span>
+          {remaining > 0 && <Badge variant="outline">+{remaining} more</Badge>}
+          {hasPatch && <Badge variant="secondary">Live patch</Badge>}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="font-mono break-all">{versionSummary(group)}</span>
+          <span>
+            {group.packages.length} package
+            {group.packages.length === 1 ? "" : "s"}
+          </span>
+          <span className="min-w-0 max-w-full truncate">
+            {firstLine(group.description)}
+          </span>
+        </div>
+      </div>
+      <SeverityBadge
+        severity={group.severity}
+        count={severityCount}
+        secSeverity={secSeverity}
+      />
+    </div>
+  )
+}
+
 export function UpdatePackageTable({
   packages,
-  selected,
-  onToggle,
-  selectable = true,
 }: {
   packages: UpdatePackage[]
-  selected: string[]
-  onToggle: (name: string) => void
-  selectable?: boolean
 }) {
   const groups = React.useMemo(() => buildGroups(packages), [packages])
-  const selectedSet = React.useMemo(() => new Set(selected), [selected])
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
 
-  const toggleExpanded = (key: string) =>
+  const toggleExpanded = (key: string, open?: boolean) =>
     setExpanded((prev) => {
       const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+      const shouldOpen = open ?? !next.has(key)
+      if (shouldOpen) next.add(key)
+      else next.delete(key)
       return next
     })
 
-  const allSelected =
-    groups.length > 0 &&
-    groups.every((g) => g.packages.every((p) => selectedSet.has(p.name)))
-  const headerChecked = allSelected
-
-  const handleGroupToggle = (group: AdvisoryGroup) => {
-    const every = group.packages.every((p) => selectedSet.has(p.name))
-    // toggle whole group atomically: if every selected -> deselect all, else select all (including dependencies)
-    if (every) {
-      for (const pkg of group.packages) {
-        if (selectedSet.has(pkg.name)) onToggle(pkg.name)
-      }
-    } else {
-      for (const pkg of group.packages) {
-        if (!selectedSet.has(pkg.name)) onToggle(pkg.name)
-      }
-    }
-  }
-
-  const handleHeaderToggle = () => {
-    if (allSelected) {
-      for (const g of groups) {
-        for (const p of g.packages) {
-          if (selectedSet.has(p.name)) onToggle(p.name)
-        }
-      }
-    } else {
-      for (const g of groups) {
-        for (const p of g.packages) {
-          if (!selectedSet.has(p.name)) onToggle(p.name)
-        }
-      }
-    }
-  }
+  if (groups.length === 0) return null
 
   return (
-    <div className="overflow-hidden rounded-md border">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[52rem] text-sm">
-          <thead className="bg-muted/50 text-left">
-            <tr>
-              <th className="w-8 px-2 py-2">
-                <span className="sr-only">Expand</span>
-              </th>
-              {selectable && (
-                <th className="w-10 px-2 py-2">
-                  <Checkbox
-                    aria-label="Select all"
-                    checked={headerChecked}
-                    onCheckedChange={handleHeaderToggle}
-                  />
-                </th>
-              )}
-              <th className="px-3 py-2 font-medium w-[40%]">Name</th>
-              <th className="px-3 py-2 font-medium w-[15%]">Version</th>
-              <th className="px-3 py-2 font-medium w-[15%]">Severity</th>
-              <th className="px-3 py-2 font-medium w-[30%]">Details</th>
-            </tr>
-          </thead>
-          <tbody>
+    <div className="flex flex-col gap-2">
+      <div className="hidden overflow-hidden rounded-lg border md:block">
+        <Table className="table-fixed">
+          <TableHeader className="bg-muted/50">
+            <TableRow>
+              <TableHead className="w-10">
+                <span className="sr-only">Expand advisory</span>
+              </TableHead>
+              <TableHead className="w-[38%]">Package advisory</TableHead>
+              <TableHead className="w-[18%]">Target version</TableHead>
+              <TableHead className="w-[20%]">Severity</TableHead>
+              <TableHead className="w-[24%]">Summary</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {groups.map((group) => {
               const isExpanded = expanded.has(group.key)
-              const pkgNames = group.packages.map((p) => p.name)
-              const displayNames = pkgNames.slice(0, 4)
-              const truncated = pkgNames.length > 4
-              const cveCount = group.packages.reduce(
-                (sum, p) => sum + (p.cveUrls?.length ?? 0),
-                0
-              )
-              const bugCount = group.packages.reduce(
-                (sum, p) => sum + (p.bugUrls?.length ?? 0),
-                0
-              )
-              const severityCount =
-                group.severity === "security"
-                  ? cveCount || 1
-                  : group.severity === "bugfix"
-                    ? bugCount || group.packages.length
-                    : 0
-              const isGroupSelected = group.packages.every((p) =>
-                selectedSet.has(p.name)
-              )
-              const isSecurity = group.severity === "security"
-
-              // special package detection like kpatch handled via badge maybe not needed
-
               return (
                 <React.Fragment key={group.key}>
-                  <tr
+                  <TableRow
                     className={cn(
-                      "border-t hover:bg-muted/40",
-                      isSecurity && "bg-destructive/5 hover:bg-destructive/10",
+                      group.severity === "security" &&
+                        "bg-destructive/5 hover:bg-destructive/10",
                       isExpanded && "bg-muted/30"
                     )}
                   >
-                    <td className="px-2 py-2">
+                    <TableCell>
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={isExpanded ? "Collapse" : "Expand"}
+                        aria-label={
+                          (isExpanded ? "Collapse" : "Expand") +
+                          " advisory details for " +
+                          group.packages[0].name
+                        }
+                        aria-expanded={isExpanded}
                         onClick={() => toggleExpanded(group.key)}
                       >
-                        {isExpanded ? (
-                          <ChevronDown className="size-4" />
-                        ) : (
-                          <ChevronRight className="size-4" />
-                        )}
+                        {isExpanded ? <ChevronDown /> : <ChevronRight />}
                       </Button>
-                    </td>
-                    {selectable && (
-                      <td className="px-2 py-2">
-                        <Checkbox
-                          aria-label={`Select ${pkgNames.join(", ")}`}
-                          checked={isGroupSelected}
-                          onCheckedChange={() => handleGroupToggle(group)}
-                        />
-                      </td>
-                    )}
-                    <td className="px-3 py-2">
-                      <div className="flex flex-wrap items-center gap-1">
-                        {displayNames.map((name, index) => {
-                          const pkg = group.packages.find(
-                            (p) => p.name === name
-                          )
-                          const arch = pkg?.architecture
-                            ? ` (${pkg.architecture})`
-                            : ""
-                          const tip = pkg
-                            ? `${pkg.name}${arch} ${pkg.summary ?? ""}`
-                            : name
-                          return (
-                            <Tooltip key={name}>
-                              <TooltipTrigger>
-                                <span className="font-medium">
-                                  {name}
-                                  {arch}
-                                  {index !== displayNames.length - 1 ||
-                                  truncated
-                                    ? ", "
-                                    : ""}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>{tip}</TooltipContent>
-                            </Tooltip>
-                          )
-                        })}
-                        {truncated && (
-                          <span className="text-muted-foreground">…</span>
-                        )}
-                        {group.packages.some((p) =>
-                          p.name.startsWith("kpatch")
-                        ) && (
-                          <Badge variant="secondary" className="ml-1">
-                            patches
-                          </Badge>
+                    </TableCell>
+                    <TableCell className="whitespace-normal">
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <span className="break-words font-medium">
+                          {group.packages.map(packageLabel).join(", ")}
+                        </span>
+                        {group.packages.some((pkg) => pkg.advisoryId) && (
+                          <span className="text-xs text-muted-foreground">
+                            {
+                              group.packages.find((pkg) => pkg.advisoryId)
+                                ?.advisoryId
+                            }
+                          </span>
                         )}
                       </div>
-                    </td>
-                    <td className="px-3 py-2 font-mono text-xs">
-                      <span
-                        className="truncate block max-w-[12rem]"
-                        title={group.version}
-                      >
-                        {group.version}
+                    </TableCell>
+                    <TableCell className="whitespace-normal">
+                      <span className="break-all font-mono text-xs">
+                        {versionSummary(group)}
                       </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <Tooltip>
-                        <TooltipTrigger>
-                          <span className="inline-flex items-center gap-1.5 tabular-nums">
-                            {getSeverityIcon(group.severity)}
-                            <span className="text-xs">{group.severity}</span>
-                            {severityCount > 0 &&
-                            group.severity !== "enhancement" ? (
-                              <span className="text-xs font-medium">
-                                {severityCount}
-                              </span>
-                            ) : null}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {getSeverityLabel(group.severity)}
-                          {group.packages.find((p) => p.secSeverity)
+                    </TableCell>
+                    <TableCell>
+                      <SeverityBadge
+                        severity={group.severity}
+                        count={
+                          group.severity === "security"
+                            ? uniqueUrls(group.packages, "cveUrls").length || 1
+                            : group.severity === "bugfix"
+                              ? uniqueUrls(group.packages, "bugUrls").length ||
+                                group.packages.length
+                              : undefined
+                        }
+                        secSeverity={
+                          group.packages.find((pkg) => pkg.secSeverity)
                             ?.secSeverity
-                            ? ` (${group.packages.find((p) => p.secSeverity)?.secSeverity})`
-                            : ""}
-                        </TooltipContent>
-                      </Tooltip>
-                    </td>
-                    <td
-                      className="px-3 py-2 max-w-[24rem] truncate text-muted-foreground"
-                      title={firstLine(group.description)}
-                    >
-                      {firstLine(group.description)}
-                    </td>
-                  </tr>
+                        }
+                      />
+                    </TableCell>
+                    <TableCell className="whitespace-normal text-muted-foreground">
+                      <span className="line-clamp-2">
+                        {firstLine(group.description)}
+                      </span>
+                    </TableCell>
+                  </TableRow>
                   {isExpanded && (
-                    <tr className="bg-muted/10">
-                      <td colSpan={selectable ? 6 : 5} className="p-0">
-                        <div className="grid gap-4 p-4 md:grid-cols-[280px_1fr]">
-                          <dl className="space-y-3 text-sm">
-                            <div>
-                              <dt className="font-medium text-foreground">
-                                Packages
-                              </dt>
-                              <dd className="text-muted-foreground break-words">
-                                {group.packages
-                                  .map(
-                                    (p) =>
-                                      p.name +
-                                      (p.architecture
-                                        ? ` (${p.architecture})`
-                                        : "")
-                                  )
-                                  .join(", ")}
-                              </dd>
-                            </div>
-                            {group.packages.some((p) => p.cveUrls?.length) && (
-                              <div>
-                                <dt className="font-medium text-foreground">
-                                  CVE
-                                </dt>
-                                <dd className="flex flex-wrap gap-1">
-                                  {Array.from(
-                                    new Set(
-                                      group.packages.flatMap(
-                                        (p) => p.cveUrls ?? []
-                                      )
-                                    )
-                                  ).map((url) => {
-                                    const label =
-                                      url.match(/[^/=]+$/)?.[0] ?? url
-                                    return (
-                                      <a
-                                        key={url}
-                                        href={url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-primary underline underline-offset-2 text-xs"
-                                      >
-                                        {label}
-                                      </a>
-                                    )
-                                  })}
-                                </dd>
-                              </div>
-                            )}
-                            {group.packages[0]?.advisoryId &&
-                              group.packages[0].advisoryId.startsWith("CVE") ===
-                                false && (
-                                <div>
-                                  <dt className="font-medium text-foreground">
-                                    Severity
-                                  </dt>
-                                  <dd className="text-xs">
-                                    <Badge
-                                      variant="outline"
-                                      className="capitalize"
-                                    >
-                                      {group.severity}
-                                    </Badge>
-                                  </dd>
-                                </div>
-                              )}
-                            {Array.from(
-                              new Set(
-                                group.packages.flatMap(
-                                  (p) => p.vendorUrls ?? []
-                                )
-                              )
-                            ).length > 0 && (
-                              <div>
-                                <dt className="font-medium text-foreground">
-                                  Errata
-                                </dt>
-                                <dd className="flex flex-wrap gap-1">
-                                  {Array.from(
-                                    new Set(
-                                      group.packages.flatMap(
-                                        (p) => p.vendorUrls ?? []
-                                      )
-                                    )
-                                  ).map((url) => {
-                                    const label =
-                                      url.match(/[^/=]+$/)?.[0] ?? url
-                                    return (
-                                      <a
-                                        key={url}
-                                        href={url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-primary underline underline-offset-2 text-xs"
-                                      >
-                                        {label}
-                                      </a>
-                                    )
-                                  })}
-                                </dd>
-                              </div>
-                            )}
-                            {group.packages.some((p) => p.bugUrls?.length) && (
-                              <div>
-                                <dt className="font-medium text-foreground">
-                                  Bugs
-                                </dt>
-                                <dd className="flex flex-wrap gap-1">
-                                  {Array.from(
-                                    new Set(
-                                      group.packages.flatMap(
-                                        (p) => p.bugUrls ?? []
-                                      )
-                                    )
-                                  ).map((url) => {
-                                    const label =
-                                      url.match(/[0-9]+$/)?.[0] ?? url
-                                    return (
-                                      <a
-                                        key={url}
-                                        href={url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-primary underline underline-offset-2 text-xs"
-                                      >
-                                        {label}
-                                      </a>
-                                    )
-                                  })}
-                                </dd>
-                              </div>
-                            )}
-                          </dl>
-                          <div className="text-sm leading-relaxed">
-                            {group.packages.some((p) => p.markdown) &&
-                            group.description ? (
-                              <AdvisoryMarkdown text={group.description} />
-                            ) : (
-                              <p className="whitespace-pre-wrap break-words text-muted-foreground">
-                                {group.description || "No additional details."}
-                              </p>
-                            )}
-                            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                              {group.packages.map((p) => (
-                                <div
-                                  key={p.name}
-                                  className="rounded border bg-card p-2"
-                                >
-                                  <div className="font-medium">{p.name}</div>
-                                  <div className="text-muted-foreground">
-                                    {p.currentVersion
-                                      ? `${p.currentVersion} → ${p.candidateVersion}`
-                                      : p.candidateVersion}
-                                  </div>
-                                  {p.dependencies &&
-                                    p.dependencies.length > 0 && (
-                                      <div className="mt-1 text-[11px]">
-                                        Coupled with:{" "}
-                                        {p.dependencies.join(", ")}
-                                      </div>
-                                    )}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
+                    <TableRow>
+                      <TableCell colSpan={5} className="p-0 whitespace-normal">
+                        <AdvisoryDetails group={group} />
+                      </TableCell>
+                    </TableRow>
                   )}
                 </React.Fragment>
               )
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
+      </div>
+
+      <div className="flex flex-col gap-2 md:hidden">
+        {groups.map((group) => {
+          const isExpanded = expanded.has(group.key)
+          return (
+            <Card
+              key={group.key}
+              size="sm"
+              className={cn(
+                "overflow-hidden",
+                group.severity === "security" && "border-destructive/30"
+              )}
+            >
+              <Collapsible
+                open={isExpanded}
+                onOpenChange={(open) => toggleExpanded(group.key, open)}
+              >
+                <CollapsibleTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      className="h-auto w-full justify-start rounded-none p-3 text-left"
+                      aria-label={
+                        (isExpanded ? "Collapse" : "Expand") +
+                        " advisory details for " +
+                        group.packages[0].name
+                      }
+                      aria-expanded={isExpanded}
+                    />
+                  }
+                >
+                  <GroupSummary group={group} expanded={isExpanded} />
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <AdvisoryDetails group={group} />
+                </CollapsibleContent>
+              </Collapsible>
+            </Card>
+          )
+        })}
       </div>
     </div>
   )

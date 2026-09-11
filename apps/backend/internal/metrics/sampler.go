@@ -61,17 +61,25 @@ type subscription struct {
 }
 
 func NewSampler(capacity int) *Sampler {
-	return &Sampler{capacity: capacity, subscribers: make(map[chan Sample]subscription), wake: make(chan struct{}, 1), defaultInterval: time.Minute, retention: 24 * time.Hour}
+	return &Sampler{capacity: max(capacity, 2), subscribers: make(map[chan Sample]subscription), wake: make(chan struct{}, 1), defaultInterval: time.Minute, retention: 24 * time.Hour}
 }
 
 func (sampler *Sampler) Configure(defaultInterval, retention time.Duration) {
-	sampler.defaultInterval = defaultInterval
-	sampler.retention = retention
+	sampler.mu.Lock()
+	defer sampler.mu.Unlock()
+	if defaultInterval >= time.Second {
+		sampler.defaultInterval = defaultInterval
+	}
+	if retention > 0 {
+		sampler.retention = retention
+	}
 }
 
 func (sampler *Sampler) Run(ctx context.Context, interval time.Duration) {
-	if interval > 0 {
+	if interval >= time.Second {
+		sampler.mu.Lock()
 		sampler.defaultInterval = interval
+		sampler.mu.Unlock()
 	}
 	sampler.collect()
 	for {
@@ -142,10 +150,14 @@ func (sampler *Sampler) Current() (Sample, bool) {
 }
 
 func (sampler *Sampler) Subscribe() (<-chan Sample, func()) {
-	return sampler.SubscribeEvery(sampler.defaultInterval)
+	sampler.mu.RLock()
+	interval := sampler.defaultInterval
+	sampler.mu.RUnlock()
+	return sampler.SubscribeEvery(interval)
 }
 
 func (sampler *Sampler) SubscribeEvery(interval time.Duration) (<-chan Sample, func()) {
+	interval = max(interval, time.Second)
 	channel := make(chan Sample, 4)
 	sampler.mu.Lock()
 	sampler.subscribers[channel] = subscription{interval: interval}
@@ -156,8 +168,10 @@ func (sampler *Sampler) SubscribeEvery(interval time.Duration) (<-chan Sample, f
 	}
 	return channel, func() {
 		sampler.mu.Lock()
-		delete(sampler.subscribers, channel)
-		close(channel)
+		if _, exists := sampler.subscribers[channel]; exists {
+			delete(sampler.subscribers, channel)
+			close(channel)
+		}
 		sampler.mu.Unlock()
 		select {
 		case sampler.wake <- struct{}{}:
@@ -201,7 +215,13 @@ func (sampler *Sampler) collect() {
 	for len(sampler.samples) > 0 && sampler.samples[0].Timestamp.Before(cutoff) {
 		sampler.samples = sampler.samples[1:]
 	}
-	if len(sampler.samples) == sampler.capacity {
+	historyInterval := sampler.retention / time.Duration(sampler.capacity-1)
+	if historyInterval < time.Second {
+		historyInterval = time.Second
+	}
+	if len(sampler.samples) > 0 && sampler.samples[len(sampler.samples)-1].Timestamp.Truncate(historyInterval) == now.Truncate(historyInterval) {
+		sampler.samples[len(sampler.samples)-1] = sample
+	} else if len(sampler.samples) == sampler.capacity {
 		copy(sampler.samples, sampler.samples[1:])
 		sampler.samples[len(sampler.samples)-1] = sample
 	} else {

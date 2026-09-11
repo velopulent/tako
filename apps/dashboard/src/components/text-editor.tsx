@@ -1,7 +1,8 @@
-import { useMutation, useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { api, type FileResult } from "@/lib/api"
 
@@ -16,23 +17,30 @@ function encodeContent(value: string) {
 
 export function TextEditor({
   path,
+  scope = "home",
+  onDirtyChange,
+  size = 0,
   previewToken,
   csrfToken,
 }: {
+  onDirtyChange?: (dirty: boolean) => void
+  scope?: string
+  size?: number
   path: string
   previewToken?: string
   csrfToken: string
 }) {
+  const queryClient = useQueryClient()
+  const queryKey = ["file-content", scope, path, previewToken]
   const [draft, setDraft] = React.useState<string | undefined>(undefined)
   const content = useQuery({
-    queryKey: ["file-content", path, previewToken],
-    queryFn: async () => {
-      const token = previewToken
-        ? `&token=${encodeURIComponent(previewToken)}`
-        : ""
+    queryKey,
+    queryFn: async ({ signal }) => {
+      if (size > 5 * 1024 * 1024)
+        throw new Error("File is too large to edit. Download it instead.")
       const response = await fetch(
-        `/api/v1/files/content?path=${encodeURIComponent(path)}${token}`,
-        { credentials: "same-origin" }
+        `/api/v1/files/content?path=${encodeURIComponent(path)}&scope=${scope}`,
+        { credentials: "same-origin", signal }
       )
       if (!response.ok) throw new Error("file read failed")
       return {
@@ -42,33 +50,49 @@ export function TextEditor({
     },
   })
   const value = draft ?? content.data?.text ?? ""
+  React.useEffect(() => {
+    onDirtyChange?.(draft !== undefined && draft !== content.data?.text)
+  }, [draft, content.data?.text, onDirtyChange])
+  React.useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+  React.useEffect(() => {
+    if (draft === undefined) return
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+    }
+    window.addEventListener("beforeunload", warn)
+    return () => window.removeEventListener("beforeunload", warn)
+  }, [draft])
   const save = useMutation({
-    mutationFn: () =>
+    mutationFn: (saved: string) =>
       api<FileResult>("/files", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
         body: JSON.stringify({
           action: "write-text",
+          scope,
           path,
-          content: encodeContent(value),
+          content: encodeContent(saved),
           expectedFingerprint: content.data?.fingerprint,
         }),
       }),
-    onSuccess: () => void content.refetch(),
+    onSuccess: (result, saved) => {
+      queryClient.setQueryData(queryKey, {
+        text: saved,
+        fingerprint: result.entry?.fingerprint ?? "",
+      })
+      setDraft((current) => (current === saved ? undefined : current))
+    },
   })
-  if (content.isPending)
-    return <div className="h-40 animate-pulse rounded bg-muted" />
+  if (content.isPending) return <Skeleton className="h-40" />
   if (content.isError)
     return (
       <Alert variant="destructive">
         <AlertTitle>Text unavailable</AlertTitle>
-        <AlertDescription>
-          The file could not be read under the current UNIX authority.
-        </AlertDescription>
+        <AlertDescription>{content.error.message}</AlertDescription>
       </Alert>
     )
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       <Textarea
         value={value}
         onChange={(event) => setDraft(event.target.value)}
@@ -78,11 +102,16 @@ export function TextEditor({
       />
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">
-          Atomic save up to 5 MiB; stale fingerprints are rejected.
+          Changes save atomically. Maximum size: 5 MiB.
         </span>
         <Button
-          onClick={() => save.mutate()}
-          disabled={save.isPending || content.data === undefined}
+          onClick={() => save.mutate(value)}
+          disabled={
+            save.isPending ||
+            content.data === undefined ||
+            draft === undefined ||
+            draft === content.data.text
+          }
         >
           Save
         </Button>
@@ -91,8 +120,15 @@ export function TextEditor({
         <Alert variant="destructive">
           <AlertTitle>Save rejected</AlertTitle>
           <AlertDescription>
-            The file changed or the user bridge lost write authority. Reload
-            before retrying.
+            {save.error.message}
+            <Button
+              variant="outline"
+              onClick={() => {
+                void content.refetch()
+              }}
+            >
+              Reload current file
+            </Button>
           </AlertDescription>
         </Alert>
       )}

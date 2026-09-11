@@ -529,7 +529,7 @@ paths:
   /updates/preview:
     post:
       operationId: previewUpdates
-      summary: Preview a selected or all-software update operation
+      summary: Preview a full-system update
       requestBody:
         required: true
         content:
@@ -547,7 +547,7 @@ paths:
   /updates/refresh:
     post:
       operationId: refreshUpdates
-      summary: Refresh package manager cache (PackageKit RefreshCache)
+      summary: Refresh native package-manager metadata
       requestBody:
         required: false
         content:
@@ -568,13 +568,13 @@ paths:
   /updates/live:
     get:
       operationId: getUpdateLiveStatus
-      summary: Observe the running package-update transaction and its action log
+      summary: Stream normalized update progress and bounded output
       responses:
         '200':
-          description: Live transaction snapshot (possibly inactive) with recent package actions
+          description: Authenticated server-sent event stream with progress and output events
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/UpdateObservation' }
+            text/event-stream:
+              schema: { type: string }
   /updates/history:
     get:
       operationId: getUpdateHistory
@@ -593,22 +593,6 @@ paths:
                     maxItems: 20
                     items: { $ref: '#/components/schemas/UpdateHistoryEntry' }
                   available: { type: boolean }
-  /updates/cancel:
-    post:
-      operationId: cancelRunningUpdate
-      summary: Cancel the currently running package-update transaction
-      responses:
-        '200':
-          description: Whether a running transaction was found and cancelled
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [canceled]
-                properties:
-                  canceled: { type: boolean }
-        '403': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
   /updates/kpatch:
     get:
       operationId: getKpatchStatus
@@ -642,34 +626,6 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /updates/automatic:
-    get:
-      operationId: getAutomaticUpdates
-      summary: Inspect automatic-update configuration for this host
-      responses:
-        '200':
-          description: Provider-specific automatic-update configuration
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AutoUpdatesConfig' }
-    put:
-      operationId: applyAutomaticUpdates
-      summary: Change automatic-update configuration through sessiond
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AutoUpdatesOperation' }
-      responses:
-        '200':
-          description: Configuration after applying the change
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AutoUpdatesConfig' }
-        '400': { $ref: '#/components/responses/Problem' }
-        '403': { $ref: '#/components/responses/Problem' }
-        '502': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
   /services:
     get:
       operationId: listServices
@@ -686,7 +642,7 @@ paths:
     get:
       operationId: getService
       responses:
-        '200': { description: Unit status, runtime properties, and relationships }
+        '200': { description: "Unit status, runtime properties, and relationships" }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /services/{scope}/{unit}/configuration:
@@ -906,7 +862,7 @@ paths:
       operationId: getDiagnosticJob
       responses:
         '200':
-          description: In-memory diagnostic job state; software-update jobs also carry a live PackageKit observation
+          description: In-memory diagnostic job state; software-update jobs also carry normalized live progress
           content:
             application/json:
               schema:
@@ -1030,7 +986,7 @@ paths:
                 action: { type: string, enum: [reboot, shutdown] }
                 expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
       responses:
-        '200': { description: Current capability, inhibitor, and confirmation requirements }
+        '200': { description: "Current capability, inhibitor, and confirmation requirements" }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /storage:
@@ -1038,17 +994,48 @@ paths:
       operationId: listStorage
       responses:
         '200':
-          description: One entry per distinct mounted filesystem, deduplicated by superblock device number
+          description: Mounted filesystem and bounded physical-device inventory
           content:
             application/json:
               schema:
                 type: object
-                required: [items]
+                required: [items, devices, fingerprint, readOnly]
                 properties:
                   items:
                     type: array
                     maxItems: 4096
                     items: { $ref: '#/components/schemas/StorageFilesystem' }
+                  devices:
+                    type: array
+                    maxItems: 256
+                    items: { $ref: '#/components/schemas/StorageDevice' }
+                  fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+                  readOnly: { type: boolean }
+                  reason: { type: string, maxLength: 512 }
+    post:
+      operationId: applyStorageOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/StorageOperation' } }
+      responses:
+        '200': { description: Verified storage state after UDisks2 operation, content: { application/json: { schema: { $ref: '#/components/schemas/StorageState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /storage/preview:
+    post:
+      operationId: previewStorageOperation
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/StorageOperation' } }
+      responses:
+        '200': { description: Current storage state and operation safety preview, content: { application/json: { schema: { $ref: '#/components/schemas/StorageState' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /network:
     get:
       operationId: listNetworkInterfaces
@@ -1502,7 +1489,9 @@ components:
       additionalProperties: false
       required: [action]
       properties:
-        action: { type: string, enum: [list, stat, read, read-window, write, write-text, write-chunk, create, rename, move, copy, trash, delete, search, archive, extract, metadata] }
+        action: { type: string, enum: [list, stat, read, read-window, write, write-text, write-chunk, upload-status, create, rename, move, copy, trash, delete, search, archive, extract, metadata, cancel-upload, restore] }
+        scope: { type: string, enum: [home, system] }
+        uploadId: { type: string, pattern: '^[a-fA-F0-9]{32}$' }
         path: { type: string, maxLength: 4096 }
         destination: { type: string, maxLength: 4096 }
         kind: { type: string, enum: [file, directory] }
@@ -1517,23 +1506,35 @@ components:
         showHidden: { type: boolean }
         recursive: { type: boolean }
         permanent: { type: boolean }
+        overwrite: { type: boolean }
         confirmation: { type: string, maxLength: 128 }
         query: { type: string, maxLength: 512 }
         maxEntries: { type: integer, minimum: 0, maximum: 10000 }
         archivePath: { type: string, maxLength: 4096 }
-        mode: { type: integer, minimum: 0, maximum: 511 }
+        mode: { type: integer, minimum: 0, maximum: 4095 }
         owner: { type: string, maxLength: 256 }
         group: { type: string, maxLength: 256 }
+    UploadInfo:
+      type: object
+      required: [uploadId, path, offset, total, expiresAt]
+      properties:
+        uploadId: { type: string, pattern: '^[a-fA-F0-9]{32}$' }
+        path: { type: string, maxLength: 4096 }
+        offset: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 1 }
+        expiresAt: { type: string, format: date-time }
+        completed: { type: boolean }
     NetworkOperation:
       type: object
       additionalProperties: false
       required: [backend, action]
       properties:
-        backend: { type: string, enum: [NetworkManager, Netplan, systemd-networkd] }
+        backend: { type: string, enum: [NetworkManager, Netplan, systemd-networkd, ifupdown] }
         action: { type: string, enum: [preview, dhcp, static, dns, route-add, route-remove, checkpoint, commit, rollback] }
         interface: { type: string, maxLength: 256 }
         connection: { type: string, maxLength: 256 }
         address: { type: string, maxLength: 128 }
+        addresses: { type: array, maxItems: 16, items: { type: string, maxLength: 128 } }
         gateway: { type: string, maxLength: 128 }
         dns: { type: array, maxItems: 8, items: { type: string } }
         route: { type: string, maxLength: 128 }
@@ -1542,6 +1543,12 @@ components:
         confirmation: { type: string, maxLength: 128 }
         reconnectToken: { type: string, maxLength: 256 }
         checkpoint: { type: string, maxLength: 256 }
+        ipv4Method: { type: string, enum: [auto, manual, disabled, ignore] }
+        ipv4Address: { type: string, maxLength: 128 }
+        ipv4Gateway: { type: string, maxLength: 128 }
+        ipv6Method: { type: string, enum: [auto, manual, disabled, ignore] }
+        ipv6Address: { type: string, maxLength: 128 }
+        ipv6Gateway: { type: string, maxLength: 128 }
     NetworkState:
       type: object
       required: [snapshot, action, committed, rollback]
@@ -1551,6 +1558,9 @@ components:
         checkpoint: { type: string }
         committed: { type: boolean }
         rollback: { type: boolean }
+        reconnectRequired: { type: boolean }
+        reconnectToken: { type: string, maxLength: 256 }
+        rollbackDeadline: { type: string, format: date-time }
         warning: { type: string }
     FirewallOperation:
       type: object
@@ -1558,7 +1568,7 @@ components:
       required: [backend, action]
       properties:
         backend: { type: string, enum: [auto, firewalld, UFW] }
-        action: { type: string, enum: [preview, enable, disable, default-zone, add-service, remove-service, add-port, remove-port, add-source, remove-source, reload] }
+        action: { type: string, enum: [preview, enable, disable, default-zone, add-service, remove-service, add-port, remove-port, add-source, remove-source, reload, commit, rollback] }
         zone: { type: string, maxLength: 128 }
         service: { type: string, maxLength: 128 }
         port: { type: string, maxLength: 32 }
@@ -1567,6 +1577,9 @@ components:
         expectedFingerprint: { type: string, maxLength: 128 }
         confirmation: { type: string, maxLength: 128 }
         persist: { type: boolean }
+        rollbackSeconds: { type: integer, minimum: 0, maximum: 600 }
+        checkpoint: { type: string, maxLength: 256 }
+        rollbackToken: { type: string, maxLength: 256 }
     FirewallState:
       type: object
       required: [snapshot, action, applied]
@@ -1574,6 +1587,11 @@ components:
         snapshot: { type: object }
         action: { type: string }
         applied: { type: boolean }
+        committed: { type: boolean }
+        rollbackRequired: { type: boolean }
+        checkpoint: { type: string }
+        rollbackToken: { type: string }
+        rollbackDeadline: { type: string, format: date-time }
         warning: { type: string }
     SecurityOperation:
       type: object
@@ -1588,6 +1606,54 @@ components:
         profile: { type: string, maxLength: 256 }
         expectedFingerprint: { type: string, maxLength: 128 }
         confirmation: { type: string, maxLength: 128 }
+    SecurityChange:
+      type: object
+      required: [field]
+      properties:
+        field: { type: string, maxLength: 512 }
+        before: { type: string, maxLength: 512 }
+        after: { type: string, maxLength: 512 }
+    SecurityFinding:
+      type: object
+      required: [framework, kind, subject, message, severity]
+      properties:
+        framework: { type: string, enum: [SELinux, AppArmor] }
+        kind: { type: string, maxLength: 128 }
+        subject: { type: string, maxLength: 256 }
+        message: { type: string, maxLength: 1024 }
+        severity: { type: string, enum: [info, warning, critical] }
+        guidance: { type: string, maxLength: 1024 }
+    SecurityStatus:
+      type: object
+      required: [selinux, apparmor, active, findings, fingerprint]
+      properties:
+        selinux:
+          type: object
+          required: [kernelPresent, userspace, mode, booleans, denials]
+          properties:
+            kernelPresent: { type: boolean }
+            userspace: { type: boolean }
+            mode: { type: string }
+            policy: { type: string }
+            booleans: { type: array, maxItems: 4096, items: { type: string, maxLength: 256 } }
+            denials: { type: array, maxItems: 256, items: { type: string, maxLength: 1024 } }
+        apparmor:
+          type: object
+          required: [kernelPresent, userspace, profiles, denials]
+          properties:
+            kernelPresent: { type: boolean }
+            userspace: { type: boolean }
+            profiles: { type: array, maxItems: 4096, items: { type: string, maxLength: 512 } }
+            profileModes: { type: object, additionalProperties: { type: string, maxLength: 32 } }
+            denials: { type: array, maxItems: 256, items: { type: string, maxLength: 1024 } }
+        active: { type: string }
+        findings: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/SecurityFinding' } }
+        changes: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/SecurityChange' } }
+        warnings: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        stale: { type: boolean }
+        allowed: { type: boolean }
+        requiresConfirmation: { type: boolean }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
     IncidentEvent:
       type: object
       required: [id, timestamp, severity, kind, summary]
@@ -1658,6 +1724,9 @@ components:
       type: object
       required: [path, entries, showHidden, fingerprint]
       properties:
+        parent: { type: string, maxLength: 4096 }
+        nextOffset: { type: integer, minimum: 0 }
+        hasMore: { type: boolean }
         path: { type: string }
         entries:
           type: array
@@ -1697,7 +1766,11 @@ components:
           maxItems: 16
           items: { type: string, maxLength: 256 }
         message: { type: string, maxLength: 512 }
-        reason: { type: string, maxLength: 512 }
+        uploadId: { type: string, pattern: '^[a-fA-F0-9]{32}$' }
+        uploads:
+          type: array
+          maxItems: 256
+          items: { $ref: '#/components/schemas/UploadInfo' }
     UpdatePackage:
       type: object
       required: [name, candidateVersion]
@@ -1721,45 +1794,46 @@ components:
         description: { type: string, maxLength: 4096 }
         groupKey: { type: string, maxLength: 256 }
         dependencies: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
-        packageId: { type: string, maxLength: 512 }
     UpdateOperation:
       type: object
       additionalProperties: false
-      required: [scope]
+      required: [expectedFingerprint, confirmed]
       properties:
-        scope: { type: string, enum: [all, selected] }
-        packages:
-          type: array
-          maxItems: 500
-          items: { type: string, maxLength: 256, pattern: '^[A-Za-z0-9+_.:@-]+$' }
         expectedFingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
-        confirmation: { type: string, maxLength: 128, writeOnly: true }
-        preview: { type: boolean, readOnly: true }
+        confirmed: { type: boolean }
+        riskAccepted: { type: boolean }
+    UpdateChange:
+      type: object
+      required: [action, name]
+      properties:
+        action: { type: string, enum: [install, upgrade, remove, downgrade, replace] }
+        name: { type: string, maxLength: 256 }
+        architecture: { type: string, maxLength: 32 }
+        currentVersion: { type: string, maxLength: 256 }
+        candidateVersion: { type: string, maxLength: 256 }
+        currentRepository: { type: string, maxLength: 256 }
+        targetRepository: { type: string, maxLength: 256 }
+        currentVendor: { type: string, maxLength: 256 }
+        targetVendor: { type: string, maxLength: 256 }
     UpdatePreview:
       type: object
-      required: [operation, current, selected, changes, warnings, fingerprint, stale, allowed, requiresConfirmation]
+      required: [current, changes, warnings, fingerprint, stale, allowed, requiresConfirmation, requiresRiskConfirmation]
       properties:
-        operation: { $ref: '#/components/schemas/UpdateOperation' }
         current: { $ref: '#/components/schemas/UpdateStatus' }
-        selected:
-          type: array
-          maxItems: 500
-          items: { $ref: '#/components/schemas/UpdatePackage' }
-        changes: { type: array, maxItems: 16, items: { type: string, maxLength: 256 } }
+        changes: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/UpdateChange' } }
         warnings: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
         fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         stale: { type: boolean }
         allowed: { type: boolean }
         requiresConfirmation: { type: boolean }
+        requiresRiskConfirmation: { type: boolean }
         reason: { type: string, maxLength: 512 }
     UpdateResult:
       type: object
-      required: [backend, scope, packages, updated, verified, message, fingerprint, recovery]
+      required: [backend, changes, verified, message, fingerprint, recovery]
       properties:
         backend: { type: string, maxLength: 64 }
-        scope: { type: string, enum: [all, selected] }
-        packages: { type: array, maxItems: 500, items: { type: string, maxLength: 256 } }
-        updated: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/UpdatePackage' } }
+        changes: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/UpdateChange' } }
         verified: { type: boolean }
         message: { type: string, maxLength: 512 }
         fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
@@ -1773,58 +1847,50 @@ components:
           type: object
           maxProperties: 500
           additionalProperties: { type: string, maxLength: 256 }
-    UpdateActionLogEntry:
+    UpdateProgress:
       type: object
-      required: [statusLabel, packageId]
+      required: [sequence, active, phase, current, total, percent, message, cancelable, timestamp]
       properties:
-        status: { type: integer }
-        statusLabel: { type: string, maxLength: 64 }
-        packageId: { type: string, maxLength: 512 }
-        timestamp: { type: string, format: date-time }
-    UpdateLive:
-      type: object
-      required: [active, percentage, allowCancel]
-      properties:
+        sequence: { type: integer, minimum: 0 }
+        jobId: { type: string, maxLength: 128 }
         active: { type: boolean }
-        source: { type: string, maxLength: 32 }
-        percentage: { type: integer, minimum: -1, maximum: 100 }
-        allowCancel: { type: boolean }
-        status: { type: string, maxLength: 64 }
-        currentPackage: { type: string, maxLength: 512 }
-        remainingSeconds: { type: integer, minimum: 0 }
-        transactionPath: { type: string, maxLength: 256 }
+        phase: { type: string, maxLength: 64 }
+        package: { type: string, maxLength: 512 }
+        current: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+        percent: { type: integer, minimum: -1, maximum: 100 }
+        message: { type: string, maxLength: 1024 }
+        cancelable: { type: boolean }
+        timestamp: { type: string, format: date-time }
+    UpdateOutput:
+      type: object
+      required: [sequence, stream, line, timestamp]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        jobId: { type: string, maxLength: 128 }
+        stream: { type: string, enum: [stdout, stderr] }
+        line: { type: string, maxLength: 8192 }
+        timestamp: { type: string, format: date-time }
+    UpdateStreamEvent:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [progress, output] }
+        progress: { $ref: '#/components/schemas/UpdateProgress' }
+        output: { $ref: '#/components/schemas/UpdateOutput' }
     UpdateObservation:
       type: object
-      required: [live, log]
+      required: [progress, output]
       properties:
-        live: { $ref: '#/components/schemas/UpdateLive' }
-        log:
+        progress: { $ref: '#/components/schemas/UpdateProgress' }
+        output:
           type: array
           maxItems: 500
-          items: { $ref: '#/components/schemas/UpdateActionLogEntry' }
-    AutoUpdatesConfig:
-      type: object
-      required: [available, supported, installed, enabled, type, day, time]
-      properties:
-        available: { type: boolean }
-        supported: { type: boolean }
-        installed: { type: boolean }
-        enabled: { type: boolean }
-        type: { type: string, enum: [all, security] }
-        day: { type: string, enum: ["", mon, tue, wed, thu, fri, sat, sun] }
-        time: { type: string, maxLength: 5, pattern: '^$|^([01]?[0-9]|2[0-3]):[0-5][0-9]$' }
-        provider: { type: string, maxLength: 64 }
-        packageName: { type: string, maxLength: 128 }
-        reason: { type: string, maxLength: 512 }
-    AutoUpdatesOperation:
-      type: object
-      additionalProperties: false
-      description: Null/omitted fields are left unchanged; a schedule change requires both day and time.
-      properties:
-        enabled: { type: boolean }
-        type: { type: string, enum: [all, security] }
-        day: { type: string, enum: ["", mon, tue, wed, thu, fri, sat, sun] }
-        time: { type: string, maxLength: 5, pattern: '^$|^([01]?[0-9]|2[0-3]):[0-5][0-9]$' }
+          items: { $ref: '#/components/schemas/UpdateOutput' }
+        events:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/UpdateStreamEvent' }
     KpatchStatus:
       type: object
       required: [supported, loaded, installed]
@@ -2125,8 +2191,9 @@ components:
         nextCursor: { type: string, maxLength: 8192 }
     JournalEntry:
       type: object
-      required: [timestamp, priority, unit, message]
+      required: [id, timestamp, priority, unit, message]
       properties:
+        id: { type: string, maxLength: 128 }
         timestamp: { type: string, format: date-time }
         priority: { type: string, maxLength: 2 }
         unit: { type: string, maxLength: 256 }
@@ -2621,12 +2688,90 @@ components:
           type: array
           maxItems: 4096
           items: { $ref: '#/components/schemas/MountPoint' }
+    StoragePartition:
+      type: object
+      required: [path, size, readOnly, mountPoints]
+      properties:
+        path: { type: string, maxLength: 256 }
+        name: { type: string, maxLength: 256 }
+        size: { type: integer, minimum: 0 }
+        filesystem: { type: string, maxLength: 64 }
+        label: { type: string, maxLength: 256 }
+        uuid: { type: string, maxLength: 128 }
+        parent: { type: string, maxLength: 256 }
+        readOnly: { type: boolean }
+        mountPoints: { type: array, maxItems: 64, items: { $ref: '#/components/schemas/MountPoint' } }
+    StorageHealth:
+      type: object
+      required: [available]
+      properties:
+        available: { type: boolean }
+        passed: { type: boolean }
+        temperatureC: { type: integer }
+        powerOnHours: { type: integer, minimum: 0 }
+        failing: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+    NVMeHealth:
+      type: object
+      required: [available]
+      properties:
+        available: { type: boolean }
+        temperatureC: { type: integer }
+        percentageUsed: { type: integer, minimum: 0, maximum: 255 }
+        criticalWarning: { type: integer, minimum: 0, maximum: 255 }
+        reason: { type: string, maxLength: 512 }
+    StorageDevice:
+      type: object
+      required: [path, name, type, size, readOnly, removable, partitions]
+      properties:
+        path: { type: string, maxLength: 256 }
+        name: { type: string, maxLength: 256 }
+        type: { type: string, maxLength: 64 }
+        model: { type: string, maxLength: 512 }
+        serial: { type: string, maxLength: 512 }
+        transport: { type: string, maxLength: 64 }
+        size: { type: integer, minimum: 0 }
+        readOnly: { type: boolean }
+        removable: { type: boolean }
+        partitions: { type: array, maxItems: 128, items: { $ref: '#/components/schemas/StoragePartition' } }
+        smart: { $ref: '#/components/schemas/StorageHealth' }
+        nvme: { $ref: '#/components/schemas/NVMeHealth' }
+    StorageSnapshot:
+      type: object
+      required: [filesystems, devices, fingerprint, readOnly]
+      properties:
+        filesystems: { type: array, maxItems: 4096, items: { $ref: '#/components/schemas/StorageFilesystem' } }
+        devices: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/StorageDevice' } }
+        fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        readOnly: { type: boolean }
+        reason: { type: string, maxLength: 512 }
+    StorageOperation:
+      type: object
+      additionalProperties: false
+      required: [action, device]
+      properties:
+        action: { type: string, enum: [preview, mount, unmount, persistent-mount, persistent-unmount] }
+        device: { type: string, pattern: '^/dev/[A-Za-z0-9._/@+-]+$' }
+        target: { type: string, maxLength: 4096 }
+        filesystem: { type: string, maxLength: 64 }
+        options: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }
+        expectedFingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        confirmation: { type: string, maxLength: 128 }
+    StorageState:
+      type: object
+      required: [snapshot, action, applied]
+      properties:
+        snapshot: { $ref: '#/components/schemas/StorageSnapshot' }
+        action: { type: string }
+        applied: { type: boolean }
+        warning: { type: string, maxLength: 1024 }
     MountPoint:
       type: object
       required: [target]
       properties:
         target: { type: string, maxLength: 4096 }
         root: { type: string, maxLength: 4096, description: Path of the mount inside its filesystem (bind or btrfs subvolume source) }
+        readOnly: { type: boolean }
     StorageSummary:
       type: object
       required: [filesystems, total, used, percent]

@@ -5,7 +5,7 @@ import { Page } from "@/lib/page"
 
 function UpdatesPage() {
   return (
-    <Page description="Installed-software update inventory without package-management writes.">
+    <Page description="Review pending packages, preview system changes, and apply updates safely.">
       <UpdateInventory />
     </Page>
   )

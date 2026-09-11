@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/tools/tako-host"
+
+events_file="$(mktemp)"
+trap 'rm -f "$events_file"' EXIT
+
+systemctl() {
+  printf '%s\n' "$*" >>"$events_file"
+}
+
+restart_sockets >/dev/null
+
+actual="$(<"$events_file")"
+expected="$(printf '%s\n' \
+  'stop tako.socket tako-sessiond.socket' \
+  'stop tako.service tako-sessiond.service' \
+  'reset-failed tako.socket tako-sessiond.socket tako.service tako-sessiond.service' \
+  'daemon-reload' \
+  'start tako-sessiond.socket' \
+  'start tako.socket')"
+
+if [[ "$actual" != "$expected" ]]; then
+  printf 'unexpected restart order:\n%s\n' "$actual" >&2
+  exit 1
+fi
+
+printf '%s\n' 'tako-host restart order test passed'

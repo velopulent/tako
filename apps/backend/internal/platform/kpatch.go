@@ -5,8 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
+
+func confValue(content, key string) string {
+	pattern := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(key) + `\s*=\s*(\S+)\s*$`)
+	matches := pattern.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[len(matches)-1][1]
+}
 
 // KpatchStatus reports kernel live-patch state.
 type KpatchStatus struct {

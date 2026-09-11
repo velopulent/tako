@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
-	"github.com/velopulent/tako/internal/packagekit"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
 	"go.uber.org/zap"
@@ -31,11 +32,8 @@ func (server *Server) previewUpdates(writer http.ResponseWriter, request *http.R
 		writeUpdateProblem(writer, err)
 		return
 	}
-	if preview.Selected == nil {
-		preview.Selected = []platform.UpdatePackage{}
-	}
 	if preview.Changes == nil {
-		preview.Changes = []string{}
+		preview.Changes = []platform.UpdateChange{}
 	}
 	if preview.Warnings == nil {
 		preview.Warnings = []string{}
@@ -106,12 +104,7 @@ func decodeUpdateOperation(writer http.ResponseWriter, request *http.Request, pr
 		problem(writer, http.StatusBadRequest, "invalid-update-operation", "Update operation is invalid")
 		return platform.UpdateOperation{}, false
 	}
-	if !preview && operation.Preview {
-		problem(writer, http.StatusBadRequest, "invalid-update-operation", "Update operation is invalid")
-		return platform.UpdateOperation{}, false
-	}
-	operation.Preview = preview
-	if err := platform.ValidateUpdateOperation(operation); err != nil {
+	if err := platform.ValidateUpdateOperation(operation, !preview); err != nil {
 		problem(writer, http.StatusBadRequest, "invalid-update-operation", "Update operation is invalid")
 		return platform.UpdateOperation{}, false
 	}
@@ -128,12 +121,8 @@ func writeUpdateProblem(writer http.ResponseWriter, err error) {
 		problem(writer, http.StatusConflict, "update-locked", "Another package operation currently holds the package-manager lock")
 	case errors.Is(err, platform.ErrUpdateUnavailable):
 		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "No supported update backend is available")
-	case errors.Is(err, platform.ErrInvalidAutoUpdatesOperation):
-		problem(writer, http.StatusBadRequest, "invalid-auto-updates-operation", "Automatic updates operation is invalid")
-	case errors.Is(err, platform.ErrAutoUpdatesUnavailable):
-		problem(writer, http.StatusServiceUnavailable, "auto-updates-unavailable", "No supported automatic-update backend is available")
-	case errors.Is(err, platform.ErrAutoUpdatesApply):
-		problem(writer, http.StatusBadGateway, "auto-updates-apply-failed", "The automatic-update configuration could not be applied")
+	case errors.Is(err, platform.ErrUpdateRiskNotAccepted):
+		problem(writer, http.StatusConflict, "update-risk-not-accepted", "Risky update changes require explicit confirmation")
 	default:
 		problem(writer, http.StatusBadGateway, "update-preview-failed", "Update preview could not be completed")
 	}
@@ -143,15 +132,16 @@ func (server *Server) runSoftwareUpdateJob(ctx context.Context, job Job, update 
 	var operation platform.UpdateOperation
 	decoder := json.NewDecoder(bytes.NewReader(job.Parameters))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&operation); err != nil || decoder.Decode(&struct{}{}) != io.EOF || platform.ValidateUpdateOperation(operation) != nil || operation.Preview {
+	if err := decoder.Decode(&operation); err != nil || decoder.Decode(&struct{}{}) != io.EOF || platform.ValidateUpdateOperation(operation, true) != nil {
 		return nil, platform.ErrInvalidUpdateOperation
 	}
 	adminToken := server.takeUpdateToken(job.ID)
 	if adminToken == "" {
 		return nil, auth.ErrServiceUnavailable
 	}
+	operation.JobID = job.ID
 	startedAt := time.Now().UTC()
-	target := "system/updates/" + operation.Scope
+	target := "system/updates"
 	defer func() {
 		server.deleteUpdateToken(job.ID)
 	}()
@@ -171,7 +161,7 @@ func (server *Server) runSoftwareUpdateJob(ctx context.Context, job Job, update 
 		}
 		return nil, err
 	}
-	if err := update(20, "Applying selected software updates"); err != nil {
+	if err := update(20, "Applying full system update"); err != nil {
 		if errors.Is(err, ErrJobTerminal) {
 			return nil, context.Canceled
 		}
@@ -298,18 +288,103 @@ func (server *Server) updateLiveStatus(writer http.ResponseWriter, request *http
 		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Live update status is unavailable")
 		return
 	}
-	observation, err := server.readUpdateLiveFn(request.Context())
-	if err != nil {
-		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Live update status is unavailable")
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		problem(writer, http.StatusInternalServerError, "stream-unavailable", "Streaming is unavailable")
 		return
 	}
-	if observation.Log == nil {
-		observation.Log = []packagekit.ActionLogEntry{}
+	cursor, _ := strconv.ParseUint(request.Header.Get("Last-Event-ID"), 10, 64)
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("X-Accel-Buffering", "no")
+	writeSnapshot := func(progress platform.UpdateProgress) bool {
+		payload, err := json.Marshal(progress)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(writer, "event: progress\ndata: %s\n\n", payload); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"live": observation.Live,
-		"log":  observation.Log,
-	})
+
+	emit := func(kind string, sequence uint64, value any) bool {
+		if sequence <= cursor {
+			return true
+		}
+		payload, err := json.Marshal(value)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(writer, "id: %d\nevent: %s\ndata: %s\n\n", sequence, kind, payload); err != nil {
+			return false
+		}
+		cursor = sequence
+		flusher.Flush()
+		return true
+	}
+	initial := true
+	poll := func() bool {
+		observation, err := server.readUpdateLiveFn(request.Context())
+		if err != nil {
+			return true
+		}
+		if initial {
+			initial = false
+			if !writeSnapshot(observation.Progress) {
+				return false
+			}
+		}
+		events := append([]platform.UpdateStreamEvent(nil), observation.Events...)
+		if len(events) == 0 {
+			events = append(events, platform.UpdateStreamEvent{Kind: "progress", Progress: observation.Progress})
+			for _, output := range observation.Output {
+				events = append(events, platform.UpdateStreamEvent{Kind: "output", Output: output})
+			}
+		}
+		sort.Slice(events, func(left, right int) bool {
+			sequence := func(event platform.UpdateStreamEvent) uint64 {
+				if event.Kind == "output" {
+					return event.Output.Sequence
+				}
+				return event.Progress.Sequence
+			}
+			return sequence(events[left]) < sequence(events[right])
+		})
+		for _, event := range events {
+			if event.Kind == "output" {
+				if !emit("output", event.Output.Sequence, event.Output) {
+					return false
+				}
+			} else if !emit("progress", event.Progress.Sequence, event.Progress) {
+				return false
+			}
+		}
+		return true
+	}
+	if !poll() {
+		return
+	}
+	pollTicker := time.NewTicker(time.Second)
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer pollTicker.Stop()
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case <-pollTicker.C:
+			if !poll() {
+				return
+			}
+		case <-heartbeat.C:
+			if _, err := fmt.Fprint(writer, ": heartbeat\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 func (server *Server) updateHistory(writer http.ResponseWriter, request *http.Request) {
@@ -333,37 +408,6 @@ func (server *Server) updateHistory(writer http.ResponseWriter, request *http.Re
 		}
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"items": items, "available": true})
-}
-
-func (server *Server) cancelRunningUpdate(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	if !hasAdministrativeAccess(current) {
-		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access first")
-		return
-	}
-	cancelCtx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
-	defer cancel()
-	if server.cancelUpdateFn == nil {
-		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "Update cancellation is unavailable")
-		return
-	}
-	found, err := server.cancelUpdateFn(cancelCtx)
-	if err != nil {
-		writeUpdateProblem(writer, err)
-		return
-	}
-	server.recordOperation(request.Context(), current.Identity.Username, "system/updates/cancel", time.Now().UTC(), "succeeded", "", true)
-	writeJSON(writer, http.StatusOK, map[string]any{"canceled": found})
-}
-
-func (server *Server) automaticUpdatesStatus(writer http.ResponseWriter, request *http.Request) {
-	if server.autoUpdatesStatusFn == nil {
-		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "The update configuration service is unavailable")
-		return
-	}
-	statusCtx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
-	defer cancel()
-	writeJSON(writer, http.StatusOK, server.autoUpdatesStatusFn(statusCtx))
 }
 
 func (server *Server) kpatchStatus(writer http.ResponseWriter, request *http.Request) {
@@ -432,50 +476,6 @@ func (server *Server) applyKpatchSettings(writer http.ResponseWriter, request *h
 		settings.Unavailable = []string{}
 	}
 	writeJSON(writer, http.StatusOK, settings)
-}
-
-func (server *Server) applyAutomaticUpdates(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	if !hasAdministrativeAccess(current) {
-		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access first")
-		return
-	}
-	request.Body = http.MaxBytesReader(writer, request.Body, 4<<10)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	var operation platform.AutoUpdatesOperation
-	if err := decoder.Decode(&operation); err != nil || decoder.Decode(&struct{}{}) != io.EOF || platform.ValidateAutoUpdatesOperation(operation) != nil {
-		problem(writer, http.StatusBadRequest, "invalid-auto-updates-operation", "Automatic updates operation is invalid")
-		return
-	}
-	if server.autoUpdatesFn == nil {
-		problem(writer, http.StatusServiceUnavailable, "updates-unavailable", "The update configuration service is unavailable")
-		return
-	}
-	startedAt := time.Now().UTC()
-	configCtx, cancel := context.WithTimeout(request.Context(), time.Minute)
-	defer cancel()
-	config, err := server.autoUpdatesFn(configCtx, auth.AutoUpdatesRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
-	if err != nil {
-		server.recordOperation(request.Context(), current.Identity.Username, "system/updates/auto", startedAt, "failed", autoUpdatesFailure(err), true)
-		writeUpdateProblem(writer, err)
-		return
-	}
-	server.recordOperation(request.Context(), current.Identity.Username, "system/updates/auto", startedAt, "succeeded", "", true)
-	writeJSON(writer, http.StatusOK, config)
-}
-
-func autoUpdatesFailure(err error) string {
-	switch {
-	case errors.Is(err, platform.ErrInvalidAutoUpdatesOperation):
-		return "automatic updates operation invalid"
-	case errors.Is(err, platform.ErrAutoUpdatesUnavailable):
-		return "automatic updates backend unavailable"
-	case errors.Is(err, platform.ErrAutoUpdatesApply):
-		return "automatic updates apply failed"
-	default:
-		return "automatic updates failed"
-	}
 }
 
 func plural(count int) string {

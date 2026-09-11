@@ -1,0 +1,131 @@
+name: Beta release
+
+on:
+  push:
+    tags:
+      - "v*-beta*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Required CI gates
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  integration:
+    name: Required VM integration
+    needs: ci
+    uses: ./.github/workflows/integration.yml
+    permissions:
+      contents: read
+
+  native-packages:
+    name: Native package matrix
+    needs: ci
+    uses: ./.github/workflows/native-packages.yml
+    permissions:
+      contents: read
+
+  lifecycle-validation:
+    name: Representative lifecycle validation
+    needs: ci
+    uses: ./.github/workflows/packaging-lifecycle.yml
+    permissions:
+      contents: read
+
+  vm-validation:
+    name: Disposable VM validation matrix
+    needs: native-packages
+    uses: ./.github/workflows/vm-validation.yml
+    permissions:
+      contents: read
+      actions: read
+
+  evidence-gate:
+    name: Verify all VM evidence
+    needs: [ci, integration, native-packages, vm-validation, lifecycle-validation]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: incoming
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vm-evidence-*
+          path: incoming
+          merge-multiple: true
+      - name: Fail closed unless every manifest target passed in a VM
+        run: TAKO_VM_COMMIT="$GITHUB_SHA" ./tools/release-gate incoming incoming
+      - name: Assemble packages from the manifest
+        run: bun tools/release-assemble incoming release
+      - name: Record dependency inventory
+        run: bun tools/release-dependencies release/dependency-inventory.json
+      - name: Generate release checksums
+        run: |
+          set -euo pipefail
+          checksums_tmp=$(mktemp)
+          trap 'rm -f "$checksums_tmp"' EXIT
+          cd release
+          find . -maxdepth 1 -type f ! -name checksums.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > "$checksums_tmp"
+          mv "$checksums_tmp" checksums.txt
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the release checksum manifest
+        run: |
+          cosign sign-blob --yes \
+            --output-signature release/checksums.txt.sig \
+            --output-certificate release/checksums.txt.pem \
+            release/checksums.txt
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta-release-inputs
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish beta release
+    needs: evidence-gate
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-beta')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: beta-release-inputs
+          path: release
+      - name: Publish only after CI, native builds, and every VM evidence gate passed
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          prerelease: true
+          generate_release_notes: true
+          files: release/*

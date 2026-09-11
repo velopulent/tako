@@ -1,0 +1,64 @@
+name: Native packages
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    name: Expand support manifest
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - id: targets
+        run: |
+          matrix=$(bun -e '
+            const manifest = await Bun.file("apps/backend/packaging/targets.json").json();
+            console.log(JSON.stringify({include: manifest.targets.map((target) => ({
+              id: target.id,
+              arch: target.arch,
+              image: target.image,
+              runner: target.arch === "arm64" ? "ubuntu-24.04-arm" : "ubuntu-24.04",
+            }))}));
+          ')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.id }} native package
+    needs: manifest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build in the target distro image
+        env:
+          TARGET_ID: ${{ matrix.id }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          TARGET_IMAGE: ${{ matrix.image }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          docker run --rm --platform "linux/${TARGET_ARCH}" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            --env TAKO_PACKAGE_TARGET="$TARGET_ID" \
+            --env GORELEASER_CURRENT_TAG \
+            "$TARGET_IMAGE" \
+            /bin/bash -c './apps/backend/packaging/native-build.sh'
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

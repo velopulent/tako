@@ -36,6 +36,25 @@ func TestFrameRejectsOversizePayload(t *testing.T) {
 	}
 }
 
+func FuzzReadFrame(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 1, '{'})
+	f.Add([]byte{0, 0, 0, 0})
+	f.Fuzz(func(_ *testing.T, payload []byte) {
+		_, _ = readFrame(bytes.NewReader(payload))
+	})
+}
+
+func FuzzDecodeHostPayload(f *testing.F) {
+	f.Add(`{"scope":"system"}`)
+	f.Add(`{"scope":"system"}{}`)
+	f.Fuzz(func(_ *testing.T, payload string) {
+		var operation struct {
+			Scope string `json:"scope"`
+		}
+		_ = decodeHostPayload([]byte(payload), &operation)
+	})
+}
+
 func TestTypedHostReadRejectsUnknownAndTrailingFields(t *testing.T) {
 	input := bytes.NewBuffer(nil)
 	if err := writeFrame(bufio.NewWriter(input), frame{ID: "host-1", Method: "services.read", Payload: json.RawMessage(`{"scope":"system","unknown":true}`)}); err != nil {

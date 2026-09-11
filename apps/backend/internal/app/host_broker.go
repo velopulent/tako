@@ -10,7 +10,6 @@ import (
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/metrics"
-	"github.com/velopulent/tako/internal/packagekit"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
 )
@@ -37,6 +36,9 @@ type HostBroker interface {
 	SignalProcesses(context.Context, auth.SignalRequest) (platform.SignalResult, error)
 	ReadIdentityInventory(context.Context, auth.HostReadCredentials) (platform.IdentityInventory, error)
 	ReadFilesystems(context.Context, auth.HostReadCredentials) ([]platform.Filesystem, error)
+	ReadStorageSnapshot(context.Context, auth.HostReadCredentials) (platform.StorageSnapshot, error)
+	PreviewStorage(context.Context, auth.StorageRequest) (platform.StorageState, error)
+	ApplyStorage(context.Context, auth.StorageRequest) (platform.StorageState, error)
 	ReadNetworkSnapshot(context.Context, auth.HostReadCredentials) (platform.NetworkSnapshot, error)
 	PreviewNetwork(context.Context, auth.NetworkRequest) (platform.NetworkState, error)
 	ApplyNetwork(context.Context, auth.NetworkRequest) (platform.NetworkState, error)
@@ -50,9 +52,6 @@ type HostBroker interface {
 	RefreshUpdates(context.Context, string, bool) (platform.UpdateStatus, error)
 	ReadUpdateHistory(context.Context, auth.HostReadCredentials) ([]platform.UpdateHistoryEntry, error)
 	ReadUpdateObservation(context.Context, auth.HostReadCredentials) (auth.UpdateObservation, error)
-	CancelUpdate(context.Context, string) (bool, error)
-	ReadAutoUpdatesStatus(context.Context, auth.HostReadCredentials) (platform.AutoUpdatesConfig, error)
-	ApplyAutoUpdates(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error)
 	ReadKpatch(context.Context, auth.HostReadCredentials) (platform.KpatchStatus, platform.KpatchSettingsStatus, error)
 	ApplyKpatch(context.Context, auth.KpatchRequest) (platform.KpatchSettingsStatus, error)
 	ReadCapabilities(context.Context, auth.HostReadCredentials) ([]platform.Capability, error)
@@ -196,6 +195,18 @@ func (broker socketHostBroker) ReadFilesystems(ctx context.Context, credentials 
 	return auth.ReadFilesystems(ctx, broker.path, credentials)
 }
 
+func (broker socketHostBroker) ReadStorageSnapshot(ctx context.Context, credentials auth.HostReadCredentials) (platform.StorageSnapshot, error) {
+	return auth.ReadStorageSnapshot(ctx, broker.path, credentials)
+}
+
+func (broker socketHostBroker) PreviewStorage(ctx context.Context, request auth.StorageRequest) (platform.StorageState, error) {
+	return auth.PreviewStorage(ctx, broker.path, request)
+}
+
+func (broker socketHostBroker) ApplyStorage(ctx context.Context, request auth.StorageRequest) (platform.StorageState, error) {
+	return auth.ApplyStorage(ctx, broker.path, request)
+}
+
 func (broker socketHostBroker) ReadNetworkSnapshot(ctx context.Context, credentials auth.HostReadCredentials) (platform.NetworkSnapshot, error) {
 	return auth.ReadNetworkSnapshot(ctx, broker.path, credentials)
 }
@@ -229,11 +240,7 @@ func (broker socketHostBroker) ReadUpdateStatus(ctx context.Context, credentials
 }
 
 func (broker socketHostBroker) PreviewUpdates(ctx context.Context, credentials auth.HostReadCredentials, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
-	status, err := broker.ReadUpdateStatus(ctx, credentials)
-	if err != nil {
-		return platform.UpdatePreview{}, err
-	}
-	return platform.PreviewUpdates(ctx, operation, func(context.Context) platform.UpdateStatus { return status })
+	return auth.PreviewUpdates(ctx, broker.path, credentials, operation)
 }
 
 func (broker socketHostBroker) ApplyUpdates(ctx context.Context, request auth.UpdateRequest) (platform.UpdateResult, error) {
@@ -250,18 +257,6 @@ func (broker socketHostBroker) ReadUpdateHistory(ctx context.Context, credential
 
 func (broker socketHostBroker) ReadUpdateObservation(ctx context.Context, credentials auth.HostReadCredentials) (auth.UpdateObservation, error) {
 	return auth.ReadUpdateObservation(ctx, broker.path, credentials)
-}
-
-func (broker socketHostBroker) CancelUpdate(ctx context.Context, adminToken string) (bool, error) {
-	return auth.CancelUpdate(ctx, broker.path, adminToken)
-}
-
-func (broker socketHostBroker) ReadAutoUpdatesStatus(ctx context.Context, credentials auth.HostReadCredentials) (platform.AutoUpdatesConfig, error) {
-	return auth.ReadAutoUpdatesStatus(ctx, broker.path, credentials)
-}
-
-func (broker socketHostBroker) ApplyAutoUpdates(ctx context.Context, request auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
-	return auth.ApplyAutoUpdatesConfig(ctx, broker.path, request)
 }
 
 func (broker socketHostBroker) ReadKpatch(ctx context.Context, credentials auth.HostReadCredentials) (platform.KpatchStatus, platform.KpatchSettingsStatus, error) {
@@ -431,6 +426,18 @@ func (fakeHostBroker) ReadFilesystems(context.Context, auth.HostReadCredentials)
 	return []platform.Filesystem{}, nil
 }
 
+func (fakeHostBroker) ReadStorageSnapshot(context.Context, auth.HostReadCredentials) (platform.StorageSnapshot, error) {
+	return platform.StorageSnapshotFromFilesystems([]platform.Filesystem{}, "Development storage inventory is empty."), nil
+}
+
+func (fakeHostBroker) PreviewStorage(context.Context, auth.StorageRequest) (platform.StorageState, error) {
+	return platform.StorageState{}, nil
+}
+
+func (fakeHostBroker) ApplyStorage(context.Context, auth.StorageRequest) (platform.StorageState, error) {
+	return platform.StorageState{}, nil
+}
+
 func (fakeHostBroker) ReadNetworkSnapshot(context.Context, auth.HostReadCredentials) (platform.NetworkSnapshot, error) {
 	return platform.NetworkSnapshot{Interfaces: []platform.Interface{}, Addresses: []platform.NetworkAddress{}, Routes: []platform.NetworkRoute{}, DNS: []string{}}, nil
 }
@@ -468,7 +475,7 @@ func (broker fakeHostBroker) PreviewUpdates(ctx context.Context, credentials aut
 	if err != nil {
 		return platform.UpdatePreview{}, err
 	}
-	return platform.PreviewUpdates(ctx, operation, func(context.Context) platform.UpdateStatus { return status })
+	return platform.PreviewUpdateStatus(status, operation)
 }
 
 func (fakeHostBroker) ApplyUpdates(context.Context, auth.UpdateRequest) (platform.UpdateResult, error) {
@@ -484,17 +491,7 @@ func (fakeHostBroker) ReadUpdateHistory(context.Context, auth.HostReadCredential
 }
 
 func (fakeHostBroker) ReadUpdateObservation(context.Context, auth.HostReadCredentials) (auth.UpdateObservation, error) {
-	return auth.UpdateObservation{Live: platform.InactiveUpdateLive(), Log: []packagekit.ActionLogEntry{}}, nil
-}
-
-func (fakeHostBroker) CancelUpdate(context.Context, string) (bool, error) { return false, nil }
-
-func (fakeHostBroker) ReadAutoUpdatesStatus(context.Context, auth.HostReadCredentials) (platform.AutoUpdatesConfig, error) {
-	return platform.AutoUpdatesConfig{}, nil
-}
-
-func (fakeHostBroker) ApplyAutoUpdates(context.Context, auth.AutoUpdatesRequest) (platform.AutoUpdatesConfig, error) {
-	return platform.AutoUpdatesConfig{}, nil
+	return auth.UpdateObservation{Progress: platform.UpdateProgress{Phase: "idle", Percent: -1, Message: "No update is running."}, Output: []platform.UpdateOutput{}}, nil
 }
 
 func (fakeHostBroker) ReadKpatch(context.Context, auth.HostReadCredentials) (platform.KpatchStatus, platform.KpatchSettingsStatus, error) {

@@ -1,0 +1,473 @@
+---
+import { Icon } from "astro-icon/components"
+
+const distributions = [
+  { name: "Ubuntu", icon: "logos:ubuntu" },
+  { name: "Debian", icon: "logos:debian" },
+  { name: "Fedora", icon: "devicon:fedora" },
+  { name: "Red Hat Enterprise Linux", icon: "logos:redhat-icon" },
+  { name: "Rocky Linux", icon: "logos:rocky-linux-icon" },
+  { name: "AlmaLinux", icon: "devicon:almalinux" },
+  { name: "Arch Linux", icon: "logos:archlinux" },
+  { name: "openSUSE", icon: "devicon:opensuse" },
+]
+---
+
+<section
+  class="compatibility-section wrap"
+  id="compatibility"
+  aria-labelledby="compatibility-title"
+>
+  <div class="compatibility-heading" data-reveal>
+    <span class="eyebrow">04 / In good company</span>
+    <h2 id="compatibility-title">A familiar face.<br><em>Across Linux.</em></h2>
+    <p>
+      Your applications run on different distributions. Tako gives each server a
+      familiar place to work, with native integration for the Linux underneath.
+    </p>
+  </div>
+  <div class="linux-constellation">
+    <div class="constellation-art" aria-hidden="true">
+      <div class="constellation-ring ring-outer"></div>
+      <div class="constellation-ring ring-inner"></div>
+      <span class="constellation-star star-one">✳</span
+      ><span class="constellation-star star-two">+</span>
+      <img
+        src="/tako-mascot.avif"
+        alt=""
+        width="1254"
+        height="1254"
+        loading="lazy"
+      ><span class="constellation-note">Many distros. One friendly face.</span>
+    </div>
+    <ul class="distro-family" aria-label="Supported Linux distributions">
+      {distributions.map((distro, index) => (
+          <li
+            style={`--distro-index:${index}`}
+            data-orbit={index % 2 === 0 ? 'outer' : 'inner'}
+          >
+            <>
+              <span class="distro-logo">
+                <Icon name={distro.icon} aria-hidden="true" />
+              </span>
+              <span>{distro.name}</span>
+            </>
+          </li>
+        ))}
+    </ul>
+  </div>
+  <button class="orbit-toggle" hidden type="button" aria-pressed="false">
+    Pause orbits
+  </button>
+  <p class="compatibility-caption">
+    On a cloud instance, in your rack, or on dedicated hardware.<br>Built for
+    Linux servers with systemd and PAM.
+  </p>
+</section>
+<script>
+const scene = document.querySelector<HTMLElement>(".linux-constellation")
+const pause = document.querySelector<HTMLButtonElement>(".orbit-toggle")
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)")
+const mobile = matchMedia("(max-width: 640px)")
+if (scene) {
+  const sceneElement = scene
+  const logos = [
+    ...sceneElement.querySelectorAll<HTMLElement>(".distro-family li"),
+  ]
+  let animations: Animation[] = []
+  let visible = false
+  let paused = false
+  let progress = 0
+  function syncPlayback() {
+    const playing = visible && !paused && !document.hidden
+    animations.forEach((animation) => {
+      if (playing) animation.play()
+      else animation.pause()
+    })
+  }
+  function layoutOrbits() {
+    progress = Number(animations[0]?.currentTime ?? progress)
+    animations.forEach((animation) => {
+      animation.cancel()
+    })
+    animations = []
+    const active = !mobile.matches
+    sceneElement.classList.toggle("orbit-layout", active)
+    if (pause) pause.hidden = !active || reducedMotion.matches
+    if (!active) return
+    const { width, height } = sceneElement.getBoundingClientRect()
+    logos.forEach((logo, index) => {
+      const outer = logo.dataset.orbit === "outer"
+      const rx = width * (outer ? 0.39 : 0.27)
+      const ry = height * (outer ? 0.44 : 0.31)
+      const tilt = (-12 * Math.PI) / 180
+      const phase =
+        ((Math.floor(index / 2) * 90 + (outer ? 20 : 65)) * Math.PI) / 180
+      const frames = Array.from({ length: 121 }, (_, step) => {
+        const angle = phase + (step / 120) * Math.PI * 2
+        const x = rx * Math.cos(angle),
+          y = ry * Math.sin(angle)
+        return {
+          translate: `${x * Math.cos(tilt) - y * Math.sin(tilt)}px ${x * Math.sin(tilt) + y * Math.cos(tilt)}px`,
+        }
+      })
+      const animation = logo.animate(frames, {
+        duration: 150000,
+        iterations: Infinity,
+        easing: "linear",
+      })
+      animation.pause()
+      animation.currentTime = reducedMotion.matches ? 0 : progress
+      animations.push(animation)
+    })
+    if (!reducedMotion.matches) syncPlayback()
+  }
+  pause?.addEventListener("click", () => {
+    paused = !paused
+    pause.setAttribute("aria-pressed", String(paused))
+    pause.textContent = paused ? "Resume orbits" : "Pause orbits"
+    syncPlayback()
+  })
+  const observer = new IntersectionObserver(
+    (entries) => {
+      visible = entries.some((entry) => entry.isIntersecting)
+      if (visible) sceneElement.classList.add("constellation-visible")
+      if (!reducedMotion.matches) syncPlayback()
+    },
+    { threshold: 0.1 }
+  )
+  observer.observe(sceneElement)
+  new ResizeObserver(layoutOrbits).observe(sceneElement)
+  reducedMotion.addEventListener("change", layoutOrbits)
+  mobile.addEventListener("change", layoutOrbits)
+  document.addEventListener("visibilitychange", () => {
+    if (!reducedMotion.matches) syncPlayback()
+  })
+  layoutOrbits()
+}
+</script>
+<style>
+.compatibility-section {
+  padding-block: 90px 65px;
+  min-width: 0;
+}
+.compatibility-heading {
+  text-align: center;
+  max-width: 660px;
+  margin: auto;
+}
+.compatibility-heading h2 {
+  margin: 18px 0 24px;
+  font-size: clamp(48px, 5vw, 72px);
+}
+.compatibility-heading p {
+  font-size: 17px;
+  line-height: 1.85;
+  max-width: 580px;
+  margin: auto;
+}
+.linux-constellation {
+  position: relative;
+  width: 100%;
+  max-width: 1000px;
+  height: 640px;
+  margin: 30px auto 0;
+  isolation: isolate;
+}
+.constellation-art {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.constellation-art img {
+  width: 260px;
+  height: auto;
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 18px 22px #302a2014);
+}
+.constellation-ring {
+  position: absolute;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  width: 78%;
+  height: 88%;
+  transform: rotate(-12deg);
+}
+.ring-inner {
+  width: 54%;
+  height: 62%;
+  border-style: dashed;
+  transform: rotate(-12deg);
+}
+.constellation-note {
+  position: absolute;
+  bottom: -12px;
+  left: 50%;
+  transform: translateX(-50%) rotate(-4deg);
+  font: italic 18px var(--serif);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.constellation-star {
+  position: absolute;
+  color: var(--accent);
+  font-size: 28px;
+}
+.star-one {
+  left: 39%;
+  top: 18%;
+}
+.star-two {
+  right: 36%;
+  bottom: 21%;
+  font-size: 24px;
+}
+.distro-family {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.distro-family li {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 120px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--ink);
+  transform: translate(-50%, -50%);
+}
+.distro-logo {
+  height: 53px;
+  max-width: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 0;
+}
+.distro-logo :global(svg) {
+  width: auto;
+  max-width: 116px;
+  height: 38px;
+  color: #2374b5;
+  transition: transform 0.35s ease;
+}
+.distro-family li:hover .distro-logo :global(svg) {
+  transform: translateY(-5px) rotate(-5deg);
+}
+.distro-family li:nth-child(1) {
+  left: 25%;
+  top: 15%;
+}
+.distro-family li:nth-child(2) {
+  left: 64%;
+  top: 12%;
+}
+.distro-family li:nth-child(3) {
+  left: 86%;
+  top: 32%;
+}
+.distro-family li:nth-child(4) {
+  left: 86%;
+  top: 67%;
+}
+.distro-family li:nth-child(5) {
+  left: 66%;
+  top: 89%;
+}
+.distro-family li:nth-child(6) {
+  left: 29%;
+  top: 87%;
+}
+.distro-family li:nth-child(7) {
+  left: 12%;
+  top: 63%;
+}
+.distro-family li:nth-child(8) {
+  left: 12%;
+  top: 34%;
+}
+
+:global([data-theme="dark"]) .distro-logo :global([fill="#0d2c40"]) {
+  fill: var(--ink);
+}
+.compatibility-caption {
+  text-align: center;
+  font-size: 15px;
+  line-height: 1.9;
+  margin-top: 18px;
+}
+.orbit-layout .distro-family li:nth-child(n) {
+  left: 50%;
+  top: 50%;
+}
+.orbit-toggle {
+  display: block;
+  margin: 35px auto 0;
+  padding: 8px 15px;
+  border: 1px solid var(--line);
+  border-radius: 30px;
+  background: transparent;
+  color: var(--muted);
+  font: 13px var(--sans);
+  min-height: 40px;
+}
+.orbit-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.orbit-toggle[hidden] {
+  display: none;
+}
+:global([data-theme="dark"]) .distro-logo :global(svg) {
+  filter: drop-shadow(0 0 1px #f6f5f080);
+}
+.constellation-visible .constellation-art img {
+  animation: mascot-arrive 1.1s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes family-arrive {
+  from {
+    opacity: 0;
+    translate: 0 18px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+@keyframes mascot-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(24px) rotate(-8deg) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (max-width: 900px) {
+  .linux-constellation {
+    height: 610px;
+  }
+  .distro-family li {
+    width: 112px;
+    font-size: 14px;
+  }
+  .constellation-art img {
+    width: 180px;
+  }
+  .constellation-ring {
+    width: 78%;
+    height: 88%;
+  }
+  .ring-inner {
+    width: 54%;
+    height: 62%;
+  }
+  .constellation-note {
+    font-size: 16px;
+    bottom: -12px;
+  }
+}
+@media (max-width: 640px) {
+  .compatibility-section {
+    padding-block: 60px 45px;
+  }
+  .compatibility-heading p {
+    font-size: 16px;
+  }
+  .compatibility-heading h2 {
+    font-size: 46px;
+  }
+  .linux-constellation {
+    height: auto;
+    margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .constellation-art {
+    position: relative;
+    inset: auto;
+    aspect-ratio: 1.2;
+    width: min(100%, 360px);
+    margin: 0 auto 30px;
+  }
+  .constellation-art img {
+    width: 70%;
+    max-width: 250px;
+  }
+  .constellation-ring {
+    width: 94%;
+    height: 84%;
+  }
+  .ring-inner {
+    width: 76%;
+    height: 71%;
+  }
+  .constellation-note {
+    bottom: 0;
+    font-size: 16px;
+    white-space: normal;
+    text-align: center;
+    width: 100%;
+  }
+  .star-one {
+    left: 10%;
+    top: 19%;
+  }
+  .star-two {
+    right: 6%;
+    bottom: 25%;
+  }
+  .distro-family {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 27px 20px;
+    width: 100%;
+    padding-top: 10px;
+  }
+  .distro-family li:nth-child(n) {
+    position: static;
+    transform: none;
+    flex: 0 1 calc(50% - 10px);
+    width: auto;
+    min-width: 0;
+    font-size: 15px;
+    gap: 9px;
+  }
+  .distro-logo {
+    max-width: 100%;
+    height: 48px;
+  }
+  .distro-logo :global(svg) {
+    max-width: 100%;
+    height: 32px;
+  }
+  .distro-family li > span:last-child {
+    max-width: 150px;
+    overflow-wrap: break-word;
+  }
+  .compatibility-caption {
+    font-size: 14px;
+    margin-top: 35px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .constellation-visible .distro-family li,
+  .constellation-visible .constellation-art img {
+    animation: none;
+  }
+  .distro-logo :global(svg) {
+    transition: none;
+  }
+}
+</style>

@@ -1,0 +1,115 @@
+name: Packaging lifecycle
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 3 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }} old and new packages
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ubuntu2604-amd64
+            arch: amd64
+            image: ubuntu:26.04
+          - target: fedora44-amd64
+            arch: amd64
+            image: fedora:44
+    env:
+      TARGET_ID: ${{ matrix.target }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      TARGET_IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build old lifecycle package
+        run: |
+          set -euo pipefail
+          docker run --rm --platform "linux/${TARGET_ARCH}" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            --env TAKO_PACKAGE_TARGET="$TARGET_ID" \
+            --env GORELEASER_CURRENT_TAG="v0.0.1-ci.1.${GITHUB_RUN_ID}" \
+            "$TARGET_IMAGE" \
+            /bin/bash -c './apps/backend/packaging/native-build.sh'
+          package=$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f \( \
+            -name '*.deb' -o -name '*.rpm' -o -name '*.pkg.tar.zst' \
+          \) -print -quit)
+          test -n "$package"
+          artifact_dir="$RUNNER_TEMP/lifecycle-artifacts/$TARGET_ID"
+          mkdir -p "$artifact_dir"
+          cp "$package" "$artifact_dir/old-$(basename "$package")"
+      - name: Build new lifecycle package
+        run: |
+          set -euo pipefail
+          docker run --rm --platform "linux/${TARGET_ARCH}" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            --env TAKO_PACKAGE_TARGET="$TARGET_ID" \
+            --env GORELEASER_CURRENT_TAG="v0.0.1-ci.2.${GITHUB_RUN_ID}" \
+            "$TARGET_IMAGE" \
+            /bin/bash -c './apps/backend/packaging/native-build.sh'
+          package=$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f \( \
+            -name '*.deb' -o -name '*.rpm' -o -name '*.pkg.tar.zst' \
+          \) -print -quit)
+          test -n "$package"
+          artifact_dir="$RUNNER_TEMP/lifecycle-artifacts/$TARGET_ID"
+          mkdir -p "$artifact_dir"
+          cp "$package" "$artifact_dir/new-$(basename "$package")"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lifecycle-packages-${{ matrix.target }}
+          path: ${{ runner.temp }}/lifecycle-artifacts/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  validate:
+    name: ${{ matrix.target }} lifecycle VM
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ubuntu2604-amd64
+            vm_label: tako-vm-ubuntu2604-amd64
+          - target: fedora44-amd64
+            vm_label: tako-vm-fedora44-amd64
+    runs-on: [self-hosted, linux, "${{ matrix.vm_label }}"]
+    timeout-minutes: 45
+    env:
+      TARGET_ID: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lifecycle-packages-${{ matrix.target }}
+          path: lifecycle-packages
+      - name: Run lifecycle validation in disposable VM
+        run: |
+          set -euo pipefail
+          old_package=$(find lifecycle-packages -type f -name 'old-*' -print -quit)
+          new_package=$(find lifecycle-packages -type f -name 'new-*' -print -quit)
+          test -n "$old_package"
+          test -n "$new_package"
+          sudo env \
+            GITHUB_SHA="$GITHUB_SHA" \
+            TAKO_VM_TARGET="$TARGET_ID" \
+            TAKO_VM_PACKAGE="$GITHUB_WORKSPACE/$new_package" \
+            TAKO_VM_OLD_PACKAGE="$GITHUB_WORKSPACE/$old_package" \
+            TAKO_VM_EVIDENCE_DIR="$GITHUB_WORKSPACE/lifecycle-evidence/$TARGET_ID" \
+            TAKO_VM_MANIFEST="$GITHUB_WORKSPACE/apps/backend/packaging/targets.json" \
+            "$GITHUB_WORKSPACE/apps/backend/packaging/vm-test.sh"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: lifecycle-evidence-${{ matrix.target }}
+          path: lifecycle-evidence/${{ matrix.target }}/
+          if-no-files-found: warn
+          retention-days: 30

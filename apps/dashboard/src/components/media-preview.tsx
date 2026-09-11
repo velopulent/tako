@@ -7,7 +7,11 @@ import type { FileEntry } from "@/lib/api"
 export function MediaPreview({
   entry,
   csrfToken,
+  scope = "home",
+  onDirtyChange,
 }: {
+  onDirtyChange?: (dirty: boolean) => void
+  scope?: string
   entry: FileEntry | null
   csrfToken: string
 }) {
@@ -15,7 +19,7 @@ export function MediaPreview({
   const token = entry.previewToken
     ? `&token=${encodeURIComponent(entry.previewToken)}`
     : ""
-  const source = `/api/v1/files/content?path=${encodeURIComponent(entry.path)}${token}`
+  const source = `/api/v1/files/content?path=${encodeURIComponent(entry.path)}&scope=${scope}${token}`
   const mime = entry.mime ?? "application/octet-stream"
   return (
     <Card>
@@ -63,6 +67,10 @@ export function MediaPreview({
           mime === "application/json" ||
           mime === "application/javascript") && (
           <TextEditor
+            key={entry.path}
+            scope={scope}
+            onDirtyChange={onDirtyChange}
+            size={entry.size}
             path={entry.path}
             previewToken={entry.previewToken}
             csrfToken={csrfToken}

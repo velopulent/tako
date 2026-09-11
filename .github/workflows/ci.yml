@@ -1,0 +1,314 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.4.0
+
+jobs:
+  go-unit:
+    name: Go unit tests and coverage
+    runs-on: ubuntu-24.04
+    env:
+      TAKO_DISTRO: ubuntu
+      GOCACHE: /tmp/tako-go-ci-cache
+      GO_COVERAGE_ENFORCE: ${{ vars.GO_COVERAGE_ENFORCE || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-linux-backend
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - name: Run Go suite with coverage
+        working-directory: apps/backend
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/coverage/go"
+          ../../tools/tako-go.sh test \
+            -covermode=atomic \
+            -coverprofile="$GITHUB_WORKSPACE/coverage/go/coverage.out" \
+            ./...
+          go tool cover -func="$GITHUB_WORKSPACE/coverage/go/coverage.out" \
+            | tee "$GITHUB_WORKSPACE/coverage/go/coverage.txt"
+          go tool cover -html="$GITHUB_WORKSPACE/coverage/go/coverage.out" \
+            -o "$GITHUB_WORKSPACE/coverage/go/coverage.html"
+      - name: Report Go coverage baseline
+        working-directory: apps/backend
+        run: |
+          set -euo pipefail
+          baseline=$(sed -n 's/^GO_STATEMENT_COVERAGE_BASELINE=//p' "$GITHUB_WORKSPACE/.github/coverage-baseline.env")
+          current=$(awk '/^total:/ { gsub("%", "", $NF); print $NF }' "$GITHUB_WORKSPACE/coverage/go/coverage.txt")
+          test -n "$baseline"
+          test -n "$current"
+          enforcement="informational until the first stable CI baseline run"
+          if [ "${GO_COVERAGE_ENFORCE:-false}" = true ]; then
+            enforcement="blocking"
+          fi
+          {
+            echo "### Go coverage"
+            echo "- Current statement coverage: ${current}%"
+            echo "- Recorded baseline: ${baseline}%"
+            echo "- Enforcement: ${enforcement}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${GO_COVERAGE_ENFORCE:-false}" = true ] && awk "BEGIN { exit !($current < $baseline) }"; then
+            echo "Go coverage regressed from ${baseline}% to ${current}%" >&2
+            exit 1
+          fi
+      - name: Upload Go coverage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage/go/
+          if-no-files-found: warn
+          retention-days: 14
+
+  go-race:
+    name: Go race tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-linux-backend
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - name: Run Go race suite
+        working-directory: apps/backend
+        env:
+          TAKO_DISTRO: ubuntu
+          GOCACHE: /tmp/tako-go-race-cache
+        run: ../../tools/tako-go.sh test -race ./...
+
+  go-quality:
+    name: Go vet and static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-linux-backend
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - name: Install staticcheck
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "$GOBIN"
+          go install honnef.co/go/tools/cmd/staticcheck@2026.1
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - name: Run go vet
+        working-directory: apps/backend
+        env:
+          TAKO_DISTRO: ubuntu
+          GOCACHE: /tmp/tako-go-quality-cache
+        run: ../../tools/tako-go.sh vet ./...
+      - name: Run staticcheck
+        working-directory: apps/backend
+        env:
+          GOCACHE: /tmp/tako-go-quality-cache
+          STATICCHECK_CACHE: ${{ runner.temp }}/staticcheck-cache
+        # The first staticcheck baseline keeps pre-existing dead-code and
+        # package-comment findings informational; all other checks are gated.
+        run: staticcheck -checks=all,-U1000,-SA1019,-S1017,-S1016,-ST1000,-ST1020 -tags ubuntu ./...
+
+  dashboard-tests:
+    name: Dashboard unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun nx test dashboard
+
+  dashboard-quality:
+    name: Dashboard typecheck and lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun nx typecheck dashboard
+      - run: bun nx lint dashboard
+
+  dashboard-coverage:
+    name: Dashboard coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun --cwd apps/dashboard vitest run --coverage
+      - name: Upload dashboard coverage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-coverage
+          path: apps/dashboard/coverage/
+          if-no-files-found: warn
+          retention-days: 14
+
+  web:
+    name: Web typecheck, lint, and build
+    runs-on: ubuntu-24.04
+    env:
+      ASTRO_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run web:check
+      - run: bun run web:build
+
+  backend-build:
+    name: Backend binary build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-linux-backend
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Build backend for Ubuntu
+        env:
+          TAKO_DISTRO: ubuntu
+        run: bun nx build backend
+
+  packaging:
+    name: Packaging manifest and hook checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-linux-backend
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Install GoReleaser for static configuration checks
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v${{ vars.GORELEASER_VERSION || '2.18.0' }}"
+          install-only: true
+      - run: bun run package:check
+      - run: bun test tools/release-gate.test.ts
+
+  openapi-contract:
+    name: OpenAPI contract validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bunx --bun @redocly/cli@1.34.0 lint --config .redocly.yaml apps/backend/api/openapi.yaml
+
+  workflow-quality:
+    name: GitHub workflow validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - name: Install actionlint
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "$GOBIN"
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - run: actionlint
+
+  shell-quality:
+    name: Shell validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck
+      - name: Run shellcheck
+        run: >-
+          shellcheck --severity=error
+          tools/package
+          tools/package-check
+          tools/tako-go.sh
+          tools/tako-host-test
+          tools/tako-integration
+          apps/backend/packaging/*.sh
+          apps/backend/packaging/scripts/deb/*.sh
+          apps/backend/packaging/scripts/rpm/*.sh
+          apps/backend/packaging/scripts/arch/*.sh
+
+  pr-gate:
+    name: PR gate
+    if: ${{ always() }}
+    needs:
+      - go-unit
+      - go-race
+      - go-quality
+      - dashboard-tests
+      - dashboard-quality
+      - dashboard-coverage
+      - web
+      - backend-build
+      - packaging
+      - openapi-contract
+      - workflow-quality
+      - shell-quality
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail if a required check failed, was cancelled, or skipped
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: exit 1
+      - name: All required checks passed
+        run: echo "All required CI checks passed"

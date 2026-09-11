@@ -23,6 +23,22 @@ func TestReadBoundedRejectsOversizedCommandOutput(t *testing.T) {
 	}
 }
 
+func TestBusNameInventorySeparatesActiveAndActivatableNames(t *testing.T) {
+	names := busNameInventory(
+		[]string{"org.freedesktop.NetworkManager"},
+		[]string{"org.freedesktop.network1", "org.fedoraproject.FirewallD1"},
+	)
+	if !busActive(names, "org.freedesktop.NetworkManager") {
+		t.Fatal("active D-Bus name was not recorded")
+	}
+	if busActive(names, "org.freedesktop.network1") || busActive(names, "org.fedoraproject.FirewallD1") {
+		t.Fatalf("activatable D-Bus names were marked active: %#v", names)
+	}
+	if !busAvailable(names, "org.freedesktop.network1") || !busAvailable(names, "org.fedoraproject.FirewallD1") {
+		t.Fatalf("activatable D-Bus names were not recorded as available: %#v", names)
+	}
+}
+
 func TestInactiveUFWDoesNotConflictWithFirewalld(t *testing.T) {
 	capabilities := detect(context.Background(), fakeProbe{
 		bus:      map[string]bool{"org.fedoraproject.FirewallD1": true},
@@ -50,6 +66,15 @@ func TestActivatableManagersDoNotCreateOwnershipConflict(t *testing.T) {
 	}
 	if firewall := findCapability(t, capabilities, "firewall"); firewall.State == StateConflicted || firewall.Backend != "UFW" {
 		t.Fatalf("activatable firewalld caused false conflict: %#v", firewall)
+	}
+}
+
+func TestNetworkdRuntimeDirectoryDoesNotImplyRunningNetworkd(t *testing.T) {
+	capability := networkCapability(context.Background(), fakeProbe{
+		files: map[string]bool{"/run/systemd/netif": true},
+	}, map[string]bool{}, nil)
+	if capability.State != StateUnavailable || capability.Backend != "none" || capability.Mutable {
+		t.Fatalf("runtime directory caused a false networkd capability: %#v", capability)
 	}
 }
 
@@ -116,11 +141,11 @@ func TestDetectExplainsMissingAndDegradedDependencies(t *testing.T) {
 	})
 
 	updates := findCapability(t, capabilities, "updates")
-	if updates.State != StateReady || !updates.Mutable || updates.Version != "apt 3.0" || updates.Contract != "bounded-command" {
-		t.Fatalf("apt command path should be ready and writable: %#v", updates)
+	if updates.State != StateUnavailable || updates.Backend != "distro-provider" {
+		t.Fatalf("missing injected provider should fail closed: %#v", updates)
 	}
-	if updates.MissingDependency != "" || updates.SetupGuidance == "" {
-		t.Fatalf("PackageKit enrichment guidance missing: %#v", updates)
+	if updates.SetupGuidance == "" {
+		t.Fatalf("build-tag guidance missing: %#v", updates)
 	}
 	storage := findCapability(t, capabilities, "storage")
 	if storage.State != StateDegraded || storage.Reason == "" || storage.SetupGuidance == "" {
@@ -135,18 +160,17 @@ func TestDetectExplainsMissingAndDegradedDependencies(t *testing.T) {
 func TestDetectAdvertisesImplementedMutations(t *testing.T) {
 	capabilities := detect(context.Background(), fakeProbe{
 		bus: map[string]bool{
-			"org.freedesktop.systemd1":             true,
-			"org.freedesktop.NetworkManager":       true,
-			"available:org.freedesktop.PackageKit": true,
+			"org.freedesktop.systemd1":       true,
+			"org.freedesktop.NetworkManager": true,
 		},
 		files:    map[string]bool{"/proc": true, "/proc/stat": true, "/etc/passwd": true},
-		commands: map[string]string{"nmcli": "nmcli 1.50", "pkcon": "pkcon 1.2.8"},
-	})
+		commands: map[string]string{"nmcli": "nmcli 1.50"},
+	}, NewUpdateService(&fakeUpdateProvider{}))
 
-	// PackageKit present: writable through the sessiond-brokered apply job.
+	// Injected provider is writable through the sessiond-brokered apply job.
 	updates := findCapability(t, capabilities, "updates")
-	if !updates.Mutable || updates.MutationAuthority != "administrative" || updates.Contract != "dbus" || updates.Rollback {
-		t.Fatalf("PackageKit updates should be administratively writable without rollback: %#v", updates)
+	if !updates.Mutable || updates.MutationAuthority != "administrative" || updates.Contract != "native-distro-provider" || updates.Rollback {
+		t.Fatalf("native updates should be administratively writable without rollback: %#v", updates)
 	}
 	// Service actions and timers mutate systemd state.
 	if services := findCapability(t, capabilities, "services"); !services.Mutable || services.Rollback {

@@ -2,10 +2,14 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -14,19 +18,28 @@ var (
 	ErrFirewallOwnership        = errors.New("firewall ownership is conflicted")
 	ErrFirewallUnavailable      = errors.New("firewall adapter unavailable")
 	ErrFirewallAccessRisk       = errors.New("firewall operation could lock out management access")
+	ErrFirewallCheckpoint       = errors.New("firewall rollback checkpoint is invalid or expired")
 )
 
+// FirewallSnapshot contains the active firewall state and the two firewalld
+// rule stores. Rules is retained as the runtime rule list for compatibility
+// with the first beta contract. UFW has one effective store, so its runtime
+// and persistent lists are the same view.
 type FirewallSnapshot struct {
-	Backend     string   `json:"backend"`
-	Active      bool     `json:"active"`
-	Version     string   `json:"version,omitempty"`
-	DefaultZone string   `json:"defaultZone,omitempty"`
-	Zones       []string `json:"zones"`
-	Rules       []string `json:"rules"`
-	Conflicted  bool     `json:"conflicted"`
-	ReadOnly    bool     `json:"readOnly"`
-	Reason      string   `json:"reason,omitempty"`
-	Fingerprint string   `json:"fingerprint"`
+	Backend               string   `json:"backend"`
+	Active                bool     `json:"active"`
+	Version               string   `json:"version,omitempty"`
+	DefaultZone           string   `json:"defaultZone,omitempty"`
+	PersistentDefaultZone string   `json:"persistentDefaultZone,omitempty"`
+	Zones                 []string `json:"zones"`
+	Rules                 []string `json:"rules"`
+	RuntimeRules          []string `json:"runtimeRules,omitempty"`
+	PersistentRules       []string `json:"persistentRules,omitempty"`
+	Synchronized          bool     `json:"synchronized"`
+	Conflicted            bool     `json:"conflicted"`
+	ReadOnly              bool     `json:"readOnly"`
+	Reason                string   `json:"reason,omitempty"`
+	Fingerprint           string   `json:"fingerprint"`
 }
 
 type FirewallOperation struct {
@@ -40,54 +53,59 @@ type FirewallOperation struct {
 	ExpectedFingerprint string `json:"expectedFingerprint,omitempty"`
 	Confirmation        string `json:"confirmation,omitempty"`
 	Persist             bool   `json:"persist,omitempty"`
+	RollbackSeconds     int    `json:"rollbackSeconds,omitempty"`
+	Checkpoint          string `json:"checkpoint,omitempty"`
+	RollbackToken       string `json:"rollbackToken,omitempty"`
 }
 
 type FirewallState struct {
-	Snapshot FirewallSnapshot `json:"snapshot"`
-	Action   string           `json:"action"`
-	Applied  bool             `json:"applied"`
-	Warning  string           `json:"warning,omitempty"`
+	Snapshot         FirewallSnapshot `json:"snapshot"`
+	Action           string           `json:"action"`
+	Applied          bool             `json:"applied"`
+	Committed        bool             `json:"committed,omitempty"`
+	RollbackRequired bool             `json:"rollbackRequired,omitempty"`
+	Checkpoint       string           `json:"checkpoint,omitempty"`
+	RollbackToken    string           `json:"rollbackToken,omitempty"`
+	RollbackDeadline time.Time        `json:"rollbackDeadline,omitempty"`
+	Warning          string           `json:"warning,omitempty"`
 }
 
+var firewallNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$`)
+
+// ReadFirewallStatus reads whichever supported manager is active. The
+// command executor is kept behind FirewallStrategy so tests can use command
+// fixtures and production always uses the bounded networkCommand runner.
 func ReadFirewallStatus(ctx context.Context) (FirewallSnapshot, error) {
-	snapshot := FirewallSnapshot{Zones: []string{}, Rules: []string{}}
-	firewalld, firewalldErr := firewallCommand(ctx, "firewall-cmd", "--state")
-	ufw, ufwErr := firewallCommand(ctx, "ufw", "status", "verbose")
-	if firewalldErr == nil && strings.Contains(strings.ToLower(firewalld), "running") {
-		snapshot.Backend = "firewalld"
-		snapshot.Active = true
-		version, _ := firewallCommand(ctx, "firewall-cmd", "--version")
-		snapshot.Version = strings.TrimSpace(version)
-		zones, _ := firewallCommand(ctx, "firewall-cmd", "--get-active-zones")
-		snapshot.Rules = boundedLines(zones, 256)
-		defaultZone, _ := firewallCommand(ctx, "firewall-cmd", "--get-default-zone")
-		snapshot.DefaultZone = strings.TrimSpace(defaultZone)
-	} else if ufwErr == nil && strings.HasPrefix(strings.TrimSpace(ufw), "Status: active") {
-		snapshot.Backend = "UFW"
-		snapshot.Active = true
-		version, _ := firewallCommand(ctx, "ufw", "--version")
-		snapshot.Version = firstLine(version)
-		snapshot.Rules = boundedLines(ufw, 256)
-	} else if firewalldErr == nil || ufwErr == nil {
-		if firewalldErr == nil && ufwErr == nil {
-			snapshot.Conflicted = true
-			snapshot.Reason = "firewalld and UFW were both detected; active state could not be established."
-		} else {
-			snapshot.ReadOnly = true
-			snapshot.Reason = "A firewall command responded, but no active firewall state was reported."
-		}
-	} else {
-		return snapshot, ErrFirewallUnavailable
-	}
-	snapshot.Fingerprint = fingerprintBytes([]byte(snapshot.Backend + "|" + strconv.FormatBool(snapshot.Active) + "|" + strings.Join(snapshot.Rules, "\n")))
-	return snapshot, nil
+	return NewFirewallStrategy(nil).Read(ctx)
 }
 
 func ValidateFirewallOperation(operation FirewallOperation) error {
 	backends := map[string]bool{"auto": true, "firewalld": true, "UFW": true}
-	actions := map[string]bool{"preview": true, "enable": true, "disable": true, "default-zone": true, "add-service": true, "remove-service": true, "add-port": true, "remove-port": true, "add-source": true, "remove-source": true, "reload": true}
-	if !backends[operation.Backend] || !actions[operation.Action] || len(operation.Zone) > 128 || len(operation.Service) > 128 || len(operation.Port) > 32 || len(operation.Source) > 128 || len(operation.DefaultZone) > 128 || len(operation.ExpectedFingerprint) > 128 || strings.ContainsAny(operation.Zone+operation.Service+operation.Port+operation.Source+operation.DefaultZone, "\x00\r\n") {
+	actions := map[string]bool{
+		"preview":        true,
+		"enable":         true,
+		"disable":        true,
+		"default-zone":   true,
+		"add-service":    true,
+		"remove-service": true,
+		"add-port":       true,
+		"remove-port":    true,
+		"add-source":     true,
+		"remove-source":  true,
+		"reload":         true,
+		"commit":         true,
+		"rollback":       true,
+	}
+	if !backends[operation.Backend] || !actions[operation.Action] {
 		return ErrInvalidFirewallOperation
+	}
+	if len(operation.Zone) > 128 || len(operation.Service) > 128 || len(operation.Port) > 32 || len(operation.Source) > 128 || len(operation.DefaultZone) > 128 || len(operation.ExpectedFingerprint) > 128 || len(operation.Confirmation) > 128 || len(operation.Checkpoint) > 256 || len(operation.RollbackToken) > 256 || operation.RollbackSeconds < 0 || operation.RollbackSeconds > 600 || strings.ContainsAny(operation.Zone+operation.Service+operation.Port+operation.Source+operation.DefaultZone+operation.ExpectedFingerprint+operation.Confirmation+operation.Checkpoint+operation.RollbackToken, "\x00\r\n") {
+		return ErrInvalidFirewallOperation
+	}
+	for _, value := range []string{operation.Zone, operation.Service, operation.DefaultZone} {
+		if value != "" && !firewallNamePattern.MatchString(value) {
+			return ErrInvalidFirewallOperation
+		}
 	}
 	if operation.Port != "" {
 		parts := strings.Split(operation.Port, "/")
@@ -99,21 +117,63 @@ func ValidateFirewallOperation(operation FirewallOperation) error {
 			return ErrInvalidFirewallOperation
 		}
 	}
-	if operation.Source != "" && net.ParseIP(operation.Source) == nil {
-		if _, _, err := net.ParseCIDR(operation.Source); err != nil {
+	if operation.Source != "" {
+		if ip := net.ParseIP(operation.Source); ip == nil {
+			if _, _, err := net.ParseCIDR(operation.Source); err != nil {
+				return ErrInvalidFirewallOperation
+			}
+		}
+	}
+
+	switch operation.Action {
+	case "default-zone":
+		if operation.DefaultZone == "" || operation.Zone != "" || operation.Service != "" || operation.Port != "" || operation.Source != "" {
+			return ErrInvalidFirewallOperation
+		}
+	case "add-service", "remove-service":
+		if operation.Service == "" || operation.Port != "" || operation.Source != "" || operation.DefaultZone != "" {
+			return ErrInvalidFirewallOperation
+		}
+	case "add-port", "remove-port":
+		if operation.Port == "" || operation.Service != "" || operation.Source != "" || operation.DefaultZone != "" {
+			return ErrInvalidFirewallOperation
+		}
+	case "add-source", "remove-source":
+		if operation.Source == "" || operation.Service != "" || operation.Port != "" || operation.DefaultZone != "" {
+			return ErrInvalidFirewallOperation
+		}
+	case "enable", "disable", "reload":
+		if operation.Zone != "" || operation.Service != "" || operation.Port != "" || operation.Source != "" || operation.DefaultZone != "" {
+			return ErrInvalidFirewallOperation
+		}
+	case "commit", "rollback":
+		if operation.Checkpoint == "" || operation.RollbackToken == "" || operation.Zone != "" || operation.Service != "" || operation.Port != "" || operation.Source != "" || operation.DefaultZone != "" || operation.ExpectedFingerprint != "" {
 			return ErrInvalidFirewallOperation
 		}
 	}
-	if operation.ExpectedFingerprint == "" && operation.Action != "preview" {
+	if operation.Backend == "UFW" && operation.Action == "default-zone" {
+		return ErrInvalidFirewallOperation
+	}
+	if operation.ExpectedFingerprint == "" && operation.Action != "preview" && operation.Action != "commit" && operation.Action != "rollback" {
 		return ErrInvalidFirewallOperation
 	}
 	if operation.Action != "preview" && operation.Confirmation != "CONFIRM FIREWALL CHANGE" && operation.Confirmation != "CONFIRM FIREWALL ACCESS" {
 		return ErrInvalidFirewallOperation
 	}
-	if (operation.Action == "disable" || operation.Action == "remove-service" || operation.Action == "remove-port") && operation.Confirmation != "CONFIRM FIREWALL ACCESS" {
+	if firewallAccessRisk(operation) && operation.RollbackSeconds != 0 && operation.RollbackSeconds < 30 {
+		return ErrFirewallAccessRisk
+	}
+	if firewallAccessRisk(operation) && operation.Confirmation != "CONFIRM FIREWALL ACCESS" {
 		return ErrFirewallAccessRisk
 	}
 	return nil
+}
+
+func firewallAccessRisk(operation FirewallOperation) bool {
+	if operation.Action == "disable" {
+		return true
+	}
+	return operation.Action == "remove-service" || operation.Action == "remove-port" || operation.Action == "remove-source"
 }
 
 func PreviewFirewallOperation(ctx context.Context, operation FirewallOperation) (FirewallState, error) {
@@ -125,113 +185,158 @@ func PreviewFirewallOperation(ctx context.Context, operation FirewallOperation) 
 	if err != nil {
 		return FirewallState{}, err
 	}
-	if operation.Backend == "auto" {
-		operation.Backend = snapshot.Backend
-	}
-	return FirewallState{Snapshot: snapshot, Action: "preview", Warning: "Runtime and persistent firewall state remain separate; persistence requires an explicit commit."}, nil
+	return FirewallState{Snapshot: snapshot, Action: "preview", Warning: firewallPreviewWarning(snapshot)}, nil
 }
 
 func ApplyFirewallOperation(ctx context.Context, operation FirewallOperation) (FirewallState, error) {
-	if err := ValidateFirewallOperation(operation); err != nil {
-		return FirewallState{}, err
-	}
-	snapshot, err := ReadFirewallStatus(ctx)
-	if err != nil {
-		return FirewallState{}, err
-	}
-	if operation.Backend == "auto" {
-		operation.Backend = snapshot.Backend
-	}
-	if snapshot.Conflicted || snapshot.Backend != operation.Backend {
-		return FirewallState{}, ErrFirewallOwnership
-	}
-	if operation.ExpectedFingerprint != snapshot.Fingerprint {
-		return FirewallState{}, ErrFirewallConflict
-	}
-	arguments := []string{}
-	if operation.Backend == "firewalld" {
-		zone := operation.Zone
-		if zone == "" {
-			zone = snapshot.DefaultZone
-		}
-		if operation.Action == "default-zone" {
-			arguments = []string{"--set-default-zone=" + operation.DefaultZone}
-		} else if operation.Action == "reload" {
-			arguments = []string{"--reload"}
-		} else if operation.Action == "enable" {
-			arguments = []string{"--set-log-denied=all"}
-		} else if operation.Action == "add-service" || operation.Action == "remove-service" {
-			arguments = []string{"--zone=" + zone, "--" + strings.TrimSuffix(operation.Action, "-service") + "-service=" + operation.Service}
-		} else if operation.Action == "add-port" || operation.Action == "remove-port" {
-			arguments = []string{"--zone=" + zone, "--" + strings.TrimSuffix(operation.Action, "-port") + "-port=" + operation.Port}
-		} else if operation.Action == "add-source" || operation.Action == "remove-source" {
-			arguments = []string{"--zone=" + zone, "--" + strings.TrimSuffix(operation.Action, "-source") + "-source=" + operation.Source}
-		} else {
-			return FirewallState{}, ErrInvalidFirewallOperation
-		}
-		if operation.Persist && operation.Action != "reload" {
-			arguments = append(arguments, "--permanent")
-		}
-		if _, err := firewallCommand(ctx, "firewall-cmd", arguments...); err != nil {
-			return FirewallState{}, err
-		}
-	} else {
-		if operation.Action == "reload" {
-			if _, err := firewallCommand(ctx, "ufw", "reload"); err != nil {
-				return FirewallState{}, err
-			}
-		} else if operation.Action == "enable" || operation.Action == "disable" {
-			if _, err := firewallCommand(ctx, "ufw", operation.Action); err != nil {
-				return FirewallState{}, err
-			}
-		} else if operation.Action == "add-port" || operation.Action == "remove-port" {
-			action := "allow"
-			if operation.Action == "remove-port" {
-				action = "delete allow"
-			}
-			if _, err := firewallCommand(ctx, "ufw", strings.Fields(action+" "+operation.Port)...); err != nil {
-				return FirewallState{}, err
-			}
-		} else {
-			return FirewallState{}, ErrFirewallUnavailable
-		}
-	}
-	updated, err := ReadFirewallStatus(ctx)
-	if err != nil {
-		return FirewallState{}, err
-	}
-	return FirewallState{Snapshot: updated, Action: operation.Action, Applied: true, Warning: "Management access protection was evaluated before applying this change; verify reconnection from a fresh session."}, nil
+	return NewFirewallStrategy(nil).Apply(ctx, operation)
 }
 
-func firewallCommand(ctx context.Context, name string, arguments ...string) (string, error) {
-	payload, err := networkCommand(ctx, name, arguments...)
-	return string(payload), err
+func firewallPreviewWarning(snapshot FirewallSnapshot) string {
+	if snapshot.Backend == "firewalld" && !snapshot.Synchronized {
+		return "Runtime and persistent firewalld state differ; choose persistence explicitly before applying a change."
+	}
+	return "Firewall changes are checked against the displayed fingerprint and management access requires explicit confirmation."
 }
 
-func boundedLines(value string, max int) []string {
+type firewallFingerprintInput struct {
+	Backend               string
+	Active                bool
+	DefaultZone           string
+	PersistentDefaultZone string
+	Zones                 []string
+	RuntimeRules          []string
+	PersistentRules       []string
+	Synchronized          bool
+	Conflicted            bool
+	ReadOnly              bool
+}
+
+func firewallFingerprint(snapshot FirewallSnapshot) string {
+	zones := sortedUnique(snapshot.Zones)
+	runtimeRules := append([]string(nil), snapshot.RuntimeRules...)
+	persistentRules := append([]string(nil), snapshot.PersistentRules...)
+	if len(runtimeRules) == 0 {
+		runtimeRules = append([]string(nil), snapshot.Rules...)
+	}
+	if snapshot.Backend == "firewalld" {
+		sort.Strings(runtimeRules)
+		sort.Strings(persistentRules)
+	}
+	payload, _ := json.Marshal(firewallFingerprintInput{
+		Backend: snapshot.Backend, Active: snapshot.Active, DefaultZone: snapshot.DefaultZone,
+		PersistentDefaultZone: snapshot.PersistentDefaultZone, Zones: zones,
+		RuntimeRules: runtimeRules, PersistentRules: persistentRules,
+		Synchronized: snapshot.Synchronized, Conflicted: snapshot.Conflicted, ReadOnly: snapshot.ReadOnly,
+	})
+	return fingerprintBytes(payload)
+}
+
+func sortedUnique(values []string) []string {
+	result := append([]string(nil), values...)
+	sort.Strings(result)
+	if len(result) == 0 {
+		return []string{}
+	}
+	out := result[:1]
+	for _, value := range result[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func parseFirewalldZones(active, all string) []string {
 	result := []string{}
-	for _, line := range strings.Split(value, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for _, line := range strings.Split(active, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(line, " ") || strings.Contains(trimmed, ":") || !firewallNamePattern.MatchString(trimmed) {
 			continue
 		}
-		if len(line) > 512 {
-			line = line[:512]
+		result = append(result, trimmed)
+	}
+	for _, value := range strings.Fields(all) {
+		if firewallNamePattern.MatchString(value) {
+			result = append(result, value)
 		}
-		result = append(result, line)
-		if len(result) >= max {
-			break
+	}
+	return sortedUnique(result)
+}
+
+func parseFirewalldRules(zone, output string) []string {
+	result := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, zone+" ") || line == zone {
+			continue
 		}
+		if strings.Contains(line, ":") || strings.HasPrefix(line, "rule ") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				result = append(result, zone+" "+strings.Join(fields, " "))
+			}
+		}
+	}
+	return sortedUnique(result)
+}
+
+func parseUFWRules(output string) []string {
+	result := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if trimmed == "" || strings.HasPrefix(trimmed, "Status:") || strings.HasPrefix(trimmed, "Logging:") || strings.HasPrefix(trimmed, "Default:") || strings.HasPrefix(trimmed, "New profiles:") || (strings.HasPrefix(lower, "to ") && strings.Contains(lower, "action") && strings.Contains(lower, "from")) || strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		result = append(result, strings.Join(strings.Fields(trimmed), " "))
 	}
 	return result
 }
 
-func firstLine(value string) string {
-	lines := boundedLines(value, 1)
-	if len(lines) == 0 {
-		return ""
+// firewallRuntimeMutationChanges reports whether a firewalld runtime command
+// would alter a value that was present in the observed snapshot. It prevents
+// a failed persistent write from undoing an operator's pre-existing rule.
+func firewallRuntimeMutationChanges(snapshot FirewallSnapshot, operation FirewallOperation) bool {
+	switch operation.Action {
+	case "default-zone":
+		return snapshot.DefaultZone != operation.DefaultZone
+	case "add-service", "remove-service", "add-port", "remove-port", "add-source", "remove-source":
+		zone := operation.Zone
+		if zone == "" {
+			zone = snapshot.DefaultZone
+		}
+		present := firewallRuntimeRulePresent(snapshot.RuntimeRules, zone, operation)
+		return strings.HasPrefix(operation.Action, "add-") != present
+	default:
+		return false
 	}
-	return lines[0]
+}
+
+func firewallRuntimeRulePresent(rules []string, zone string, operation FirewallOperation) bool {
+	key, value := "", ""
+	switch {
+	case strings.HasSuffix(operation.Action, "service"):
+		key, value = "services", operation.Service
+	case strings.HasSuffix(operation.Action, "port"):
+		key, value = "ports", operation.Port
+	case strings.HasSuffix(operation.Action, "source"):
+		key, value = "sources", operation.Source
+	default:
+		return false
+	}
+	prefix := zone + " " + key + ":"
+	for _, rule := range rules {
+		if !strings.HasPrefix(rule, prefix) {
+			continue
+		}
+		for _, existing := range strings.Fields(strings.TrimSpace(strings.TrimPrefix(rule, prefix))) {
+			if existing == value {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func firewallErrorCode(err error) string {

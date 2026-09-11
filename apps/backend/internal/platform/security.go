@@ -2,10 +2,11 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -35,18 +36,30 @@ type SELinuxStatus struct {
 }
 
 type AppArmorStatus struct {
-	KernelPresent bool     `json:"kernelPresent"`
-	Userspace     bool     `json:"userspace"`
-	Profiles      []string `json:"profiles"`
-	Denials       []string `json:"denials"`
+	KernelPresent bool              `json:"kernelPresent"`
+	Userspace     bool              `json:"userspace"`
+	Profiles      []string          `json:"profiles"`
+	ProfileModes  map[string]string `json:"profileModes,omitempty"`
+	Denials       []string          `json:"denials"`
 }
 
 type SecurityStatus struct {
-	SELinux     SELinuxStatus     `json:"selinux"`
-	AppArmor    AppArmorStatus    `json:"apparmor"`
-	Active      string            `json:"active"`
-	Findings    []SecurityFinding `json:"findings"`
-	Fingerprint string            `json:"fingerprint"`
+	SELinux              SELinuxStatus     `json:"selinux"`
+	AppArmor             AppArmorStatus    `json:"apparmor"`
+	Active               string            `json:"active"`
+	Findings             []SecurityFinding `json:"findings"`
+	Changes              []SecurityChange  `json:"changes,omitempty"`
+	Warnings             []string          `json:"warnings,omitempty"`
+	Stale                bool              `json:"stale,omitempty"`
+	Allowed              bool              `json:"allowed,omitempty"`
+	RequiresConfirmation bool              `json:"requiresConfirmation,omitempty"`
+	Fingerprint          string            `json:"fingerprint"`
+}
+
+type SecurityChange struct {
+	Field  string `json:"field"`
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
 }
 
 type SecurityOperation struct {
@@ -60,200 +73,377 @@ type SecurityOperation struct {
 	Confirmation        string `json:"confirmation,omitempty"`
 }
 
+var (
+	securityNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+	profileNamePattern  = regexp.MustCompile(`^[A-Za-z0-9_./:@+-]+$`)
+	getseboolPattern    = regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s+-->\s+(on|off)\s*$`)
+	semanageBoolPattern = regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s+\(\s*(on|off)\s*,\s*(on|off)\s*\)`)
+)
+
 func ReadSecurityStatus(ctx context.Context) (SecurityStatus, error) {
-	status := SecurityStatus{Findings: []SecurityFinding{}}
-	status.SELinux = readSELinuxStatus(ctx)
-	status.AppArmor = readAppArmorStatus(ctx)
-	if status.SELinux.Mode != "" && status.SELinux.Mode != "Disabled" {
-		status.Active = "SELinux"
-	}
-	if len(status.AppArmor.Profiles) > 0 {
-		if status.Active != "" {
-			status.Active = "SELinux+AppArmor"
-		} else {
-			status.Active = "AppArmor"
-		}
-	}
-	if status.SELinux.KernelPresent && !status.SELinux.Userspace {
-		status.Findings = append(status.Findings, SecurityFinding{Framework: "SELinux", Kind: "userspace", Subject: "SELinux tools", Message: "SELinux kernel support is present but userspace inspection tools are unavailable.", Severity: "warning", Guidance: "Install policycoreutils to inspect labels and booleans."})
-	}
-	if status.AppArmor.KernelPresent && !status.AppArmor.Userspace {
-		status.Findings = append(status.Findings, SecurityFinding{Framework: "AppArmor", Kind: "userspace", Subject: "AppArmor tools", Message: "AppArmor kernel support is present but aa-status is unavailable.", Severity: "warning", Guidance: "Install apparmor-utils to inspect profiles."})
-	}
-	status.Fingerprint = fingerprintBytes([]byte(status.Active + "|" + status.SELinux.Mode + "|" + strings.Join(status.AppArmor.Profiles, "\n")))
-	return status, nil
-}
-
-func readSELinuxStatus(ctx context.Context) SELinuxStatus {
-	status := SELinuxStatus{KernelPresent: fileExists("/sys/fs/selinux"), Booleans: []string{}, Denials: []string{}}
-	output, err := securityCommand(ctx, "getenforce")
-	if err == nil {
-		status.Userspace = true
-		status.Mode = strings.TrimSpace(firstLine(output))
-	}
-	if output, err := securityCommand(ctx, "sestatus"); err == nil {
-		for _, line := range strings.Split(output, "\n") {
-			fields := strings.SplitN(line, ":", 2)
-			if len(fields) != 2 {
-				continue
-			}
-			switch strings.TrimSpace(fields[0]) {
-			case "SELinux policy":
-				status.Policy = strings.TrimSpace(fields[1])
-			case "Current mode":
-				if status.Mode == "" {
-					status.Mode = strings.TrimSpace(fields[1])
-				}
-			}
-		}
-	}
-	if output, err := securityCommand(ctx, "semanage", "boolean", "-l"); err == nil {
-		for _, line := range boundedLines(output, 512) {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && (fields[1] == "on" || fields[1] == "off") {
-				status.Booleans = append(status.Booleans, fields[0]+"="+fields[1])
-			}
-		}
-	}
-	return status
-}
-
-func readAppArmorStatus(ctx context.Context) AppArmorStatus {
-	status := AppArmorStatus{KernelPresent: fileExists("/sys/module/apparmor"), Profiles: []string{}, Denials: []string{}}
-	output, err := securityCommand(ctx, "aa-status", "--profiled")
-	if err == nil {
-		status.Userspace = true
-		for _, line := range boundedLines(output, 2048) {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				status.Profiles = append(status.Profiles, line)
-			}
-		}
-	}
-	return status
+	return NewSecurityStrategy(nil).Read(ctx)
 }
 
 func ValidateSecurityOperation(operation SecurityOperation) error {
-	actions := map[string]bool{"inspect": true, "selinux-boolean": true, "selinux-restorecon": true, "apparmor-enforce": true, "apparmor-complain": true, "apparmor-load": true}
-	if !actions[operation.Action] || (operation.Framework != "SELinux" && operation.Framework != "AppArmor") || len(operation.Boolean) > 128 || len(operation.Path) > 4096 || len(operation.Profile) > 256 || len(operation.ExpectedFingerprint) > 128 || strings.ContainsAny(operation.Boolean+operation.Path+operation.Profile, "\x00\r\n") {
+	actions := map[string]bool{
+		"inspect":            true,
+		"selinux-boolean":    true,
+		"selinux-restorecon": true,
+		"apparmor-enforce":   true,
+		"apparmor-complain":  true,
+		"apparmor-load":      true,
+	}
+	if !actions[operation.Action] || (operation.Framework != "SELinux" && operation.Framework != "AppArmor") {
+		return ErrInvalidSecurityOperation
+	}
+	if len(operation.Boolean) > 128 || len(operation.Path) > 4096 || len(operation.Profile) > 256 || len(operation.ExpectedFingerprint) > 128 || len(operation.Confirmation) > 128 || strings.ContainsAny(operation.Boolean+operation.Path+operation.Profile+operation.ExpectedFingerprint+operation.Confirmation, "\x00\r\n") {
 		return ErrInvalidSecurityOperation
 	}
 	if operation.Action == "inspect" {
+		if operation.Boolean != "" || operation.Path != "" || operation.Profile != "" {
+			return ErrInvalidSecurityOperation
+		}
 		return nil
 	}
 	if operation.ExpectedFingerprint == "" || operation.Confirmation != "CONFIRM NARROW SECURITY CHANGE" {
 		return ErrInvalidSecurityOperation
 	}
-	if operation.Action == "selinux-boolean" {
-		if !regexp.MustCompile(`^[a-zA-Z0-9_]+$`).MatchString(operation.Boolean) {
+	switch operation.Action {
+	case "selinux-boolean":
+		if operation.Framework != "SELinux" || !securityNamePattern.MatchString(operation.Boolean) || operation.Path != "" || operation.Profile != "" {
 			return ErrInvalidSecurityOperation
 		}
-	}
-	if operation.Action == "selinux-restorecon" {
-		if operation.Path == "" || operation.Path == "/" || filepath.Clean(operation.Path) != operation.Path {
+	case "selinux-restorecon":
+		if operation.Framework != "SELinux" || !safeRestoreconPath(operation.Path) || operation.Boolean != "" || operation.Profile != "" {
 			return ErrSecurityUnsafe
 		}
-	}
-	if strings.HasPrefix(operation.Action, "apparmor-") && operation.Action != "apparmor-load" && !regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`).MatchString(operation.Profile) {
+	case "apparmor-enforce", "apparmor-complain":
+		if operation.Framework != "AppArmor" || !profileNamePattern.MatchString(operation.Profile) || strings.Contains(operation.Profile, "..") || strings.HasPrefix(operation.Profile, "-") || operation.Path != "" || operation.Boolean != "" {
+			return ErrInvalidSecurityOperation
+		}
+	case "apparmor-load":
+		if operation.Framework != "AppArmor" || operation.Boolean != "" || operation.Profile != "" || !trustedAppArmorProfile(operation.Path) {
+			return ErrSecurityUnsafe
+		}
+	default:
 		return ErrInvalidSecurityOperation
-	}
-	if operation.Action == "apparmor-load" && !trustedAppArmorProfile(operation.Path) {
-		return ErrSecurityUnsafe
 	}
 	return nil
 }
 
-func trustedAppArmorProfile(path string) bool {
-	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+func safeRestoreconPath(path string) bool {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" || strings.ContainsAny(path, "*?[]{}") {
 		return false
 	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return false
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
-		return false
-	}
-	for _, root := range []string{"/etc/apparmor.d", "/usr/lib/apparmor.d", "/lib/apparmor.d"} {
-		if filePathWithin(root, resolved) {
-			return true
+	for _, blocked := range []string{"/proc", "/sys", "/dev", "/run"} {
+		if filePathWithin(blocked, path) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func PreviewSecurityOperation(ctx context.Context, operation SecurityOperation) (SecurityStatus, error) {
-	operation.Action = "inspect"
-	if err := ValidateSecurityOperation(operation); err != nil {
+	if operation.Action == "" {
+		operation.Action = "inspect"
+	}
+	if operation.Action == "inspect" {
+		operation = SecurityOperation{Action: "inspect", Framework: operation.Framework}
+	}
+	if err := ValidateSecurityPreviewOperation(operation); err != nil {
 		return SecurityStatus{}, err
 	}
-	return ReadSecurityStatus(ctx)
-}
-
-func ApplySecurityOperation(ctx context.Context, operation SecurityOperation) (SecurityStatus, error) {
-	if err := ValidateSecurityOperation(operation); err != nil {
-		return SecurityStatus{}, err
-	}
-	current, err := ReadSecurityStatus(ctx)
+	status, err := ReadSecurityStatus(ctx)
 	if err != nil {
 		return SecurityStatus{}, err
 	}
-	if current.Fingerprint != operation.ExpectedFingerprint {
-		return SecurityStatus{}, ErrSecurityConflict
+	status.Allowed = true
+	status.RequiresConfirmation = operation.Action != "inspect"
+	status.Changes, status.Warnings = securityPreviewChanges(status, operation)
+	allowed, eligibilityWarnings := securityPreviewEligibility(status, operation)
+	status.Allowed = allowed
+	status.Warnings = append(status.Warnings, eligibilityWarnings...)
+	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != status.Fingerprint {
+		status.Stale = true
+		status.Allowed = false
+		status.Warnings = append(status.Warnings, "Security policy changed since this preview was requested.")
 	}
-	var command string
-	var arguments []string
+	return status, nil
+}
+
+func securityPreviewEligibility(status SecurityStatus, operation SecurityOperation) (bool, []string) {
+	warnings := []string{}
+	allowed := true
 	switch operation.Action {
-	case "selinux-boolean":
-		if current.SELinux.Mode == "Disabled" || !current.SELinux.Userspace {
-			return SecurityStatus{}, ErrSecurityUnavailable
+	case "selinux-boolean", "selinux-restorecon":
+		if !status.SELinux.Userspace || status.SELinux.Mode == "Disabled" {
+			allowed = false
+			warnings = append(warnings, "SELinux userspace is unavailable or disabled.")
 		}
+	case "apparmor-enforce", "apparmor-complain", "apparmor-load":
+		if !status.AppArmor.Userspace {
+			allowed = false
+			warnings = append(warnings, "AppArmor userspace tooling is unavailable.")
+		}
+	}
+	if operation.Action == "selinux-boolean" && allowed {
 		known := false
-		for _, boolean := range current.SELinux.Booleans {
-			if strings.HasPrefix(boolean, operation.Boolean+"=") {
+		for _, value := range status.SELinux.Booleans {
+			if strings.HasPrefix(value, operation.Boolean+"=") {
 				known = true
 				break
 			}
 		}
 		if !known {
-			return SecurityStatus{}, ErrSecurityUnsafe
+			allowed = false
+			warnings = append(warnings, "The selected SELinux boolean was not reported by the current policy inventory.")
 		}
-		command, arguments = "setsebool", []string{"-P", operation.Boolean, map[bool]string{true: "on", false: "off"}[operation.Value]}
-	case "selinux-restorecon":
-		if !current.SELinux.Userspace {
-			return SecurityStatus{}, ErrSecurityUnavailable
-		}
-		command, arguments = "restorecon", []string{"-v", "--", operation.Path}
-	case "apparmor-enforce", "apparmor-complain":
-		if !current.AppArmor.Userspace {
-			return SecurityStatus{}, ErrSecurityUnavailable
-		}
-		if !contains(current.AppArmor.Profiles, operation.Profile) {
-			return SecurityStatus{}, ErrSecurityUnsafe
-		}
-		command, arguments = "aa-"+strings.TrimPrefix(operation.Action, "apparmor-"), []string{"--", operation.Profile}
-	case "apparmor-load":
-		if !current.AppArmor.Userspace || operation.Path == "" {
-			return SecurityStatus{}, ErrSecurityUnavailable
-		}
-		command, arguments = "apparmor_parser", []string{"-r", "--", operation.Path}
-	default:
-		return SecurityStatus{}, ErrInvalidSecurityOperation
 	}
-	if _, err := securityCommand(ctx, command, arguments...); err != nil {
-		return SecurityStatus{}, err
+	if (operation.Action == "apparmor-enforce" || operation.Action == "apparmor-complain") && allowed && !contains(status.AppArmor.Profiles, operation.Profile) {
+		allowed = false
+		warnings = append(warnings, "The selected AppArmor profile was not reported by the current policy inventory.")
 	}
-	updated, err := ReadSecurityStatus(ctx)
-	if err != nil {
-		return SecurityStatus{}, err
-	}
-	return updated, nil
+	return allowed, warnings
 }
 
-func securityCommand(ctx context.Context, name string, arguments ...string) (string, error) {
-	payload, err := networkCommand(ctx, name, arguments...)
-	return string(payload), err
+func ValidateSecurityPreviewOperation(operation SecurityOperation) error {
+	if operation.Action == "inspect" {
+		return ValidateSecurityOperation(operation)
+	}
+	copy := operation
+	if copy.ExpectedFingerprint == "" {
+		copy.ExpectedFingerprint = strings.Repeat("0", 64)
+	}
+	if copy.Confirmation == "" {
+		copy.Confirmation = "CONFIRM NARROW SECURITY CHANGE"
+	}
+	return ValidateSecurityOperation(copy)
+}
+
+func securityPreviewChanges(status SecurityStatus, operation SecurityOperation) ([]SecurityChange, []string) {
+	changes := []SecurityChange{}
+	warnings := []string{}
+	switch operation.Action {
+	case "selinux-boolean":
+		before := "unknown"
+		for _, value := range status.SELinux.Booleans {
+			if strings.HasPrefix(value, operation.Boolean+"=") {
+				before = strings.TrimPrefix(value, operation.Boolean+"=")
+				break
+			}
+		}
+		after := "off"
+		if operation.Value {
+			after = "on"
+		}
+		changes = append(changes, SecurityChange{Field: "SELinux boolean " + operation.Boolean, Before: before, After: after})
+	case "selinux-restorecon":
+		changes = append(changes, SecurityChange{Field: "SELinux label", After: operation.Path + " will be relabeled from matchpathcon"})
+		warnings = append(warnings, "Target label is re-evaluated through a pinned descriptor during apply.")
+	case "apparmor-enforce", "apparmor-complain":
+		before := status.AppArmor.ProfileModes[operation.Profile]
+		after := strings.TrimPrefix(operation.Action, "apparmor-")
+		changes = append(changes, SecurityChange{Field: "AppArmor profile " + operation.Profile, Before: before, After: after})
+	case "apparmor-load":
+		changes = append(changes, SecurityChange{Field: "AppArmor profile", After: operation.Path + " will be parsed and replaced"})
+		warnings = append(warnings, "Only root-owned, non-world-writable profiles under approved AppArmor directories are accepted.")
+	}
+	return changes, warnings
+}
+
+func ApplySecurityOperation(ctx context.Context, operation SecurityOperation) (SecurityStatus, error) {
+	return NewSecurityStrategy(nil).Apply(ctx, operation)
+}
+
+type securityFingerprintInput struct {
+	SELinux  SELinuxStatus
+	AppArmor AppArmorStatus
+	Active   string
+}
+
+func securityFingerprint(status SecurityStatus) string {
+	status.SELinux.Booleans = sortedUnique(status.SELinux.Booleans)
+	status.SELinux.Denials = nil
+	status.AppArmor.Profiles = sortedUnique(status.AppArmor.Profiles)
+	status.AppArmor.Denials = nil
+	payload, _ := json.Marshal(securityFingerprintInput{SELinux: status.SELinux, AppArmor: status.AppArmor, Active: status.Active})
+	return fingerprintBytes(payload)
+}
+
+func normalizeSELinuxMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "enforcing":
+		return "Enforcing"
+	case "permissive":
+		return "Permissive"
+	case "disabled":
+		return "Disabled"
+	default:
+		return strings.TrimSpace(value)
+	}
+}
+
+func parseSELinuxBooleans(getsebool, semanage string) []string {
+	values := map[string]string{}
+	for _, line := range strings.Split(getsebool, "\n") {
+		match := getseboolPattern.FindStringSubmatch(line)
+		if len(match) == 3 {
+			values[match[1]] = match[2]
+		}
+	}
+	for _, line := range strings.Split(semanage, "\n") {
+		match := semanageBoolPattern.FindStringSubmatch(line)
+		if len(match) == 4 {
+			if _, exists := values[match[1]]; !exists {
+				values[match[1]] = match[2]
+			}
+		}
+	}
+	result := make([]string, 0, len(values))
+	for name, value := range values {
+		result = append(result, name+"="+value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func parsePolicyDenials(output string, framework string) []string {
+	result := []string{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		matched := false
+		if framework == "SELinux" {
+			matched = strings.Contains(lower, "type=avc") || strings.Contains(lower, "avc:") && strings.Contains(lower, "denied")
+		} else {
+			matched = strings.Contains(lower, "apparmor=") && strings.Contains(lower, "denied") || strings.Contains(lower, "apparmor.*denied")
+		}
+		if !matched {
+			continue
+		}
+		line = strings.Join(strings.Fields(line), " ")
+		if len(line) > 1024 {
+			line = line[:1024]
+		}
+		if !seen[line] {
+			seen[line] = true
+			result = append(result, line)
+		}
+		if len(result) >= 256 {
+			break
+		}
+	}
+	return result
+}
+
+func readSELinuxStatus(ctx context.Context) SELinuxStatus {
+	return readSELinuxStatusWithRunner(ctx, systemSecurityCommandRunner{})
+}
+
+func readSELinuxStatusWithRunner(ctx context.Context, runner SecurityCommandRunner) SELinuxStatus {
+	status := SELinuxStatus{KernelPresent: fileExists("/sys/fs/selinux"), Booleans: []string{}, Denials: []string{}}
+	getenforceOutput, getenforceErr := runner.Run(ctx, "getenforce")
+	if getenforceErr == nil {
+		mode := normalizeSELinuxMode(firstLine(getenforceOutput))
+		if mode != "" {
+			status.Userspace = true
+			status.Mode = mode
+		}
+	}
+	if output, err := runner.Run(ctx, "sestatus"); err == nil {
+		status.Userspace = true
+		for _, line := range strings.Split(output, "\n") {
+			fields := strings.SplitN(line, ":", 2)
+			if len(fields) != 2 {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(fields[0]))
+			value := strings.TrimSpace(fields[1])
+			switch key {
+			case "selinux status":
+				if strings.EqualFold(value, "disabled") {
+					status.Mode = "Disabled"
+				}
+			case "current mode":
+				status.Mode = normalizeSELinuxMode(value)
+			case "loaded policy name", "selinux policy":
+				status.Policy = value
+			}
+		}
+	}
+	getsebool, _ := runner.Run(ctx, "getsebool", "-a")
+	semanage, _ := runner.Run(ctx, "semanage", "boolean", "-l")
+	status.Booleans = parseSELinuxBooleans(getsebool, semanage)
+	status.Denials = readSecurityDenials(ctx, runner, "SELinux")
+	return status
+}
+
+func readAppArmorStatus(ctx context.Context) AppArmorStatus {
+	return readAppArmorStatusWithRunner(ctx, systemSecurityCommandRunner{})
+}
+
+func readAppArmorStatusWithRunner(ctx context.Context, runner SecurityCommandRunner) AppArmorStatus {
+	status := AppArmorStatus{KernelPresent: fileExists("/sys/module/apparmor"), Profiles: []string{}, ProfileModes: map[string]string{}, Denials: []string{}}
+	if output, err := runner.Run(ctx, "aa-status", "--json"); err == nil {
+		var document struct {
+			Profiles map[string]string `json:"profiles"`
+		}
+		if json.Unmarshal([]byte(output), &document) == nil && document.Profiles != nil {
+			status.Userspace = true
+			for profile, mode := range document.Profiles {
+				status.Profiles = append(status.Profiles, profile)
+				status.ProfileModes[profile] = mode
+			}
+		}
+	}
+	sort.Strings(status.Profiles)
+	status.Denials = readSecurityDenials(ctx, runner, "AppArmor")
+	return status
+}
+
+func parseAppArmorProfiles(output string) []string {
+	result := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "profiles are ") || strings.Contains(line, "processes are ") {
+			continue
+		}
+		if strings.HasSuffix(line, ":") {
+			continue
+		}
+		result = append(result, line)
+	}
+	return sortedUnique(result)
+}
+
+func readSecurityDenials(ctx context.Context, runner SecurityCommandRunner, framework string) []string {
+	if framework == "SELinux" {
+		if output, err := runner.Run(ctx, "ausearch", "-m", "avc", "-ts", "recent", "-i"); err == nil {
+			if denials := parsePolicyDenials(output, framework); len(denials) > 0 {
+				return denials
+			}
+		}
+		output, _ := runner.Run(ctx, "journalctl", "-k", "--no-pager", "-g", "avc:.*denied", "-n", "256")
+		return parsePolicyDenials(output, framework)
+	}
+	output, _ := runner.Run(ctx, "journalctl", "-k", "--no-pager", "-g", `apparmor="DENIED"`, "-n", "256")
+	return parsePolicyDenials(output, framework)
+}
+
+func trustedAppArmorProfile(path string) bool {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, "\x00\r\n") {
+		return false
+	}
+	for _, root := range []string{"/etc/apparmor.d", "/usr/lib/apparmor.d"} {
+		if path != root && filePathWithin(root, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func securityErrorCode(err error) string {

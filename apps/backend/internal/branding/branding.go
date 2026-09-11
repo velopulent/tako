@@ -121,7 +121,7 @@ func AssetForID(id string) (distribution, asset string) {
 	case "ubuntu":
 		return "ubuntu", "ubuntu.png"
 	case "rocky", "rockylinux":
-		return "rockylinux", "rockylinux.png"
+		return "rockylinux", "rocky.png"
 	}
 	if strings.HasPrefix(normalizeValue(id), "opensuse") {
 		return "opensuse", "opensuse.png"
@@ -141,12 +141,12 @@ func normalizeValue(value string) string {
 }
 
 var allowedAssets = map[string]struct{}{
-	"almalinux.png":  {},
-	"archlinux.png":  {},
-	"debian.png":     {},
-	"fedora.png":     {},
-	"rhel.png":       {},
-	"opensuse.png":   {},
-	"rockylinux.png": {},
-	"ubuntu.png":     {},
+	"almalinux.png": {},
+	"archlinux.png": {},
+	"debian.png":    {},
+	"fedora.png":    {},
+	"rhel.png":      {},
+	"opensuse.png":  {},
+	"rocky.png":     {},
+	"ubuntu.png":    {},
 }

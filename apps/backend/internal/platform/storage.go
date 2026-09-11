@@ -14,8 +14,9 @@ import (
 var errStatfsUnavailable = errors.New("statfs failed")
 
 type MountPoint struct {
-	Target string `json:"target"`
-	Root   string `json:"root,omitempty"`
+	Target   string `json:"target"`
+	Root     string `json:"root,omitempty"`
+	ReadOnly bool   `json:"readOnly"`
 }
 
 type Filesystem struct {
@@ -95,14 +96,14 @@ func parseMountInfo(reader io.Reader) ([]mountEntry, error) {
 		}
 		left := strings.Fields(line[:separator])
 		right := strings.Fields(line[separator+3:])
-		if len(left) < 5 || len(right) < 2 {
+		if len(left) < 6 || len(right) < 2 {
 			continue
 		}
 		entries = append(entries, mountEntry{
 			majorMinor: left[2],
 			root:       unescapeMount(left[3]),
 			target:     unescapeMount(left[4]),
-			options:    left[5:],
+			options:    strings.Split(left[5], ","),
 			fsType:     right[0],
 			source:     unescapeMount(right[1]),
 		})
@@ -133,16 +134,18 @@ func buildFilesystems(entries []mountEntry, statfs statfsFunc) []Filesystem {
 				MajorMinor: entry.majorMinor,
 				Network:    network,
 				Device:     entry.source,
+				ReadOnly:   true,
 			}, targets: map[string]MountPoint{}}
 			groups[entry.majorMinor] = group
 			order = append(order, entry.majorMinor)
 		}
-		group.targets[entry.target] = MountPoint{Target: entry.target, Root: entry.root}
+		readOnly := hasReadOnlyOption(entry.options)
+		group.targets[entry.target] = MountPoint{Target: entry.target, Root: entry.root, ReadOnly: readOnly}
+		group.filesystem.ReadOnly = group.filesystem.ReadOnly && readOnly
 		if !group.measured {
 			var stat syscall.Statfs_t
 			if statfs(entry.target, &stat) == nil {
 				fillUsage(group.filesystem, &stat)
-				group.filesystem.ReadOnly = hasReadOnlyOption(entry.options)
 				group.measured = true
 			}
 		}

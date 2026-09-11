@@ -47,11 +47,9 @@ function AuthenticatedApp() {
 
   if (session.isPending) {
     return (
-      <LoginPage
-        branding={branding.data}
-        onAuthenticated={(value) =>
-          queryClient.setQueryData(["session"], value)
-        }
+      <div
+        className="min-h-svh bg-background"
+        data-testid="auth-pending-shell"
       />
     )
   }

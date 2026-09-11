@@ -1,0 +1,305 @@
+---
+import { Icon as BrandIcon } from "astro-icon/components"
+import AgentWorkflows from "../components/agent-workflows.astro"
+import Compatibility from "../components/compatibility.astro"
+import DashboardPreview from "../components/dashboard-preview.astro"
+import Icon from "../components/icon.astro"
+import Site from "../layouts/site.astro"
+
+const features = [
+  {
+    icon: "pulse",
+    title: "Know how your host feels.",
+    text: "Live CPU, memory, disk, and network metrics put the whole machine in view. Follow trends, then look closer at the process behind a spike.",
+    links: "Overview / Metrics / Processes",
+  },
+  {
+    icon: "layers",
+    title: "Keep the everyday running.",
+    text: "Inspect systemd services and their dependencies. Manage service lifecycles, work with timers, and follow background jobs through to completion.",
+    links: "Services / Timers / Jobs",
+  },
+  {
+    icon: "terminal",
+    title: "Get to the root of it.",
+    text: "Search the live journal, connect events in the incident timeline, or open a real terminal under your own UNIX identity.",
+    links: "System logs / Incidents / Terminal",
+  },
+  {
+    icon: "server",
+    title: "Make room for what matters.",
+    text: "Browse and manage files, inspect mounted storage, and see interface health and traffic. Keep the details close to the bigger picture.",
+    links: "Files / Storage / Networking",
+  },
+  {
+    icon: "shield",
+    title: "Keep access in order.",
+    text: "Manage local users and groups, review SSH access, and inspect SELinux or AppArmor policy state. Administration stays tied to Linux identities.",
+    links: "Accounts / SSH keys / Security",
+  },
+  {
+    icon: "spark",
+    title: "Keep your host moving.",
+    text: "Review pending packages, preview changes, and follow update progress. Check hardware, boot history, and restart status before your next maintenance window.",
+    links: "Software updates / Hardware / Host",
+  },
+]
+---
+
+<Site>
+  <section class="hero wrap">
+    <div class="hero-copy">
+      <a class="development-pill" href="https://github.com/velopulent/tako"
+        ><span class="status-dot"></span>
+        Under active development <Icon name="arrow" size={14} /></a
+      >
+      <p class="eyebrow hero-eyebrow">Your Linux. A little more human.</p>
+      <h1>A calmer way<br>to run <em>Linux.</em></h1>
+      <p class="hero-description">
+        Meet Tako. A thoughtful home for your Linux server, with a clear view of
+        what's happening and the tools to do something about it.
+      </p>
+      <div class="hero-actions">
+        <a class="button primary" href="https://github.com/velopulent/tako"
+          >Explore on GitHub <Icon name="external" size={18} /></a
+        ><a class="text-link" href="#features"
+          >Meet your new dashboard <Icon name="arrow" size={18} /></a
+        >
+      </div>
+      <p class="hero-footnote">
+        Built in <BrandIcon name="logos:go" aria-label="Go" role="img" />.
+        Dashboard included. Ready for the AI era.
+      </p>
+    </div>
+    <div class="mascot-scene">
+      <div class="orbit orbit-one"></div>
+      <div class="orbit orbit-two"></div>
+      <span class="scene-cross cross-one">+</span
+      ><span class="scene-cross cross-two">+</span>
+      <span class="scene-label label-top"
+        ><span class="status-dot"></span>
+        A happy little host.</span
+      >
+      <img
+        src="/tako-mascot-1.avif"
+        alt="Tako, a friendly octopus wearing a Linux headset"
+        width="1254"
+        height="1254"
+        fetchpriority="high"
+        class="mascot"
+      >
+      <span class="scene-label label-bottom"
+        ><Icon name="terminal" size={15} />
+        Fewer tabs. More tentacles.</span
+      >
+      <span class="handwritten"
+        >Your host is in good hands.<svg viewBox="0 0 70 40" aria-hidden="true">
+          <path
+            d="M4 5c30 0 43 0 50 27m-14-9 14 9 9-14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+          ></path>
+        </svg></span
+      >
+    </div>
+  </section>
+  <div class="principles wrap">
+    <span><Icon name="server" size={17} /> One Go executable</span
+    ><span><Icon name="layers" size={17} /> Embedded dashboard</span
+    ><span><Icon name="shield" size={17} /> Native Linux identities</span
+    ><span><Icon name="spark" size={17} /> Built for people & agents</span>
+  </div>
+  <section
+    class="product-section wrap"
+    id="overview"
+    aria-labelledby="product-title"
+  >
+    <div class="section-intro" data-reveal>
+      <div>
+        <span class="eyebrow">01 / A clearer view</span>
+        <h2 id="product-title">
+          Less hunting.<br><em>More understanding.</em>
+        </h2>
+      </div>
+      <p>
+        The load spike. The failed service. The disk that's filling up. See the
+        pieces together, in a dashboard that gives them room to breathe.
+      </p>
+    </div>
+    <DashboardPreview />
+    <p class="preview-caption">
+      <span>ONE HOST. THE WHOLE PICTURE.</span>
+      Try the views above. Your terminal is still welcome here.
+    </p>
+  </section>
+  <section
+    class="features-section wrap"
+    id="features"
+    aria-labelledby="features-title"
+  >
+    <div class="section-intro" data-reveal>
+      <div>
+        <span class="eyebrow">02 / The everyday, well considered</span>
+        <h2 id="features-title">
+          Your server has a lot going on.<br><em>Tako brings it together.</em>
+        </h2>
+      </div>
+      <p>
+        For the servers behind your applications, the machines your team relies
+        on, and the infrastructure you run yourself.
+      </p>
+    </div>
+    <div class="feature-grid">
+      {features.map((feature, index) => (
+          <article class="feature" data-reveal>
+            <>
+              <div class="feature-top">
+                <>
+                  <Icon name={feature.icon} size={25} />
+                  <span>0{index + 1}</span>
+                </>
+              </div>
+              <h3>{feature.title}</h3>
+              <p>{feature.text}</p>
+              <small>{feature.links}</small>
+            </>
+          </article>
+        ))}
+    </div>
+  </section>
+  <section class="agents-section" id="agents" aria-labelledby="agents-title">
+    <div class="wrap">
+      <div class="agent-heading" data-reveal>
+        <span class="eyebrow">03 / A new kind of helping hand</span>
+        <div>
+          <h2 id="agents-title">
+            Your next teammate<br>might be <em>an agent.</em>
+          </h2>
+          <div>
+            <p class="agent-lead">Give it a better place to work.</p>
+            <p>
+              Bring AI into the work of running Linux. Turn host context into
+              useful answers, make maintenance easier to plan, and spend less
+              time piecing together what went wrong.
+            </p>
+          </div>
+        </div>
+      </div>
+      <AgentWorkflows />
+      <div class="agent-outcomes" data-reveal>
+        <p>
+          <span>01</span><strong>Context before commands.</strong>
+          Connect metrics, service state, and logs to understand the problem.
+        </p>
+        <p>
+          <span>02</span><strong>Make the next step clear.</strong>
+          Turn an investigation into a plan you can review.
+        </p>
+        <p>
+          <span>03</span><strong>Keep people in the picture.</strong>
+          Build your workflow around deliberate decisions about your host.
+        </p>
+      </div>
+    </div>
+  </section>
+  <Compatibility />
+  <section
+    id="architecture"
+    class="built-section wrap"
+    aria-labelledby="built-title"
+  >
+    <div class="built-copy" data-reveal>
+      <span class="eyebrow">05 / Linux underneath. Thoughtful on top.</span>
+      <h2 id="built-title">
+        A small footprint.<br><em>A proper foundation.</em>
+      </h2>
+      <p>
+        Tako is written in Go, with the dashboard embedded in the executable. It
+        fits into the system you already run, right down to your UNIX login.
+      </p>
+      <a class="text-link" href="https://github.com/velopulent/tako"
+        >Look under the hood <Icon name="external" size={17} /></a
+      >
+    </div>
+    <div class="foundation" data-reveal>
+      <article>
+        <span>01</span>
+        <div>
+          <h3>One executable. The dashboard comes with it.</h3>
+          <p>
+            Go on the host, a responsive interface in your browser. No separate
+            dashboard server to keep running.
+          </p>
+        </div>
+      </article>
+      <article>
+        <span>02</span>
+        <div>
+          <h3>Privileges stay where they belong.</h3>
+          <p>
+            An unprivileged gateway, isolated session service, and user bridges
+            keep host authority separate from the web interface.
+          </p>
+        </div>
+      </article>
+      <article>
+        <span>03</span>
+        <div>
+          <h3>At home on Linux.</h3>
+          <p>
+            PAM authentication, systemd integration, native package managers,
+            and a terminal that runs as you.
+          </p>
+        </div>
+      </article>
+    </div>
+  </section>
+  <section id="faq" class="questions wrap" aria-label="Common questions">
+    <span class="eyebrow">A few things you might be wondering</span>
+    <details>
+      <summary>Where can I try Tako?<span>+</span></summary>
+      <p>
+        The GitHub repository has the source and current development setup. Tako
+        is under active development; follow the project there as it takes shape.
+        <a href="https://github.com/velopulent/tako">Visit the repository.</a>
+      </p>
+    </details>
+    <details>
+      <summary>Which systems does it target?<span>+</span></summary>
+      <p>
+        Tako is built for Linux with systemd and PAM. Packages target Ubuntu,
+        Debian, Fedora, Red Hat Enterprise Linux, Rocky Linux, AlmaLinux, Arch
+        Linux, and openSUSE. Available features depend on the services and
+        capabilities of your host.
+      </p>
+    </details>
+    <details>
+      <summary>Can I still use my terminal?<span>+</span></summary>
+      <p>
+        Yes. Tako includes an interactive terminal that runs under your
+        authenticated UNIX identity. Use the dashboard for context and your
+        shell for the work you prefer to do there.
+      </p>
+    </details>
+    <details>
+      <summary>Where are the docs?<span>+</span></summary>
+      <p>
+        Documentation is coming soon. For now, the repository includes
+        development and packaging instructions.
+        <a href="/docs/">Visit the documentation page.</a>
+      </p>
+    </details>
+  </section>
+  <section class="closing wrap" data-reveal>
+    <div class="closing-mark">✳</div>
+    <p class="eyebrow">Meet your host's new companion</p>
+    <h2>A little more clarity.<br>A lot more <em>Tako.</em></h2>
+    <p>Follow along. Try it out. Help shape what comes next.</p>
+    <a class="button primary" href="https://github.com/velopulent/tako"
+      >Find Tako on GitHub <Icon name="external" size={18} /></a
+    ><span class="closing-note"
+      >Actively being built, one thoughtful detail at a time.</span
+    >
+  </section>
+</Site>

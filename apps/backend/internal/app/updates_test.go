@@ -76,12 +76,12 @@ func TestUpdatePreviewAndJobKeepAdminTokenOutOfDurableParameters(t *testing.T) {
 	}
 	server.readUpdatesFn = func(context.Context) (platform.UpdateStatus, error) { return status, nil }
 	server.previewUpdatesFn = func(_ context.Context, operation platform.UpdateOperation) (platform.UpdatePreview, error) {
-		return platform.UpdatePreview{Operation: operation, Current: status, Selected: status.Packages, Changes: []string{"update 1 package"}, Warnings: []string{}, Fingerprint: fingerprint, Allowed: true, RequiresConfirmation: true}, nil
+		return platform.UpdatePreview{Current: status, Changes: []platform.UpdateChange{{Action: "upgrade", Name: "openssl", CandidateVersion: "3.0.14"}}, Warnings: []string{}, Fingerprint: fingerprint, Allowed: true, RequiresConfirmation: true}, nil
 	}
 	called := make(chan auth.UpdateRequest, 1)
 	server.applyUpdatesFn = func(_ context.Context, request auth.UpdateRequest) (platform.UpdateResult, error) {
 		called <- request
-		return platform.UpdateResult{Backend: "apt-get", Scope: request.Operation.Scope, Packages: []string{"openssl"}, Updated: status.Packages, Verified: true, Message: "Updates applied and verified.", Fingerprint: fingerprint}, nil
+		return platform.UpdateResult{Backend: "apt-get", Changes: []platform.UpdateChange{{Action: "upgrade", Name: "openssl", CandidateVersion: "3.0.14"}}, Verified: true, Message: "Updates applied and verified.", Fingerprint: fingerprint}, nil
 	}
 	created, err := server.sessions.Create(auth.Identity{Username: "operator", BridgeToken: "bridge", AdminToken: "secret-admin"})
 	if err != nil {
@@ -90,14 +90,14 @@ func TestUpdatePreviewAndJobKeepAdminTokenOutOfDurableParameters(t *testing.T) {
 	if !server.sessions.SetAdministrative(created.ID, "secret-admin", time.Now().Add(time.Hour)) {
 		t.Fatal("could not grant administrative access")
 	}
-	previewRequest := httptest.NewRequest(http.MethodPost, "/api/v1/updates/preview", bytes.NewBufferString(`{"scope":"all","expectedFingerprint":"`+fingerprint+`"}`))
+	previewRequest := httptest.NewRequest(http.MethodPost, "/api/v1/updates/preview", bytes.NewBufferString(`{"expectedFingerprint":"`+fingerprint+`"}`))
 	previewRequest.AddCookie(&http.Cookie{Name: session.CookieName, Value: created.ID})
 	previewRecorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(previewRecorder, previewRequest)
 	if previewRecorder.Code != http.StatusOK {
 		t.Fatalf("preview returned %d: %s", previewRecorder.Code, previewRecorder.Body.String())
 	}
-	applyRequest := httptest.NewRequest(http.MethodPost, "/api/v1/updates", bytes.NewBufferString(`{"scope":"all","expectedFingerprint":"`+fingerprint+`","confirmation":"APPLY UPDATES"}`))
+	applyRequest := httptest.NewRequest(http.MethodPost, "/api/v1/updates", bytes.NewBufferString(`{"expectedFingerprint":"`+fingerprint+`","confirmed":true}`))
 	applyRequest.AddCookie(&http.Cookie{Name: session.CookieName, Value: created.ID})
 	applyRequest.Header.Set("X-CSRF-Token", created.CSRF)
 	applyRecorder := httptest.NewRecorder()

@@ -1,0 +1,100 @@
+name: Backend integration
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: ${{ matrix.distro }} disposable VM integration
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu
+            vm_label: tako-vm-ubuntu2604-amd64
+          - distro: fedora
+            vm_label: tako-vm-fedora44-amd64
+    runs-on: [self-hosted, linux, "${{ matrix.vm_label }}"]
+    timeout-minutes: 30
+    env:
+      TAKO_INTEGRATION_DISTRO: ${{ matrix.distro }}
+      TAKO_INTEGRATION_EVIDENCE_DIR: integration-evidence/${{ matrix.distro }}
+      GOCACHE: /tmp/tako-go-integration-cache
+      GOMODCACHE: /tmp/tako-go-integration-mod-cache
+      TAKO_TEST_PAM_USER: tako-ci
+      TAKO_TEST_BINARY: ${{ github.workspace }}/bin/tako-integration
+      TAKO_TEST_ACCOUNT_VM: "1"
+      TAKO_TEST_IDENTITY_VM: "1"
+      TAKO_TEST_JOURNAL_VM: "1"
+      TAKO_TEST_LOGIN_HISTORY_USER: tako-ci
+      TAKO_TEST_PROCESS_VM: "1"
+      TAKO_TEST_OVERRIDE_VM: "1"
+      TAKO_TEST_SSH_HOME: /home/tako-ci
+      TAKO_TEST_SSH_USER: tako-ci
+      TAKO_TEST_TIMER_VM: "1"
+      TAKO_TEST_PASSWORD_USER: tako-ci
+      TAKO_TEST_PASSWORD_SERVICE: passwd
+      TAKO_TEST_PAM_SERVICE: tako
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install backend prerequisites
+        run: |
+          set -euo pipefail
+          case "$TAKO_INTEGRATION_DISTRO" in
+            ubuntu)
+              sudo apt-get update
+              sudo apt-get install --yes --no-install-recommends \
+                gcc libpam0g-dev libsystemd-dev systemd openssl python3
+              ;;
+            fedora)
+              sudo dnf install --assumeyes \
+                gcc pam-devel systemd systemd-devel openssl python3
+              ;;
+          esac
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - name: Generate disposable PAM password fixture
+        run: |
+          set -euo pipefail
+          old_password="tako-ci-$(openssl rand -hex 16)"
+          new_password="tako-ci-$(openssl rand -hex 16)"
+          echo "::add-mask::$old_password"
+          echo "::add-mask::$new_password"
+          {
+            printf 'TAKO_TEST_PASSWORD_OLD=%s\n' "$old_password"
+            printf 'TAKO_TEST_PASSWORD_NEW=%s\n' "$new_password"
+            printf 'TAKO_TEST_PAM_RESPONSES=["%s"]\n' "$old_password"
+          } >> "$GITHUB_ENV"
+      - name: Build integration binary
+        working-directory: apps/backend
+        env:
+          TAKO_DISTRO: ${{ matrix.distro }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          go build -tags "$TAKO_DISTRO" -buildvcs=false \
+            -o "$GITHUB_WORKSPACE/bin/tako-integration" ./cmd/tako
+      - name: Run tagged integration suite and VM preflight
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,GOCACHE,GOMODCACHE,TAKO_INTEGRATION_DISTRO,TAKO_INTEGRATION_EVIDENCE_DIR,TAKO_TEST_BINARY,TAKO_TEST_PAM_USER,TAKO_TEST_PAM_RESPONSES,TAKO_TEST_PASSWORD_OLD,TAKO_TEST_PASSWORD_NEW,TAKO_TEST_ACCOUNT_VM,TAKO_TEST_IDENTITY_VM,TAKO_TEST_JOURNAL_VM,TAKO_TEST_LOGIN_HISTORY_USER,TAKO_TEST_PROCESS_VM,TAKO_TEST_OVERRIDE_VM,TAKO_TEST_SSH_HOME,TAKO_TEST_SSH_USER,TAKO_TEST_TIMER_VM,TAKO_TEST_PASSWORD_USER,TAKO_TEST_PASSWORD_SERVICE,TAKO_TEST_PAM_SERVICE \
+            "$GITHUB_WORKSPACE/tools/tako-integration"
+      - name: Upload integration logs and diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-evidence-${{ matrix.distro }}
+          path: integration-evidence/${{ matrix.distro }}/
+          if-no-files-found: warn
+          retention-days: 30

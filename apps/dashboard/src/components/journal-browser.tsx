@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import type { ColumnDef } from "@tanstack/react-table"
 import { ArrowDownToLineIcon, EyeIcon, PauseIcon, PlayIcon } from "lucide-react"
@@ -41,6 +41,23 @@ const journalPriorityItems = [
   { value: "5..7", label: "Notice–Debug" },
 ]
 
+const priorities = [
+  "Emergency",
+  "Alert",
+  "Critical",
+  "Error",
+  "Warning",
+  "Notice",
+  "Info",
+  "Debug",
+]
+const entryKey = (entry: LogEntry) =>
+  entry.id ??
+  `${entry.timestamp}:${entry.unit}:${entry.priority}:${entry.message}`
+const uniqueEntries = (entries: LogEntry[]) => [
+  ...new Map(entries.map((entry) => [entryKey(entry), entry])).values(),
+]
+
 const columns: ColumnDef<DataTableFeatures, LogEntry>[] = [
   {
     accessorKey: "timestamp",
@@ -51,7 +68,11 @@ const columns: ColumnDef<DataTableFeatures, LogEntry>[] = [
     accessorKey: "priority",
     header: "Priority",
     cell: ({ row }) => (
-      <Badge variant="outline">{row.original.priority || "-"}</Badge>
+      <Badge
+        variant={Number(row.original.priority) <= 3 ? "destructive" : "outline"}
+      >
+        {priorities[Number(row.original.priority)] ?? "Unknown"}
+      </Badge>
     ),
   },
   { accessorKey: "unit", header: "Unit" },
@@ -142,11 +163,17 @@ export function JournalBrowser() {
     setDraft((current) => ({ ...current, executable: value }))
   const setText = (value: string) =>
     setDraft((current) => ({ ...current, text: value }))
+  const [advanced, setAdvanced] = React.useState(false)
+  const [connection, setConnection] = React.useState("Connecting")
+  const [reading, setReading] = React.useState(false)
+  const readingRef = React.useRef(false)
   const [details, setDetails] = React.useState(false)
   const [cursor, setCursor] = React.useState("")
   const [following, setFollowing] = React.useState(true)
   const [atLatest, setAtLatest] = React.useState(true)
   const [pendingLive, setPendingLive] = React.useState(0)
+  const queryClient = useQueryClient()
+  const [scrollVersion, setScrollVersion] = React.useState(0)
   const [live, setLive] = React.useState<LogEntry[]>([])
   const [selected, setSelected] = React.useState<LogEntry | null>(null)
   const atLatestRef = React.useRef(true)
@@ -166,10 +193,12 @@ export function JournalBrowser() {
     details,
   }
   const query = useQuery({
+    staleTime: 0,
     queryKey: ["logs", filterValues, cursor],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       api<JournalPage>(
-        `/logs?${makeParams({ ...filterValues, cursor }).toString()}`
+        `/logs?${makeParams({ ...filterValues, cursor }).toString()}`,
+        { signal }
       ),
   })
   const streamParams = makeParams(filterValues).toString()
@@ -224,27 +253,50 @@ export function JournalBrowser() {
   React.useEffect(() => {
     if (!following || typeof EventSource === "undefined") return
     const source = new EventSource(`/api/v1/logs/stream?${streamParams}`)
+    let queue: LogEntry[] = []
+    source.addEventListener("open", () => setConnection("Live"))
+    source.addEventListener("error", () => setConnection("Reconnecting"))
     source.addEventListener("log", (event) => {
       try {
         const entry = JSON.parse(
           (event as MessageEvent<string>).data
         ) as LogEntry
-        if (!atLatestRef.current) {
+        if (!entry.timestamp || typeof entry.message !== "string") return
+        if (!atLatestRef.current || readingRef.current) {
           setPendingLive((current) => Math.min(current + 1, 500))
           return
         }
-        setLive((current) => [entry, ...current].slice(0, 500))
+        queue.push(entry)
+        if (queue.length > 500) queue = queue.slice(-500)
       } catch {
-        // Ignore malformed stream events; the bounded query remains usable.
+        /* Invalid events do not replace the last valid snapshot. */
       }
     })
-    return () => source.close()
+    const timer = window.setInterval(() => {
+      if (!queue.length) return
+      if (readingRef.current || !atLatestRef.current) {
+        setPendingLive((current) => Math.min(current + queue.length, 500))
+        queue = []
+        return
+      }
+      const batch = queue.reverse()
+      queue = []
+      setLive((current) => uniqueEntries([...batch, ...current]).slice(0, 500))
+    }, 200)
+    return () => {
+      window.clearInterval(timer)
+      source.close()
+    }
   }, [following, streamParams])
 
   const items = atLatest
-    ? [...live, ...(query.data?.items ?? [])]
+    ? uniqueEntries([...live, ...(query.data?.items ?? [])])
     : (query.data?.items ?? [])
   const jumpToLatest = () => {
+    readingRef.current = false
+    setReading(false)
+    void queryClient.invalidateQueries({ queryKey: ["logs"] })
+    setScrollVersion((current) => current + 1)
     setLive([])
     setPendingLive(0)
     setCursor("")
@@ -285,7 +337,48 @@ export function JournalBrowser() {
 
   return (
     <>
-      <div className="space-y-4">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">
+            {following ? connection : "Paused"}
+            {reading ? " · reading history" : ""}
+          </Badge>
+          <Button
+            variant="outline"
+            onClick={() => setAdvanced(!advanced)}
+            aria-expanded={advanced}
+          >
+            Advanced filters
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setSince(new Date(Date.now() - 3600000).toISOString())
+              setUntil("")
+            }}
+          >
+            Last hour
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setSince(new Date(Date.now() - 86400000).toISOString())
+              setUntil("")
+            }}
+          >
+            Last 24 hours
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setBoot("current")
+              setSince("")
+              setUntil("")
+            }}
+          >
+            Current boot
+          </Button>
+        </div>
         <FieldGroup className="grid gap-4 @lg/main:grid-cols-2 @4xl/main:grid-cols-4">
           <Field>
             <FieldLabel htmlFor="journal-text">Message contains</FieldLabel>
@@ -297,56 +390,60 @@ export function JournalBrowser() {
               placeholder="failed"
             />
           </Field>
-          <Field>
-            <FieldLabel htmlFor="journal-boot">Boot</FieldLabel>
-            <Input
-              id="journal-boot"
-              maxLength={32}
-              value={boot}
-              onChange={(event) => setBoot(event.target.value)}
-              placeholder="current or boot ID"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="journal-since">Since (RFC3339)</FieldLabel>
-            <Input
-              id="journal-since"
-              maxLength={64}
-              value={since}
-              onChange={(event) => setSince(event.target.value)}
-              placeholder="2026-08-13T00:00:00Z"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="journal-until">Until (RFC3339)</FieldLabel>
-            <Input
-              id="journal-until"
-              maxLength={64}
-              value={until}
-              onChange={(event) => setUntil(event.target.value)}
-              placeholder="2026-08-13T23:59:59Z"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="journal-unit">Unit</FieldLabel>
-            <Input
-              id="journal-unit"
-              maxLength={256}
-              value={unit}
-              onChange={(event) => setUnit(event.target.value)}
-              placeholder="worker.service"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="journal-executable">Executable</FieldLabel>
-            <Input
-              id="journal-executable"
-              maxLength={4096}
-              value={executable}
-              onChange={(event) => setExecutable(event.target.value)}
-              placeholder="/usr/bin/worker"
-            />
-          </Field>
+          {advanced && (
+            <>
+              <Field>
+                <FieldLabel htmlFor="journal-boot">Boot</FieldLabel>
+                <Input
+                  id="journal-boot"
+                  maxLength={32}
+                  value={boot}
+                  onChange={(event) => setBoot(event.target.value)}
+                  placeholder="current or boot ID"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="journal-since">Since (RFC3339)</FieldLabel>
+                <Input
+                  id="journal-since"
+                  maxLength={64}
+                  value={since}
+                  onChange={(event) => setSince(event.target.value)}
+                  placeholder="2026-08-13T00:00:00Z"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="journal-until">Until (RFC3339)</FieldLabel>
+                <Input
+                  id="journal-until"
+                  maxLength={64}
+                  value={until}
+                  onChange={(event) => setUntil(event.target.value)}
+                  placeholder="2026-08-13T23:59:59Z"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="journal-unit">Unit</FieldLabel>
+                <Input
+                  id="journal-unit"
+                  maxLength={256}
+                  value={unit}
+                  onChange={(event) => setUnit(event.target.value)}
+                  placeholder="worker.service"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="journal-executable">Executable</FieldLabel>
+                <Input
+                  id="journal-executable"
+                  maxLength={4096}
+                  value={executable}
+                  onChange={(event) => setExecutable(event.target.value)}
+                  placeholder="/usr/bin/worker"
+                />
+              </Field>
+            </>
+          )}
           <Field>
             <FieldLabel htmlFor="journal-priority">Priority</FieldLabel>
             <Select
@@ -410,6 +507,12 @@ export function JournalBrowser() {
         )}
         {!query.isPending && !query.isError && items.length > 0 && (
           <DataTable
+            key={scrollVersion}
+            onScrollPosition={(top) => {
+              const paused = top > 40
+              readingRef.current = paused
+              setReading(paused)
+            }}
             data={items}
             columns={columns}
             searchPlaceholder="Search loaded entries"

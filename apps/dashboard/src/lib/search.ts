@@ -44,6 +44,25 @@ export function qSearch(search: Record<string, unknown>): { q?: string } {
   return { q: optionalString(search.q) }
 }
 
+export const networkViews = [
+  "overview",
+  "configuration",
+  "firewall",
+  "logs",
+] as const
+export type NetworkView = (typeof networkViews)[number]
+
+export function networkSearch(search: Record<string, unknown>): {
+  q?: string
+  view?: NetworkView
+} {
+  const view = parseEnum(search.view, networkViews, "overview")
+  return {
+    q: optionalString(search.q),
+    view: view === "overview" ? undefined : view,
+  }
+}
+
 export function processDetailSearch(search: Record<string, unknown>): {
   q?: string
   started?: string

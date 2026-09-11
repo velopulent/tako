@@ -14,7 +14,9 @@ import (
 	"github.com/velopulent/tako/internal/app"
 	"github.com/velopulent/tako/internal/bridge"
 	"github.com/velopulent/tako/internal/config"
+	"github.com/velopulent/tako/internal/distro"
 	"github.com/velopulent/tako/internal/logging"
+	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/sessiond"
 	"go.uber.org/zap"
 )
@@ -38,13 +40,22 @@ func run() int {
 	logger.Info("process starting")
 
 	err = nil
+	updates := distro.NewUpdateService()
 	switch os.Args[1] {
 	case "serve":
 		err = serve(os.Args[2:])
 	case "sessiond":
-		err = sessiond.Run(os.Args[2:])
+		executable, executableErr := os.Executable()
+		if executableErr != nil {
+			err = executableErr
+			break
+		}
+		updates.UseWorker(executable)
+		err = sessiond.Run(os.Args[2:], updates)
 	case "bridge":
-		err = bridge.Run(os.Stdin, os.Stdout, os.Stderr)
+		err = bridge.Run(os.Stdin, os.Stdout, os.Stderr, updates)
+	case "update-worker":
+		err = runUpdateWorker(os.Args[2:], updates)
 	case "help", "--help", "-h":
 		usage()
 		return 0
@@ -119,4 +130,17 @@ func usage() {
   tako serve [--config path] [--dev]  unprivileged HTTPS gateway
   tako sessiond [--socket path] [--config path] privileged PAM/session boundary
   tako bridge                          per-user framed RPC bridge`)
+}
+
+func runUpdateWorker(args []string, updates *platform.UpdateService) error {
+	flags := flag.NewFlagSet("update-worker", flag.ContinueOnError)
+	jobFile := flags.String("job-file", "", "root-owned update job file")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	operation, err := platform.ReadUpdateWorkerJob(*jobFile)
+	if err != nil {
+		return err
+	}
+	return updates.RunWorker(context.Background(), operation, os.Stdout)
 }
