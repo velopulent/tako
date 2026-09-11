@@ -108,17 +108,20 @@ func (hostProbe) BusNames(ctx context.Context) (map[string]bool, error) {
 	}
 	var activatable []string
 	if err := conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.ListActivatableNames", 0).Store(&activatable); err != nil {
-		return nil, err
+		return busNameInventory(names, nil), nil
 	}
-	names = append(names, activatable...)
-	result := make(map[string]bool, len(names))
-	for _, name := range names {
+	return busNameInventory(names, activatable), nil
+}
+
+func busNameInventory(active, activatable []string) map[string]bool {
+	result := make(map[string]bool, len(active)+len(activatable))
+	for _, name := range active {
 		result["active:"+name] = true
 	}
 	for _, name := range activatable {
 		result["available:"+name] = true
 	}
-	return result, nil
+	return result
 }
 
 func (hostProbe) CommandVersion(ctx context.Context, name string, arguments ...string) (string, bool) {
@@ -293,8 +296,8 @@ func updateCapability(ctx context.Context, services ...*UpdateService) Capabilit
 }
 
 func networkCapability(ctx context.Context, probe runtimeProbe, names map[string]bool, busErr error) Capability {
-	networkManager := busErr == nil && busActive(names, "org.freedesktop.NetworkManager")
-	networkd := (busErr == nil && busActive(names, "org.freedesktop.network1")) || probe.FileExists("/run/systemd/netif")
+	networkManager := busErr == nil && busActive(names, networkManagerService)
+	networkd := busErr == nil && busActive(names, networkdBusName)
 	if networkManager && networkd {
 		return Capability{ID: "network", State: StateConflicted, Backend: "NetworkManager+networkd", Readable: true, Contract: "conflicted-read-only", Reason: "Multiple network managers are active; mutations fail closed", SetupGuidance: "Choose one network manager for each interface before editing in Tako."}
 	}

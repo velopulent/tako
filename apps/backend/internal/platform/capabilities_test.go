@@ -23,6 +23,22 @@ func TestReadBoundedRejectsOversizedCommandOutput(t *testing.T) {
 	}
 }
 
+func TestBusNameInventorySeparatesActiveAndActivatableNames(t *testing.T) {
+	names := busNameInventory(
+		[]string{"org.freedesktop.NetworkManager"},
+		[]string{"org.freedesktop.network1", "org.fedoraproject.FirewallD1"},
+	)
+	if !busActive(names, "org.freedesktop.NetworkManager") {
+		t.Fatal("active D-Bus name was not recorded")
+	}
+	if busActive(names, "org.freedesktop.network1") || busActive(names, "org.fedoraproject.FirewallD1") {
+		t.Fatalf("activatable D-Bus names were marked active: %#v", names)
+	}
+	if !busAvailable(names, "org.freedesktop.network1") || !busAvailable(names, "org.fedoraproject.FirewallD1") {
+		t.Fatalf("activatable D-Bus names were not recorded as available: %#v", names)
+	}
+}
+
 func TestInactiveUFWDoesNotConflictWithFirewalld(t *testing.T) {
 	capabilities := detect(context.Background(), fakeProbe{
 		bus:      map[string]bool{"org.fedoraproject.FirewallD1": true},
@@ -50,6 +66,15 @@ func TestActivatableManagersDoNotCreateOwnershipConflict(t *testing.T) {
 	}
 	if firewall := findCapability(t, capabilities, "firewall"); firewall.State == StateConflicted || firewall.Backend != "UFW" {
 		t.Fatalf("activatable firewalld caused false conflict: %#v", firewall)
+	}
+}
+
+func TestNetworkdRuntimeDirectoryDoesNotImplyRunningNetworkd(t *testing.T) {
+	capability := networkCapability(context.Background(), fakeProbe{
+		files: map[string]bool{"/run/systemd/netif": true},
+	}, map[string]bool{}, nil)
+	if capability.State != StateUnavailable || capability.Backend != "none" || capability.Mutable {
+		t.Fatalf("runtime directory caused a false networkd capability: %#v", capability)
 	}
 }
 
