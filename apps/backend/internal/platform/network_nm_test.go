@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/godbus/dbus/v5"
 )
 
 type fakeNetworkManagerCheckpoint struct {
@@ -13,6 +15,17 @@ type fakeNetworkManagerCheckpoint struct {
 	destroyed []string
 	rolled    []string
 }
+
+type fakeNetworkManagerConnection struct {
+	target string
+	err    error
+}
+
+func (fake *fakeNetworkManagerConnection) ConnectionForInterface(context.Context, string) (string, error) {
+	return fake.target, fake.err
+}
+
+func (*fakeNetworkManagerConnection) Close() {}
 
 func (fake *fakeNetworkManagerCheckpoint) Create(_ context.Context, iface string, timeout uint32) (string, error) {
 	fake.created = append(fake.created, iface+":"+string(rune(timeout)))
@@ -73,6 +86,66 @@ func TestNetworkManagerModifyIsPersistentAndSupportsBothFamilies(t *testing.T) {
 	}
 }
 
+func TestNetworkManagerMutationResolvesActiveProfileWhenConnectionIsOmitted(t *testing.T) {
+	commands := make([][]string, 0, 2)
+	restoreRunner := setNetworkCommandRunner(func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), arguments...))
+		return nil, nil
+	})
+	defer restoreRunner()
+	restoreResolver := setNetworkManagerConnectionFactory(func() (networkManagerConnectionClient, error) {
+		return &fakeNetworkManagerConnection{target: "9d3e3c2a-6f14-4a56-9f9e-2cc2a0a8d4f5"}, nil
+	})
+	defer restoreResolver()
+
+	err := applyNetworkManagerPersistent(context.Background(), NetworkOperation{
+		Action:    "dhcp",
+		Interface: "eno1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("NetworkManager commands = %#v", commands)
+	}
+	if len(commands[0]) < 3 || commands[0][0] != "connection" || commands[0][1] != "modify" || commands[0][2] != "9d3e3c2a-6f14-4a56-9f9e-2cc2a0a8d4f5" {
+		t.Fatalf("profile UUID was not used for modification: %#v", commands[0])
+	}
+	if len(commands[1]) < 5 || commands[1][0] != "connection" || commands[1][1] != "up" || commands[1][2] != "9d3e3c2a-6f14-4a56-9f9e-2cc2a0a8d4f5" || commands[1][3] != "ifname" || commands[1][4] != "eno1" {
+		t.Fatalf("profile UUID was not used for activation: %#v", commands[1])
+	}
+}
+
+func TestNetworkManagerMutationRejectsMissingActiveProfile(t *testing.T) {
+	restoreResolver := setNetworkManagerConnectionFactory(func() (networkManagerConnectionClient, error) {
+		return &fakeNetworkManagerConnection{err: errNetworkManagerConnectionMissing}, nil
+	})
+	defer restoreResolver()
+
+	err := applyNetworkManagerPersistent(context.Background(), NetworkOperation{Action: "dhcp", Interface: "eno1"})
+	if !errors.Is(err, ErrNetworkUnavailable) {
+		t.Fatalf("missing active profile error = %v", err)
+	}
+}
+
+func TestNetworkManagerConnectionUUIDRequiresConnectionSettings(t *testing.T) {
+	if _, err := networkManagerConnectionUUID(nil); err == nil {
+		t.Fatal("missing connection settings were accepted")
+	}
+	if _, err := networkManagerConnectionUUID(map[string]map[string]dbus.Variant{
+		"connection": {"uuid": dbus.MakeVariant("not a uuid")},
+	}); err == nil {
+		t.Fatal("invalid connection UUID was accepted")
+	}
+	uuid := "9d3e3c2a-6f14-4a56-9f9e-2cc2a0a8d4f5"
+	got, err := networkManagerConnectionUUID(map[string]map[string]dbus.Variant{
+		"connection": {"uuid": dbus.MakeVariant(uuid)},
+	})
+	if err != nil || got != uuid {
+		t.Fatalf("connection UUID = %q, err=%v", got, err)
+	}
+}
+
 func TestNetworkManagerCheckpointUsesDBusLifecycle(t *testing.T) {
 	fake := &fakeNetworkManagerCheckpoint{}
 	restore := setNetworkManagerCheckpointFactory(func() (networkManagerCheckpointClient, error) { return fake, nil })
@@ -100,4 +173,3 @@ func TestNetworkManagerCheckpointRejectsUntrustedPath(t *testing.T) {
 		t.Fatalf("untrusted checkpoint error = %v", err)
 	}
 }
-

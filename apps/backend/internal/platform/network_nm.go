@@ -70,6 +70,13 @@ func (client *dbusNetworkManagerCheckpointClient) Create(ctx context.Context, if
 	if err := client.connection.Object(networkManagerService, networkManagerPath).CallWithContext(ctx, networkManagerService+".GetDeviceByIpIface", 0, iface).Store(&device); err != nil {
 		return "", err
 	}
+	var managed dbus.Variant
+	if err := client.connection.Object(networkManagerService, device).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, "org.freedesktop.NetworkManager.Device", "Managed").Store(&managed); err != nil {
+		return "", err
+	}
+	if value, ok := managed.Value().(bool); !ok || !value {
+		return "", ErrNetworkOwnership
+	}
 	var checkpoint dbus.ObjectPath
 	if err := client.connection.Object(networkManagerService, networkManagerPath).CallWithContext(ctx, networkManagerService+".CheckpointCreate", 0, []dbus.ObjectPath{device}, timeout, networkManagerFlags).Store(&checkpoint); err != nil {
 		return "", err
@@ -149,7 +156,11 @@ func fmtNetworkManagerUnavailable(err error) error {
 func applyNetworkManagerPersistent(ctx context.Context, operation NetworkOperation) error {
 	target := operation.Connection
 	if target == "" {
-		target = operation.Interface
+		var err error
+		target, err = networkManagerConnectionForInterface(ctx, operation.Interface)
+		if err != nil {
+			return fmtNetworkManagerUnavailable(err)
+		}
 	}
 	arguments, err := networkManagerModifyArguments(operation, target)
 	if err != nil {
@@ -167,6 +178,9 @@ func applyNetworkManagerPersistent(ctx context.Context, operation NetworkOperati
 }
 
 func networkManagerModifyArguments(operation NetworkOperation, target string) ([]string, error) {
+	if !validNetworkConnection(target) {
+		return nil, ErrInvalidNetworkOperation
+	}
 	arguments := []string{"connection", "modify", target}
 	appendProperty := func(name, value string) { arguments = append(arguments, name, value) }
 	switch operation.Action {
@@ -366,16 +380,7 @@ func validNetworkToken(value string) bool {
 }
 
 func networkBackendOwnsSnapshot(backend string, ownership NetworkOwnership) bool {
-	if contains(ownership.Detected, "Netplan") && !(backend == "Netplan" && ownership.ActiveOwner == "Netplan" && len(ownership.Detected) == 1) {
-		// Netplan may render either NetworkManager or networkd. Until the
-		// renderer is resolved per interface, refuse to mutate the generated
-		// runtime manager or the merged YAML set.
-		return false
-	}
-	if ownership.ActiveOwner == backend {
-		return true
-	}
-	return false
+	return backend == "NetworkManager" && !ownership.Conflicted && ownership.ActiveOwner == "NetworkManager"
 }
 
 func newNetworkToken(prefix string) string {

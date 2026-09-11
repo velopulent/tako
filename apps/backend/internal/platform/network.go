@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -165,13 +164,15 @@ func NetworkSnapshotRead(ctx context.Context) (NetworkSnapshot, error) {
 		}
 	}
 	snapshot.DNS = readDNSConfiguration()
-	snapshot.Ownership = detectNetworkOwnership()
+	snapshot.Ownership = detectNetworkOwnership(ctx)
 	for index := range snapshot.Interfaces {
-		if snapshot.Ownership.ActiveOwner != "" {
+		if snapshot.Ownership.Conflicted {
+			snapshot.Interfaces[index].Conflict = true
+			snapshot.Interfaces[index].Reason = snapshot.Ownership.Reason
+		}
+		if snapshot.Ownership.ActiveOwner != "" && snapshot.Ownership.ActiveOwner != "kernel" {
 			snapshot.Interfaces[index].Manager = snapshot.Ownership.ActiveOwner
 			snapshot.Interfaces[index].Owner = snapshot.Ownership.ActiveOwner
-			snapshot.Interfaces[index].Conflict = snapshot.Ownership.Conflicted
-			snapshot.Interfaces[index].Reason = snapshot.Ownership.Reason
 		}
 	}
 	snapshot.Fingerprint = networkFingerprint(snapshot)
@@ -225,50 +226,6 @@ func readDNSConfiguration() []string {
 		}
 	}
 	return result
-}
-
-func detectNetworkOwnership() NetworkOwnership {
-	detected := []string{}
-	runtime := []string{}
-	if fileExists("/run/NetworkManager") || fileExists("/run/NetworkManager/nm-dhcp-client.action") {
-		detected = append(detected, "NetworkManager")
-		runtime = append(runtime, "NetworkManager")
-	}
-	if fileExists("/run/systemd/netif") || fileExists("/run/systemd/system/systemd-networkd.service") {
-		detected = append(detected, "systemd-networkd")
-		runtime = append(runtime, "systemd-networkd")
-	}
-	if fileExists("/etc/netplan") {
-		if entries, err := filepath.Glob("/etc/netplan/*.yaml"); err == nil && len(entries) > 0 {
-			detected = append(detected, "Netplan")
-		}
-	}
-	if fileExists("/etc/network/interfaces") {
-		detected = append(detected, "ifupdown")
-	}
-	sort.Strings(detected)
-	ownership := NetworkOwnership{Detected: detected}
-	sort.Strings(runtime)
-	if len(runtime) == 1 {
-		ownership.ActiveOwner = runtime[0]
-	} else if len(runtime) > 1 {
-		ownership.Conflicted = true
-		ownership.Reason = "Multiple active network owners were detected; configuration mutations are disabled."
-	} else {
-		configured := append([]string(nil), detected...)
-		configured = removeString(configured, "Netplan")
-		if len(configured) == 0 && contains(detected, "Netplan") {
-			ownership.ActiveOwner = "Netplan"
-		} else if len(configured) == 1 {
-			ownership.ActiveOwner = configured[0]
-		} else if len(configured) > 1 {
-			ownership.Conflicted = true
-			ownership.Reason = "Multiple configured network owners were detected without a running manager; configuration mutations are disabled."
-		} else {
-			ownership.ActiveOwner = "kernel"
-		}
-	}
-	return ownership
 }
 
 func networkFingerprint(snapshot NetworkSnapshot) string {
@@ -384,6 +341,9 @@ func ApplyNetworkOperation(ctx context.Context, operation NetworkOperation) (Net
 	if err := ValidateNetworkOperation(operation); err != nil {
 		return NetworkState{}, err
 	}
+	if operation.Backend != "NetworkManager" {
+		return NetworkState{}, ErrNetworkUnavailable
+	}
 	snapshot, err := NetworkSnapshotRead(ctx)
 	if err != nil {
 		return NetworkState{}, err
@@ -460,16 +420,6 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
-}
-
-func removeString(values []string, value string) []string {
-	result := values[:0]
-	for _, item := range values {
-		if item != value {
-			result = append(result, item)
-		}
-	}
-	return result
 }
 
 func networkErrorCode(err error) string {

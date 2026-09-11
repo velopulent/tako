@@ -195,13 +195,7 @@ func Interfaces() ([]Interface, error) {
 		for _, address := range addresses {
 			values = append(values, address.String())
 		}
-		manager := "kernel"
-		if fileExists("/run/NetworkManager") {
-			manager = "NetworkManager"
-		} else if fileExists("/run/systemd/netif") {
-			manager = "systemd-networkd"
-		}
-		result = append(result, Interface{Name: item.Name, Index: item.Index, MTU: item.MTU, Hardware: item.HardwareAddr.String(), Addresses: values, Up: item.Flags&net.FlagUp != 0, RX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/rx_bytes")), TX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/tx_bytes")), Manager: manager})
+		result = append(result, Interface{Name: item.Name, Index: item.Index, MTU: item.MTU, Hardware: item.HardwareAddr.String(), Addresses: values, Up: item.Flags&net.FlagUp != 0, RX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/rx_bytes")), TX: readUint(filepath.Join("/sys/class/net", item.Name, "statistics/tx_bytes")), Manager: "kernel"})
 	}
 	return result, nil
 }
