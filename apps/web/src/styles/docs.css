@@ -1,20 +1,20 @@
-@import '@fontsource-variable/newsreader';
-@import '@fontsource-variable/dm-sans';
+@import "@fontsource-variable/newsreader";
+@import "@fontsource-variable/dm-sans";
 :root {
-  --sl-font: 'DM Sans Variable', sans-serif;
+  --sl-font: "DM Sans Variable", sans-serif;
   --sl-color-accent-low: #3e281f;
   --sl-color-accent: #b0472e;
   --sl-color-accent-high: #edb6a7;
   --sl-color-bg: #1b1b19;
 }
-:root[data-theme='light'] {
+:root[data-theme="light"] {
   --sl-color-accent-low: #f3e4dc;
   --sl-color-accent: #b0472e;
   --sl-color-accent-high: #8b3522;
   --sl-color-bg: #f6f5f0;
 }
 h1 {
-  font-family: 'Newsreader Variable', Georgia, serif;
+  font-family: "Newsreader Variable", Georgia, serif;
   font-weight: 400;
 }
 

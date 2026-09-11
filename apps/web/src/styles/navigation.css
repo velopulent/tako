@@ -122,7 +122,7 @@
   gap: 22px;
   border-bottom: 1px solid var(--line);
   padding: 13px 0;
-  font: 400 clamp(28px, 5vh, 48px)/1.15 var(--serif);
+  font: 400 clamp(28px, 5vh, 48px) / 1.15 var(--serif);
   letter-spacing: -0.03em;
   animation: menu-item-enter 0.45s both;
   animation-delay: calc(50ms + var(--item-index) * 45ms);
