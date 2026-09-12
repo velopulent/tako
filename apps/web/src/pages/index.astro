@@ -44,6 +44,15 @@ const features = [
     links: "Software updates / Hardware / Host",
   },
 ]
+
+const productUrl = new URL(
+  "/",
+  Astro.site ?? "https://tako.velopulent.com"
+).toString()
+const chatgptPrompt = `Go and search this URL: ${productUrl}
+
+Use the website as context. Explain in simple language what Tako is and how it could help me. Keep your response short and sweet, and suggest the most relevant ways it could help me based on what you learn from the site.`
+const chatgptUrl = `https://chatgpt.com/?prompt=${encodeURIComponent(chatgptPrompt)}`
 ---
 
 <Site>
@@ -62,6 +71,8 @@ const features = [
       <div class="hero-actions">
         <a class="button primary" href="https://github.com/velopulent/tako"
           >Explore on GitHub <Icon name="external" size={18} /></a
+        ><a class="button secondary" href={chatgptUrl}
+          >Learn how Tako helps you <Icon name="external" size={18} /></a
         ><a class="text-link" href="#features"
           >Meet your new dashboard <Icon name="arrow" size={18} /></a
         >

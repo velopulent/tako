@@ -231,6 +231,13 @@ summary:focus-visible {
 :root[data-theme="dark"] .primary {
   color: #1b1b19;
 }
+.secondary {
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.secondary:hover {
+  background: var(--soft);
+}
 .text-link {
   display: inline-flex;
   align-items: center;
