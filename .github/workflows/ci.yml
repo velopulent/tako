@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_call:
 
@@ -14,15 +15,94 @@ concurrency:
 
 env:
   BUN_VERSION: 1.4.0
+  ACTIONLINT_VERSION: 1.7.7
+  REDOCLY_CLI_VERSION: 1.34.0
+  STATICCHECK_VERSION: 2026.1
 
+# All jobs run in parallel with no `needs:` edges for fast failure.
+# No per-job path filtering: shared files (package.json, bun.lock, nx.json,
+# Go workspace/module files, .github/**, tools/**, packaging/**) can affect
+# several apps, so every job always runs. Predictable over clever.
+# Runner count per normal PR: 7 (was 3). distro-tags loops 7 tags in one
+# runner instead of a 7-way matrix; true distro package builds stay in
+# native-packages.yml / release.yml, not PR CI.
 jobs:
-  go-unit:
-    name: Go unit tests and coverage
+  repo-validation:
+    name: Repo validation
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Lint OpenAPI
+        run: bunx --bun @redocly/cli@${{ env.REDOCLY_CLI_VERSION }} lint --config .redocly.yaml apps/backend/api/openapi.yaml
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: ${{ env.ACTIONLINT_VERSION }}
+        run: |
+          set -euo pipefail
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64) arch=amd64 ;;
+            aarch64) arch=arm64 ;;
+            *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+          esac
+          bindir="${RUNNER_TEMP}/bin"
+          mkdir -p "$bindir"
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${arch}.tar.gz"
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$bindir" actionlint
+          echo "$bindir" >> "$GITHUB_PATH"
+      - run: actionlint
+      - name: Run shellcheck
+        run: |
+          set -euo pipefail
+          # ubuntu-24.04 images already ship shellcheck; never run
+          # apt-get update just for this. Fall back to install only when
+          # the preinstalled tool is genuinely absent.
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends shellcheck
+          fi
+          shellcheck --severity=error \
+            tools/package \
+            tools/package-check \
+            tools/tako-go.sh \
+            tools/tako-host-test \
+            tools/tako-integration \
+            apps/backend/packaging/*.sh \
+            apps/backend/packaging/scripts/deb/*.sh \
+            apps/backend/packaging/scripts/rpm/*.sh \
+            apps/backend/packaging/scripts/arch/*.sh
+      - name: Check shell syntax
+        run: |
+          set -euo pipefail
+          for script in \
+            tools/package \
+            tools/package-check \
+            tools/tako-go.sh \
+            apps/backend/packaging/scripts/test.sh \
+            apps/backend/packaging/scripts/deb/*.sh \
+            apps/backend/packaging/scripts/rpm/*.sh \
+            apps/backend/packaging/scripts/arch/*.sh; do
+            sh -n "$script"
+          done
+          for script in \
+            tools/tako-host-test \
+            tools/tako-integration \
+            apps/backend/packaging/smoke-test.sh \
+            apps/backend/packaging/lifecycle-test.sh; do
+            bash -n "$script"
+          done
+
+  backend-ubuntu:
+    name: Backend (ubuntu, authoritative)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       TAKO_DISTRO: ubuntu
-      GOCACHE: /tmp/tako-go-ci-cache
-      GO_COVERAGE_ENFORCE: ${{ vars.GO_COVERAGE_ENFORCE || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-linux-backend
@@ -33,41 +113,17 @@ jobs:
           cache-dependency-path: |
             apps/backend/go.sum
             go.work.sum
-      - name: Run Go suite with coverage
+      - name: Run Go race tests with coverage
         working-directory: apps/backend
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/coverage/go"
-          ../../tools/tako-go.sh test \
-            -covermode=atomic \
-            -coverprofile="$GITHUB_WORKSPACE/coverage/go/coverage.out" \
-            ./...
+          ../../tools/tako-go.sh test -race -covermode=atomic \
+            -coverprofile="$GITHUB_WORKSPACE/coverage/go/coverage.out" ./...
           go tool cover -func="$GITHUB_WORKSPACE/coverage/go/coverage.out" \
             | tee "$GITHUB_WORKSPACE/coverage/go/coverage.txt"
           go tool cover -html="$GITHUB_WORKSPACE/coverage/go/coverage.out" \
             -o "$GITHUB_WORKSPACE/coverage/go/coverage.html"
-      - name: Report Go coverage baseline
-        working-directory: apps/backend
-        run: |
-          set -euo pipefail
-          baseline=$(sed -n 's/^GO_STATEMENT_COVERAGE_BASELINE=//p' "$GITHUB_WORKSPACE/.github/coverage-baseline.env")
-          current=$(awk '/^total:/ { gsub("%", "", $NF); print $NF }' "$GITHUB_WORKSPACE/coverage/go/coverage.txt")
-          test -n "$baseline"
-          test -n "$current"
-          enforcement="informational until the first stable CI baseline run"
-          if [ "${GO_COVERAGE_ENFORCE:-false}" = true ]; then
-            enforcement="blocking"
-          fi
-          {
-            echo "### Go coverage"
-            echo "- Current statement coverage: ${current}%"
-            echo "- Recorded baseline: ${baseline}%"
-            echo "- Enforcement: ${enforcement}"
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "${GO_COVERAGE_ENFORCE:-false}" = true ] && awk "BEGIN { exit !($current < $baseline) }"; then
-            echo "Go coverage regressed from ${baseline}% to ${current}%" >&2
-            exit 1
-          fi
       - name: Upload Go coverage
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -76,88 +132,82 @@ jobs:
           path: coverage/go/
           if-no-files-found: warn
           retention-days: 14
-
-  go-race:
-    name: Go race tests
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-linux-backend
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: apps/backend/go.mod
-          cache: true
-          cache-dependency-path: |
-            apps/backend/go.sum
-            go.work.sum
-      - name: Run Go race suite
+      - name: Run go vet
         working-directory: apps/backend
-        env:
-          TAKO_DISTRO: ubuntu
-          GOCACHE: /tmp/tako-go-race-cache
-        run: ../../tools/tako-go.sh test -race ./...
-
-  go-quality:
-    name: Go vet and static analysis
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-linux-backend
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: apps/backend/go.mod
-          cache: true
-          cache-dependency-path: |
-            apps/backend/go.sum
-            go.work.sum
+        run: ../../tools/tako-go.sh vet ./...
       - name: Install staticcheck
         env:
           GOBIN: ${{ runner.temp }}/bin
         run: |
           mkdir -p "$GOBIN"
-          go install honnef.co/go/tools/cmd/staticcheck@2026.1
+          go install honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }}
           echo "$GOBIN" >> "$GITHUB_PATH"
-      - name: Run go vet
-        working-directory: apps/backend
-        env:
-          TAKO_DISTRO: ubuntu
-          GOCACHE: /tmp/tako-go-quality-cache
-        run: ../../tools/tako-go.sh vet ./...
       - name: Run staticcheck
         working-directory: apps/backend
-        env:
-          GOCACHE: /tmp/tako-go-quality-cache
-          STATICCHECK_CACHE: ${{ runner.temp }}/staticcheck-cache
-        # The first staticcheck baseline keeps pre-existing dead-code and
-        # package-comment findings informational; all other checks are gated.
         run: staticcheck -checks=all,-U1000,-SA1019,-S1017,-S1016,-ST1000,-ST1020 -tags ubuntu ./...
 
-  dashboard-tests:
-    name: Dashboard unit tests
+  distro-tags:
+    name: Distro tags
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-linux-backend
+      - uses: actions/setup-go@v5
         with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - run: bun install --frozen-lockfile
-      - run: bun nx test dashboard
+          go-version-file: apps/backend/go.mod
+          cache: true
+          cache-dependency-path: |
+            apps/backend/go.sum
+            go.work.sum
+      - name: Validate every distro build tag on one host
+        working-directory: apps/backend
+        run: |
+          set -euo pipefail
+          # Same Ubuntu host for all tags: validates tag-gated Go code
+          # compiles and unit tests pass per distro. Not true distro
+          # environments; real package/install testing stays in
+          # native-packages.yml. Ubuntu is excluded here: backend-ubuntu
+          # (race, coverage, vet, staticcheck) and build already cover it.
+          # No race, coverage, or staticcheck here; backend-ubuntu remains
+          # the authoritative quality job. `go list` is omitted: vet, test,
+          # and build each resolve the full package graph for the selected
+          # tag, so list would prove nothing extra.
+          # No tag needs runner isolation: each tako-go.sh invocation is a
+          # fresh `go` process with its own -tags value, no daemon or
+          # filesystem state leaks between iterations.
+          for tag in debian fedora rhel rocky almalinux opensuse archlinux; do
+            echo "--- TAKO_DISTRO=$tag ---"
+            TAKO_DISTRO="$tag" ../../tools/tako-go.sh vet ./...
+            TAKO_DISTRO="$tag" ../../tools/tako-go.sh test ./...
+            TAKO_DISTRO="$tag" ../../tools/tako-go.sh build ./...
+          done
+      - name: Verify untagged build fails on the distro guard
+        working-directory: apps/backend
+        run: |
+          set -euo pipefail
+          # updates_tag_required.go references undefined
+          # distro_build_tag_required so a build without a supported tag
+          # fails. Assert the guard reason, not just any failure.
+          set +e
+          output=$(go build ./... 2>&1)
+          build_status=$?
+          set -e
+          if [ "$build_status" -eq 0 ]; then
+            echo "expected untagged backend build to fail" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$output" | grep -Fq 'distro_build_tag_required'; then
+            echo "untagged build failed, but not because of the distro-tag guard:" >&2
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+          echo "untagged build correctly rejected: distro_build_tag_required"
 
-  dashboard-quality:
-    name: Dashboard typecheck and lint
+  dashboard:
+    name: Dashboard
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - run: bun install --frozen-lockfile
-      - run: bun nx typecheck dashboard
-      - run: bun nx lint dashboard
-
-  dashboard-coverage:
-    name: Dashboard coverage
-    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -173,10 +223,17 @@ jobs:
           path: apps/dashboard/coverage/
           if-no-files-found: warn
           retention-days: 14
+      - run: bun nx typecheck dashboard
+      - run: bun nx lint dashboard
+      # No production build here. The dashboard production build runs exactly
+      # once in the build job via `nx build backend` (dependsOn ^build).
+      # Separate runners share no local Nx cache, so building here too would
+      # mean building twice with no benefit.
 
   web:
-    name: Web typecheck, lint, and build
+    name: Web
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       ASTRO_TELEMETRY_DISABLED: "1"
     steps:
@@ -185,12 +242,17 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - run: bun run web:check
-      - run: bun run web:build
+      - run: bun nx lint web
+      # Typecheck runs through the build target's dependsOn graph, not as a
+      # separate step.
+      - run: bun nx build web
 
-  backend-build:
-    name: Backend binary build
+  build:
+    name: Build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TAKO_DISTRO: ubuntu
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-linux-backend
@@ -205,15 +267,22 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - name: Build backend for Ubuntu
-        env:
-          TAKO_DISTRO: ubuntu
-        run: bun nx build backend
+      # Builds the dashboard production bundle exactly once (via ^build)
+      # then the backend binary with embedded dashboard. Ubuntu tag only;
+      # other tags are compile-checked in distro-tags.
+      - run: bun run build
 
-  packaging:
-    name: Packaging manifest and hook checks
+  packaging-validation:
+    name: Packaging validation
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TAKO_DISTRO: ubuntu
     steps:
+      # Both setups are load-bearing: package:check probes PAM headers via
+      # cc -lpam and runs systemd-analyze verify (setup-linux-backend), and
+      # reads `go env` (CGO_ENABLED, GOARCH) plus `goreleaser check` (setup-go
+      # plus GoReleaser below). It compiles no Go code itself.
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-linux-backend
       - uses: actions/setup-go@v5
@@ -227,88 +296,14 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - name: Install GoReleaser for static configuration checks
-        uses: goreleaser/goreleaser-action@v7
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "v${{ vars.GORELEASER_VERSION || '2.18.0' }}"
           install-only: true
+      # package:check runs goreleaser check, manifest cross-checks,
+      # systemd-analyze verify, plus mocked maintainer-script and host
+      # tests. Safe for PR CI. Full snapshot builds, native Docker
+      # package builds, and tools/tako-integration stay in release-only
+      # workflows.
       - run: bun run package:check
-      - run: bun test tools/release-gate.test.ts
-
-  openapi-contract:
-    name: OpenAPI contract validation
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - run: bunx --bun @redocly/cli@1.34.0 lint --config .redocly.yaml apps/backend/api/openapi.yaml
-
-  workflow-quality:
-    name: GitHub workflow validation
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: apps/backend/go.mod
-          cache: true
-          cache-dependency-path: |
-            apps/backend/go.sum
-            go.work.sum
-      - name: Install actionlint
-        env:
-          GOBIN: ${{ runner.temp }}/bin
-        run: |
-          mkdir -p "$GOBIN"
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
-          echo "$GOBIN" >> "$GITHUB_PATH"
-      - run: actionlint
-
-  shell-quality:
-    name: Shell validation
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install shellcheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends shellcheck
-      - name: Run shellcheck
-        run: >-
-          shellcheck --severity=error
-          tools/package
-          tools/package-check
-          tools/tako-go.sh
-          tools/tako-host-test
-          tools/tako-integration
-          apps/backend/packaging/*.sh
-          apps/backend/packaging/scripts/deb/*.sh
-          apps/backend/packaging/scripts/rpm/*.sh
-          apps/backend/packaging/scripts/arch/*.sh
-
-  pr-gate:
-    name: PR gate
-    if: ${{ always() }}
-    needs:
-      - go-unit
-      - go-race
-      - go-quality
-      - dashboard-tests
-      - dashboard-quality
-      - dashboard-coverage
-      - web
-      - backend-build
-      - packaging
-      - openapi-contract
-      - workflow-quality
-      - shell-quality
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Fail if a required check failed, was cancelled, or skipped
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
-        run: exit 1
-      - name: All required checks passed
-        run: echo "All required CI checks passed"
