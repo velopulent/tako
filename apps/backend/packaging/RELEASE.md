@@ -1,6 +1,6 @@
-# Beta release process
+# Release process
 
-`targets.json` is the source of truth for the beta support matrix. It currently
+`targets.json` is the source of truth for the support matrix. It currently
 contains the 15 native combinations below:
 
 | Family | Release | Architectures |
@@ -45,27 +45,18 @@ The `native-packages.yml` workflow expands the manifest and builds each target
 in its declared image. The arm64 entries require an arm64 GitHub runner; an
 amd64 runner cannot silently satisfy them. The RHEL image is the public UBI
 image named by the manifest. If an image tag or hosted runner is unavailable,
-the target remains pending or fails and the beta release stays blocked.
+the target remains pending or fails and the release stays blocked.
 
-The reusable `vm-validation.yml` workflow consumes native artifacts from the
-same beta run (use the beta workflow for manual end-to-end validation). It runs `packaging/vm-test.sh` on a disposable
-VM runner carrying the `vm_label` from the manifest. These labels describe an
-operator-provided runner contract; this repository does not contain VM hosts,
-credentials, or evidence that a VM has run. Each successful invocation writes
-one release input record containing the tested package digest. A failed or
-missing record is a hard failure.
-
-PR and push CI run on GitHub-hosted runners. Privileged VM integration runs
-on its schedule, by manual dispatch, and as a required beta release gate; it
-is not a PR gate because it requires operator-provided disposable runners.
-
-The beta workflow publishes only after all required CI jobs, VM integration, all native package
-jobs, and every manifest target's VM evidence pass. It verifies each package digest against its VM evidence, then assembles packages,
-writes `dependency-inventory.json`, creates `checksums.txt`, signs that checksum
-manifest with keyless Sigstore signing, and emits GitHub build provenance. The
-workflow uses the repository's ephemeral `GITHUB_TOKEN`; no package registry,
-VM host, signing key, password, or deployment credential is stored in this
-repository.
+The `release.yml` workflow runs CI, builds every manifest target with
+`native-packages.yml` on GitHub-hosted runners, assembles one package per
+target, and writes `checksums.txt`. It publishes a GitHub release for any
+`v*` tag; manual dispatch builds and validates without publishing. The tag
+is the release type: a hyphenated suffix (`v0.3.0-beta1`, `v0.3.0-alpha2`,
+`v0.3.0-rc1`) publishes as a prerelease, a clean version (`v1.2.0`)
+publishes as a stable release. Malformed tags fail fast before any packages
+build. There is no VM evidence gate, no signing, and no provenance
+attestation; validation of installed systems happens separately through the
+lifecycle harness inside a disposable VM you provide.
 
 Run the Arch lifecycle harness inside a disposable Arch VM when both package
 versions are available:
