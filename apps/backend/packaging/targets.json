@@ -35,8 +35,7 @@
       "package_format": "deb",
       "package_name": "debian_amd64",
       "pam_source": "tako.debian",
-      "branding": "debian",
-      "vm_label": "tako-vm-debian13-amd64"
+      "branding": "debian"
     },
     {
       "id": "debian13-arm64",
@@ -52,8 +51,7 @@
       "package_format": "deb",
       "package_name": "debian_arm64",
       "pam_source": "tako.debian",
-      "branding": "debian",
-      "vm_label": "tako-vm-debian13-arm64"
+      "branding": "debian"
     },
     {
       "id": "ubuntu2604-amd64",
@@ -69,8 +67,7 @@
       "package_format": "deb",
       "package_name": "ubuntu_amd64",
       "pam_source": "tako.debian",
-      "branding": "ubuntu",
-      "vm_label": "tako-vm-ubuntu2604-amd64"
+      "branding": "ubuntu"
     },
     {
       "id": "ubuntu2604-arm64",
@@ -86,8 +83,7 @@
       "package_format": "deb",
       "package_name": "ubuntu_arm64",
       "pam_source": "tako.debian",
-      "branding": "ubuntu",
-      "vm_label": "tako-vm-ubuntu2604-arm64"
+      "branding": "ubuntu"
     },
     {
       "id": "fedora44-amd64",
@@ -102,8 +98,7 @@
       "package_format": "rpm",
       "package_name": "fedora_amd64",
       "pam_source": "tako.redhat",
-      "branding": "fedora",
-      "vm_label": "tako-vm-fedora44-amd64"
+      "branding": "fedora"
     },
     {
       "id": "fedora44-arm64",
@@ -118,8 +113,7 @@
       "package_format": "rpm",
       "package_name": "fedora_arm64",
       "pam_source": "tako.redhat",
-      "branding": "fedora",
-      "vm_label": "tako-vm-fedora44-arm64"
+      "branding": "fedora"
     },
     {
       "id": "rhel102-amd64",
@@ -134,8 +128,7 @@
       "package_format": "rpm",
       "package_name": "rhel_amd64",
       "pam_source": "tako.redhat",
-      "branding": "rhel",
-      "vm_label": "tako-vm-rhel102-amd64"
+      "branding": "rhel"
     },
     {
       "id": "rhel102-arm64",
@@ -150,8 +143,7 @@
       "package_format": "rpm",
       "package_name": "rhel_arm64",
       "pam_source": "tako.redhat",
-      "branding": "rhel",
-      "vm_label": "tako-vm-rhel102-arm64"
+      "branding": "rhel"
     },
     {
       "id": "rocky102-amd64",
@@ -166,8 +158,7 @@
       "package_format": "rpm",
       "package_name": "rocky_amd64",
       "pam_source": "tako.redhat",
-      "branding": "rocky",
-      "vm_label": "tako-vm-rocky102-amd64"
+      "branding": "rocky"
     },
     {
       "id": "rocky102-arm64",
@@ -182,8 +173,7 @@
       "package_format": "rpm",
       "package_name": "rocky_arm64",
       "pam_source": "tako.redhat",
-      "branding": "rocky",
-      "vm_label": "tako-vm-rocky102-arm64"
+      "branding": "rocky"
     },
     {
       "id": "almalinux102-amd64",
@@ -198,8 +188,7 @@
       "package_format": "rpm",
       "package_name": "almalinux_amd64",
       "pam_source": "tako.redhat",
-      "branding": "almalinux",
-      "vm_label": "tako-vm-almalinux102-amd64"
+      "branding": "almalinux"
     },
     {
       "id": "almalinux102-arm64",
@@ -214,8 +203,7 @@
       "package_format": "rpm",
       "package_name": "almalinux_arm64",
       "pam_source": "tako.redhat",
-      "branding": "almalinux",
-      "vm_label": "tako-vm-almalinux102-arm64"
+      "branding": "almalinux"
     },
     {
       "id": "opensuse160-amd64",
@@ -231,8 +219,7 @@
       "package_format": "rpm",
       "package_name": "opensuse_amd64",
       "pam_source": "tako.opensuse",
-      "branding": "opensuse",
-      "vm_label": "tako-vm-opensuse160-amd64"
+      "branding": "opensuse"
     },
     {
       "id": "opensuse160-arm64",
@@ -248,8 +235,7 @@
       "package_format": "rpm",
       "package_name": "opensuse_arm64",
       "pam_source": "tako.opensuse",
-      "branding": "opensuse",
-      "vm_label": "tako-vm-opensuse160-arm64"
+      "branding": "opensuse"
     },
     {
       "id": "arch-rolling-amd64",
@@ -264,8 +250,7 @@
       "package_format": "archlinux",
       "package_name": "archlinux_amd64",
       "pam_source": "tako",
-      "branding": "archlinux",
-      "vm_label": "tako-vm-arch-rolling-amd64"
+      "branding": "archlinux"
     }
   ]
 }

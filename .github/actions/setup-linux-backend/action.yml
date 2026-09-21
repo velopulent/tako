@@ -7,9 +7,17 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends \
-          gcc \
-          libpam0g-dev \
-          libsystemd-dev \
-          systemd
+        # Only hit apt when something is actually missing. Each CI job runs
+        # this once on a fresh runner, so per-job cost is one update at most.
+        # Callers needing several distro tags must loop tags in a single job
+        # instead of adding a matrix that repeats this setup.
+        missing=()
+        for pkg in gcc libpam0g-dev libsystemd-dev systemd; do
+          if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            missing+=("$pkg")
+          fi
+        done
+        if [ "${#missing[@]}" -gt 0 ]; then
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "${missing[@]}"
+        fi

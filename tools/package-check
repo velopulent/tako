@@ -53,7 +53,7 @@ const config = Bun.YAML.parse(await Bun.file(".goreleaser.yaml").text());
 const builds = new Map((config.builds ?? []).map((build) => [build.id, build]));
 const packageIds = new Set((config.nfpms ?? []).map((pkg) => pkg.id));
 for (const target of targets) {
-  for (const key of ["id", "distribution", "release", "image", "arch", "goarch", "build_tag", "build_id", "package_id", "package_format", "package_name", "pam_source", "branding", "vm_label"]) {
+  for (const key of ["id", "distribution", "release", "image", "arch", "goarch", "build_tag", "build_id", "package_id", "package_format", "package_name", "pam_source", "branding"]) {
     if (typeof target[key] !== "string" || target[key] === "") throw new Error(`${target.id ?? "target"} is missing ${key}`);
   }
   if (ids.has(target.id)) throw new Error(`duplicate target id: ${target.id}`);
