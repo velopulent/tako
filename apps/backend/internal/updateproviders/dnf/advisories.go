@@ -10,12 +10,6 @@ import (
 	"github.com/velopulent/tako/internal/platform"
 )
 
-const (
-	maxAdvisoryText = 4096
-	maxSummaryText  = 1024
-	maxAdvisoryURLs = 16
-)
-
 // advisory is the subset of `dnf5 advisory info --json` that the inventory uses.
 type advisory struct {
 	Name        string `json:"Name"`
@@ -41,32 +35,28 @@ func enrich(ctx context.Context, dnf5 bool, items []platform.UpdatePackage) []pl
 		return items
 	}
 	installed := installedVersions(ctx, items)
-	var byPackage map[string]advisory
+	for index := range items {
+		if items[index].CurrentVersion == "" {
+			items[index].CurrentVersion = installed[packageKey(items[index].Name, items[index].Architecture)]
+		}
+	}
+	var values []advisory
 	if dnf5 {
 		r := platform.RunUpdateCommand(ctx, "dnf", []string{"--cacheonly", "--quiet", "advisory", "info", "--updates", "--json"}, nil, nil)
 		if r.ExitCode == 0 {
-			byPackage = indexAdvisories(parseAdvisoryInfo(r.Output), items)
+			values = parseAdvisoryInfo(r.Output)
 		}
 	} else {
 		r := platform.RunUpdateCommand(ctx, "dnf", []string{"--cacheonly", "--quiet", "updateinfo", "list", "--updates"}, nil, nil)
 		if r.ExitCode == 0 {
-			byPackage = indexAdvisories(parseUpdateinfoList(r.Output), items)
+			values = parseUpdateinfoList(r.Output)
 		}
 	}
-	for index := range items {
-		item := &items[index]
-		key := packageKey(item.Name, item.Architecture)
-		if item.CurrentVersion == "" {
-			item.CurrentVersion = installed[key]
-		}
-		if value, ok := byPackage[key]; ok {
-			applyAdvisory(item, value)
-		}
-	}
+	platform.ApplyUpdateAdvisories(items, normalizeAdvisories(values))
 	return items
 }
 
-func packageKey(name, arch string) string { return name + "." + arch }
+func packageKey(name, arch string) string { return platform.UpdatePackageKey(name, arch) }
 
 func installedVersions(ctx context.Context, items []platform.UpdatePackage) map[string]string {
 	arguments := []string{"-q", "--qf", "%{NAME}\t%{ARCH}\t%{EPOCH}:%{VERSION}-%{RELEASE}\n"}
@@ -153,120 +143,30 @@ func splitNEVRA(nevra string) (string, string, string) {
 	if version <= 0 {
 		return "", "", ""
 	}
-	return rest[:version], stripEpoch(rest[version+1:]), arch
+	return rest[:version], platform.StripEpoch(rest[version+1:]), arch
 }
 
-func stripEpoch(version string) string {
-	if _, rest, ok := strings.Cut(version, ":"); ok {
-		return rest
-	}
-	return version
-}
-
-// indexAdvisories maps each pending package to the advisory that ships its
-// candidate version, falling back to the most severe advisory naming it.
-func indexAdvisories(values []advisory, items []platform.UpdatePackage) map[string]advisory {
-	candidates := map[string]string{}
-	for _, item := range items {
-		candidates[packageKey(item.Name, item.Architecture)] = stripEpoch(item.CandidateVersion)
-	}
-	index := map[string]advisory{}
-	exact := map[string]bool{}
+// normalizeAdvisories converts dnf advisories into the shared form and adds
+// the Bodhi page for Fedora updates.
+func normalizeAdvisories(values []advisory) []platform.UpdateAdvisory {
+	result := make([]platform.UpdateAdvisory, 0, len(values))
 	for _, value := range values {
+		normalized := platform.UpdateAdvisory{ID: value.Name, Title: value.Title, Type: value.Type, Severity: value.Severity, Description: value.Description}
+		if value.Issued > 0 {
+			normalized.Issued = time.Unix(value.Issued, 0)
+		}
+		for _, reference := range value.References {
+			normalized.References = append(normalized.References, platform.UpdateReference{Type: reference.Type, URL: reference.URL})
+		}
+		if strings.HasPrefix(value.Name, "FEDORA-") {
+			normalized.References = append(normalized.References, platform.UpdateReference{Type: "vendor", URL: "https://bodhi.fedoraproject.org/updates/" + value.Name})
+		}
 		for _, nevra := range value.Collections.Packages {
-			name, version, arch := splitNEVRA(nevra)
-			key := packageKey(name, arch)
-			candidate, pending := candidates[key]
-			if !pending || exact[key] {
-				continue
-			}
-			if version == candidate {
-				index[key], exact[key] = value, true
-				continue
-			}
-			if current, ok := index[key]; !ok || advisoryRank(value) > advisoryRank(current) {
-				index[key] = value
+			if name, version, arch := splitNEVRA(nevra); name != "" {
+				normalized.Packages = append(normalized.Packages, platform.UpdateAdvisoryPackage{Name: name, Architecture: arch, Version: version})
 			}
 		}
+		result = append(result, normalized)
 	}
-	return index
-}
-
-func advisoryRank(value advisory) int {
-	switch normalizeType(value.Type) {
-	case "security":
-		return 3
-	case "bugfix":
-		return 2
-	case "enhancement":
-		return 1
-	}
-	return 0
-}
-
-func normalizeType(value string) string {
-	switch strings.ToLower(value) {
-	case "security":
-		return "security"
-	case "bugfix":
-		return "bugfix"
-	case "enhancement", "newpackage":
-		return "enhancement"
-	}
-	return ""
-}
-
-func applyAdvisory(item *platform.UpdatePackage, value advisory) {
-	item.AdvisoryID = value.Name
-	item.GroupKey = value.Name
-	item.Severity = normalizeType(value.Type)
-	if item.Severity == "security" {
-		switch severity := strings.ToLower(value.Severity); severity {
-		case "critical", "important", "moderate", "low":
-			item.SecSeverity = severity
-		}
-	}
-	if value.Title != "" {
-		item.Summary = truncate(value.Title, maxSummaryText)
-	}
-	item.Description = truncate(strings.TrimSpace(value.Description), maxAdvisoryText)
-	if value.Issued > 0 {
-		item.Issued = time.Unix(value.Issued, 0).UTC().Format(time.RFC3339)
-	}
-	item.CVEUrls, item.BugUrls, item.VendorUrls = nil, nil, nil
-	for _, reference := range value.References {
-		if !strings.HasPrefix(reference.URL, "https://") && !strings.HasPrefix(reference.URL, "http://") {
-			continue
-		}
-		switch strings.ToLower(reference.Type) {
-		case "cve":
-			item.CVEUrls = appendBounded(item.CVEUrls, reference.URL)
-		case "bugzilla":
-			item.BugUrls = appendBounded(item.BugUrls, reference.URL)
-		default:
-			item.VendorUrls = appendBounded(item.VendorUrls, reference.URL)
-		}
-	}
-	if strings.HasPrefix(value.Name, "FEDORA-") {
-		item.VendorUrls = appendBounded(item.VendorUrls, "https://bodhi.fedoraproject.org/updates/"+value.Name)
-	}
-}
-
-func appendBounded(values []string, value string) []string {
-	if len(values) >= maxAdvisoryURLs || len(value) > 512 {
-		return values
-	}
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
-}
-
-func truncate(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	return strings.ToValidUTF8(value[:limit], "")
+	return result
 }

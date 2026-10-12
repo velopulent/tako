@@ -33,7 +33,11 @@ func (Provider) Inventory(ctx context.Context) ([]platform.UpdatePackage, error)
 	if r.ExitCode != 0 && r.ExitCode != 100 {
 		return nil, r.Err
 	}
-	return parseXML(r.Output), nil
+	items := parseXML(r.Output)
+	// Errata come from the cached repository metadata; packages without one
+	// stay unclassified.
+	platform.ApplyUpdateAdvisories(items, cachedAdvisories(items))
+	return items, nil
 }
 func (Provider) Refresh(ctx context.Context, force bool, emit func(platform.UpdateStreamEvent)) error {
 	args := []string{"--non-interactive", "--xmlout", "refresh"}

@@ -30,3 +30,25 @@ func TestParseHistory(t *testing.T) {
 		t.Fatalf("unexpected history: %#v", items)
 	}
 }
+
+func TestParseInventoryMarksSecuritySuites(t *testing.T) {
+	items := parseInventory(`Listing... Done
+libssl3/jammy-updates,jammy-security 3.0.2-0ubuntu1.18 amd64 [upgradable from: 3.0.2-0ubuntu1.15]
+curl/stable-security 7.88.1-10+deb12u8 amd64 [upgradable from: 7.88.1-10+deb12u7]
+tzdata/stable-updates 2025b-0+deb12u1 all [upgradable from: 2025a-0+deb12u1]
+libc6/oldstable/updates 2.28-10+deb10u4 amd64 [upgradable from: 2.28-10+deb10u3]
+`)
+	if len(items) != 4 {
+		t.Fatalf("unexpected inventory: %#v", items)
+	}
+	severity := map[string]string{}
+	for _, item := range items {
+		severity[item.Name] = item.Severity
+	}
+	if severity["libssl3"] != "security" || severity["curl"] != "security" || severity["libc6"] != "security" || severity["tzdata"] != "" {
+		t.Fatalf("unexpected severities: %#v", severity)
+	}
+	if items[0].Name != "curl" || items[0].CurrentVersion != "7.88.1-10+deb12u7" || items[0].Architecture != "amd64" {
+		t.Fatalf("unexpected fields: %#v", items[0])
+	}
+}

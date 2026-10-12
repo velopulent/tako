@@ -64,12 +64,7 @@ func TestEnrichmentPrefersAdvisoryForCandidateVersion(t *testing.T) {
 	  "collections":{"packages":["openssl-1:3.2-1.fc44.x86_64","openssl-3.2-1.fc44.src"]}}
 	]`)
 	items := []platform.UpdatePackage{{Name: "openssl", Architecture: "x86_64", CandidateVersion: "1:3.2-1.fc44"}, {Name: "zlib", Architecture: "x86_64", CandidateVersion: "1.3"}}
-	index := indexAdvisories(advisories, items)
-	for i := range items {
-		if value, ok := index[packageKey(items[i].Name, items[i].Architecture)]; ok {
-			applyAdvisory(&items[i], value)
-		}
-	}
+	platform.ApplyUpdateAdvisories(items, normalizeAdvisories(advisories))
 	got := items[0]
 	if got.AdvisoryID != "FEDORA-2026-new" || got.Severity != "bugfix" || got.SecSeverity != "" || got.Description != "New fix" {
 		t.Fatalf("unexpected advisory: %#v", got)

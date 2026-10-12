@@ -132,18 +132,35 @@ func (Provider) History(_ context.Context, limit int) ([]platform.UpdateHistoryE
 	return entries, nil
 }
 
-var aptLine = regexp.MustCompile(`^([^/\s]+)/\S+\s+(\S+)\s+(\S+)\s+\[upgradable from:\s*([^\]]+)\]`)
+var aptLine = regexp.MustCompile(`^([^/\s]+)/(\S+)\s+(\S+)\s+(\S+)\s+\[upgradable from:\s*([^\]]+)\]`)
 
 func parseInventory(output string) []platform.UpdatePackage {
 	items := []platform.UpdatePackage{}
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() && len(items) < platform.MaxUpdatePackages {
 		match := aptLine.FindStringSubmatch(strings.TrimSpace(scanner.Text()))
-		if len(match) == 5 {
-			items = append(items, platform.UpdatePackage{Name: match[1], CandidateVersion: match[2], Architecture: match[3], CurrentVersion: match[4]})
+		if len(match) == 6 {
+			item := platform.UpdatePackage{Name: match[1], CandidateVersion: match[3], Architecture: match[4], CurrentVersion: match[5]}
+			if fromSecuritySuite(match[2]) {
+				item.Severity = "security"
+			}
+			items = append(items, item)
 		}
 	}
 	return platform.SortUpdatePackages(items)
+}
+
+// fromSecuritySuite reports whether apt offers the candidate from a security
+// archive: "jammy-security", "bookworm-security", "esm-infra-security", or the
+// pre-bullseye Debian "buster/updates" layout. APT publishes no severity, so
+// other packages stay unclassified.
+func fromSecuritySuite(suites string) bool {
+	for _, suite := range strings.Split(suites, ",") {
+		if strings.HasSuffix(suite, "-security") || strings.HasSuffix(suite, "/updates") {
+			return true
+		}
+	}
+	return false
 }
 
 var aptPlanLine = regexp.MustCompile(`^(Inst|Remv)\s+(\S+)(?:\s+\[([^\]]+)\])?(?:\s+\(([^\s\)]+))?`)
