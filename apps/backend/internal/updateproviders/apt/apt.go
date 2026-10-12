@@ -193,3 +193,7 @@ func parseHistory(content string) []platform.UpdateHistoryEntry {
 	}
 	return entries
 }
+
+func (Provider) MetadataUpdated(context.Context) time.Time {
+	return platform.NewestModTime("/var/lib/apt/periodic/update-success-stamp", "/var/lib/apt/lists/*_InRelease", "/var/lib/apt/lists/*_Release")
+}

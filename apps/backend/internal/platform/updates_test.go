@@ -3,8 +3,11 @@ package platform
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeUpdateProvider struct {
@@ -113,5 +116,24 @@ func TestUpdateServiceRejectsStalePlan(t *testing.T) {
 	_, err := service.Apply(context.Background(), UpdateOperation{ExpectedFingerprint: stale, Confirmed: true})
 	if !errors.Is(err, ErrUpdateConflict) {
 		t.Fatalf("expected stale-plan conflict, got %v", err)
+	}
+}
+
+func TestNewestModTimePicksLatestMatch(t *testing.T) {
+	dir := t.TempDir()
+	older, newer := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db")
+	for _, path := range []string{older, newer} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	_ = os.Chtimes(older, base, base)
+	_ = os.Chtimes(newer, base.Add(time.Hour), base.Add(time.Hour))
+	if got := NewestModTime(filepath.Join(dir, "*.db"), filepath.Join(dir, "missing", "*")); !got.Equal(base.Add(time.Hour)) {
+		t.Fatalf("NewestModTime = %v", got)
+	}
+	if got := NewestModTime(filepath.Join(dir, "*.none")); !got.IsZero() {
+		t.Fatalf("expected zero time, got %v", got)
 	}
 }

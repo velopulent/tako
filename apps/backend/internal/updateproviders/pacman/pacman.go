@@ -108,3 +108,7 @@ func parseHistory(content string) []platform.UpdateHistoryEntry {
 	}
 	return items
 }
+
+func (Provider) MetadataUpdated(context.Context) time.Time {
+	return platform.NewestModTime("/var/lib/pacman/sync/*.db")
+}

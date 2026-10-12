@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -53,6 +54,7 @@ type UpdatePackage struct {
 	Summary          string   `json:"summary,omitempty"`
 	Details          string   `json:"details,omitempty"`
 	AdvisoryID       string   `json:"advisoryId,omitempty"`
+	Issued           string   `json:"issued,omitempty"`
 	CVEUrls          []string `json:"cveUrls,omitempty"`
 	BugUrls          []string `json:"bugUrls,omitempty"`
 	VendorUrls       []string `json:"vendorUrls,omitempty"`
@@ -86,6 +88,7 @@ type UpdateStatus struct {
 	Reason           string          `json:"reason,omitempty"`
 	Recovery         UpdateRecovery  `json:"recovery"`
 	LastChecked      string          `json:"lastChecked,omitempty"`
+	MetadataUpdated  string          `json:"metadataUpdated,omitempty"`
 	TimeSinceRefresh *int64          `json:"timeSinceRefresh,omitempty"`
 }
 
@@ -186,6 +189,28 @@ type UpdateProvider interface {
 	LockStatus(context.Context) (bool, string)
 }
 
+// UpdateMetadataClock is implemented by providers that can report when their
+// repository metadata was last downloaded, which is what "last checked" means
+// to an operator.
+type UpdateMetadataClock interface {
+	MetadataUpdated(context.Context) time.Time
+}
+
+// NewestModTime returns the newest modification time among files matching the
+// glob patterns, or the zero time when none match.
+func NewestModTime(patterns ...string) time.Time {
+	var newest time.Time
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(pattern)
+		for _, match := range matches {
+			if info, err := os.Stat(match); err == nil && info.ModTime().After(newest) {
+				newest = info.ModTime()
+			}
+		}
+	}
+	return newest
+}
+
 type updateWorkerEnvelope struct {
 	Event  *UpdateStreamEvent `json:"event,omitempty"`
 	Result *UpdateResult      `json:"result,omitempty"`
@@ -261,6 +286,11 @@ func (service *UpdateService) Status(ctx context.Context) UpdateStatus {
 	packages = SortUpdatePackages(packages)
 	locked, reason := service.provider.LockStatus(deadline)
 	status := UpdateStatus{Available: true, Backend: service.provider.Name(), Version: version, Contract: "native-distro-provider", Packages: packages, ExternalLock: locked, LockReason: reason, LastChecked: time.Now().UTC().Format(time.RFC3339), Recovery: service.provider.Recovery(deadline)}
+	if clock, ok := service.provider.(UpdateMetadataClock); ok {
+		if updated := clock.MetadataUpdated(deadline); !updated.IsZero() {
+			status.MetadataUpdated = updated.UTC().Format(time.RFC3339)
+		}
+	}
 	status.Message = updateMessage(len(packages))
 	status.Fingerprint = UpdateFingerprint(status)
 	normalizeUpdateStatus(&status)

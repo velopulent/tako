@@ -28,11 +28,12 @@ func (Provider) Probe(ctx context.Context) (string, error) {
 }
 func (p Provider) Inventory(ctx context.Context) ([]platform.UpdatePackage, error) {
 	version, _ := p.Probe(ctx)
-	if strings.Contains(strings.ToLower(version), "dnf5") {
+	dnf5 := strings.Contains(strings.ToLower(version), "dnf5")
+	if dnf5 {
 		r := platform.RunUpdateCommand(ctx, "dnf", []string{"--cacheonly", "check-upgrade", "--json"}, nil, nil)
 		if r.ExitCode == 0 || r.ExitCode == 100 {
 			if items := parseJSON(r.Output); len(items) > 0 || r.ExitCode == 0 {
-				return items, nil
+				return enrich(ctx, dnf5, items), nil
 			}
 		}
 	}
@@ -40,7 +41,7 @@ func (p Provider) Inventory(ctx context.Context) ([]platform.UpdatePackage, erro
 	if r.ExitCode != 0 && r.ExitCode != 100 {
 		return nil, r.Err
 	}
-	return parseTable(r.Output), nil
+	return enrich(ctx, dnf5, parseTable(r.Output)), nil
 }
 func (Provider) Refresh(ctx context.Context, force bool, emit func(platform.UpdateStreamEvent)) error {
 	args := []string{"makecache"}
@@ -203,4 +204,8 @@ func parseHistory(content string) []platform.UpdateHistoryEntry {
 		entries = append(entries, platform.UpdateHistoryEntry{Time: parsed.UnixMilli(), Packages: map[string]string{name: match[2]}})
 	}
 	return entries
+}
+
+func (Provider) MetadataUpdated(context.Context) time.Time {
+	return platform.NewestModTime("/var/cache/libdnf5/*/repodata/repomd.xml", "/var/cache/dnf/*/repodata/repomd.xml")
 }

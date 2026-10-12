@@ -1471,6 +1471,7 @@ components:
         reason: { type: string, maxLength: 512 }
         recovery: { $ref: '#/components/schemas/UpdateRecovery' }
         lastChecked: { type: string, format: date-time }
+        metadataUpdated: { type: string, format: date-time, description: 'When repository metadata was last downloaded, if the provider can tell' }
         timeSinceRefresh: { type: integer, minimum: 0 }
     UpdateRecovery:
       type: object
@@ -1788,6 +1789,7 @@ components:
         summary: { type: string, maxLength: 1024 }
         details: { type: string, maxLength: 4096 }
         advisoryId: { type: string, maxLength: 128 }
+        issued: { type: string, format: date-time, description: Advisory publication time when the vendor reports one }
         cveUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
         bugUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
         vendorUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
