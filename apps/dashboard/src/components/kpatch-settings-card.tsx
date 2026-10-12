@@ -4,6 +4,14 @@ import * as React from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -76,57 +84,56 @@ export function KpatchSettingsCard({
   }
 
   return (
-    <div className="border-t pt-3">
-      <div className="flex items-center justify-between">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">Kernel live patching</p>
-          <p
-            className="truncate text-xs text-muted-foreground"
-            id="kpatch-state"
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle>Kernel live patching</CardTitle>
+        <CardDescription id="kpatch-state">
+          {stateLabel(settings)}
+          {settings.kernel ? ` · ${settings.kernel}` : ""}
+        </CardDescription>
+        <CardAction>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-describedby="kpatch-state"
+            disabled={
+              !administrative ||
+              save.isPending ||
+              settings.unavailable.length > 0 ||
+              settings.missing.length > 0
+            }
+            onClick={openDialog}
           >
-            {stateLabel(settings)}
-            {settings.kernel ? ` (${settings.kernel})` : ""}
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={
-            !administrative ||
-            save.isPending ||
-            settings.unavailable.length > 0 ||
-            settings.missing.length > 0
-          }
-          onClick={openDialog}
-        >
-          {settings.serviceEnabled ? "Edit" : stateLabel(settings)}
-        </Button>
-      </div>
+            {settings.serviceEnabled ? "Edit" : "Configure"}
+          </Button>
+        </CardAction>
+      </CardHeader>
 
-      {(status.loaded?.length ?? 0) > 0
-        ? status.loaded.map((patch) => (
-            <p key={patch} className="text-xs text-muted-foreground">
-              Kernel live patch {patch} is active
+      {((status.loaded?.length ?? 0) > 0 ||
+        (status.installed?.length ?? 0) > 0 ||
+        settings.missing.length > 0 ||
+        settings.unavailable.length > 0) && (
+        <CardContent className="flex flex-col gap-1 text-xs text-muted-foreground">
+          {(status.loaded?.length ?? 0) > 0
+            ? status.loaded.map((patch) => (
+                <p key={patch}>Live patch {patch} is active.</p>
+              ))
+            : status.installed?.map((patch) => (
+                <p key={patch}>Live patch {patch} is installed.</p>
+              ))}
+          {settings.missing.length > 0 && (
+            <p>
+              Install {settings.missing.join(" and ")} to configure kernel live
+              patching.
             </p>
-          ))
-        : (status.installed?.length ?? 0) > 0 &&
-          status.installed.map((patch) => (
-            <p key={patch} className="text-xs text-muted-foreground">
-              Kernel live patch {patch} is installed
+          )}
+          {settings.unavailable.length > 0 && (
+            <p>
+              Required packages are unavailable:{" "}
+              {settings.unavailable.join(", ")}.
             </p>
-          ))}
-
-      {settings.missing.length > 0 && (
-        <p className="pt-2 text-xs text-muted-foreground">
-          Install {settings.missing.join(" and ")} to configure kernel live
-          patching.
-        </p>
-      )}
-      {settings.unavailable.length > 0 && (
-        <p className="pt-2 text-xs text-muted-foreground">
-          Required packages are unavailable: {settings.unavailable.join(", ")}.{" "}
-          <span className="sr-only">Not available</span>
-        </p>
+          )}
+        </CardContent>
       )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -221,6 +228,6 @@ export function KpatchSettingsCard({
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </Card>
   )
 }

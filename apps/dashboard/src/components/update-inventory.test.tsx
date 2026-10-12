@@ -116,10 +116,10 @@ describe("UpdateInventory", () => {
 
     renderInventory()
     expect(await screen.findByText("Package manager busy")).toBeTruthy()
-    expect(screen.getByText("APT lock is held")).toBeTruthy()
+    expect(screen.getByText(/APT lock is held/)).toBeTruthy()
     expect(
       screen
-        .getByRole("button", { name: "Preview full update" })
+        .getByRole("button", { name: "Review and install" })
         .hasAttribute("disabled")
     ).toBe(true)
   })
@@ -195,10 +195,10 @@ describe("UpdateInventory", () => {
     const user = userEvent.setup()
     renderInventory()
     await user.click(
-      await screen.findByRole("button", { name: "Preview full update" })
+      await screen.findByRole("button", { name: "Review and install" })
     )
     expect(await screen.findByText("Confirm full-system update")).toBeTruthy()
-    await user.click(screen.getByRole("button", { name: "Apply full update" }))
+    await user.click(screen.getByRole("button", { name: /^Install/ }))
 
     await vi.waitFor(() => {
       const call = fetchMock.mock.calls.find(
@@ -275,15 +275,11 @@ describe("UpdateInventory", () => {
     const user = userEvent.setup()
     renderInventory()
     await user.click(
-      await screen.findByRole("button", { name: "Preview full update" })
+      await screen.findByRole("button", { name: "Review and install" })
     )
     expect(await screen.findByText("Inventory changed")).toBeTruthy()
     expect(screen.getByRole("checkbox")).toBeTruthy()
-    expect(
-      screen
-        .getByRole("button", { name: "Apply full update" })
-        .hasAttribute("disabled")
-    ).toBe(true)
+    expect(screen.queryByRole("button", { name: /^Install/ })).toBeNull()
   })
 
   it("renders one live output control and suppresses duplicate SSE sequences", async () => {
@@ -373,9 +369,7 @@ describe("UpdateInventory", () => {
       screen.getAllByRole("button", { name: /View live output/ })
     ).toHaveLength(1)
     await user.click(screen.getByRole("button", { name: /View live output/ }))
-    expect(
-      await screen.findByText("stdout: Reading package lists...")
-    ).toBeTruthy()
+    expect(await screen.findByText("Reading package lists...")).toBeTruthy()
     expect(screen.queryByText("duplicate replay")).toBeNull()
   })
 
@@ -498,11 +492,9 @@ describe("UpdateInventory", () => {
     const user = userEvent.setup()
     renderInventory()
     await user.click(
-      await screen.findByRole("button", { name: "Preview full update" })
+      await screen.findByRole("button", { name: "Review and install" })
     )
-    await user.click(
-      await screen.findByRole("button", { name: "Apply full update" })
-    )
+    await user.click(await screen.findByRole("button", { name: /^Install/ }))
     await vi.waitFor(() =>
       expect(sessionStorage.getItem("tako-update-job:v2")).toBe("job-1")
     )
@@ -740,9 +732,7 @@ describe("UpdateInventory", () => {
     )
 
     renderInventory()
-    expect(
-      await screen.findByRole("button", { name: "No updates available" })
-    ).toBeTruthy()
+    expect(await screen.findByText("System is up to date")).toBeTruthy()
     await vi.waitFor(() =>
       expect(sessionStorage.getItem("tako-update-job:v2")).toBeNull()
     )

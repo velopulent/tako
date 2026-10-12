@@ -865,6 +865,7 @@ export type UpdateStatus = {
   reason?: string
   recovery?: UpdateRecovery
   lastChecked?: string
+  metadataUpdated?: string
   timeSinceRefresh?: number
 }
 export type UpdateRecovery = {
@@ -923,6 +924,7 @@ export type UpdatePackage = {
   summary?: string
   details?: string
   advisoryId?: string
+  issued?: string
   cveUrls?: string[]
   bugUrls?: string[]
   vendorUrls?: string[]

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  Check,
+  CircleCheck,
+  Lock,
   PackageCheck,
   RefreshCw,
   RotateCcw,
@@ -23,7 +24,6 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
@@ -37,32 +37,27 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty"
-import {
   Field,
+  FieldContent,
   FieldDescription,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field"
-import { Progress } from "@/components/ui/progress"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Spinner } from "@/components/ui/spinner"
+import {
+  UpdateAdvisoryList,
+  VersionDiff,
+} from "@/components/update-advisory-list"
 import { UpdateHistoryCard } from "@/components/update-history-card"
 import { activeUpdateJobStates } from "@/components/update-job-state"
 import { UpdateLivePanel } from "@/components/update-live-panel"
-import { UpdatePackageTable } from "@/components/update-package-table"
 import {
   APIError,
   api,
   type DiagnosticJob,
   type SessionResponse,
+  type UpdateChange,
   type UpdateObservation,
   type UpdateOperation,
   type UpdateOutput,
@@ -70,6 +65,14 @@ import {
   type UpdateProgress,
   type UpdateStatus,
 } from "@/lib/api"
+import {
+  formatAbsolute,
+  formatRelative,
+  plural,
+  type SeveritySummary,
+  summarizeSeverity,
+} from "@/lib/update-advisories"
+import { cn } from "@/lib/utils"
 
 const updateJobStorageKey = "tako-update-job:v2"
 const idleProgress: UpdateProgress = {
@@ -100,12 +103,6 @@ function removeSavedJob() {
   }
 }
 
-function formatLastChecked(value?: string) {
-  if (!value) return ""
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString()
-}
-
 function parseEvent<T>(event: MessageEvent<string>) {
   try {
     return JSON.parse(event.data) as T
@@ -114,21 +111,88 @@ function parseEvent<T>(event: MessageEvent<string>) {
   }
 }
 
-function severityCounts(packages: UpdateStatus["packages"]) {
-  return packages.reduce(
-    (counts, pkg) => {
-      const severity = (pkg.severity ?? "").toLowerCase()
-      if (severity === "security" || pkg.secSeverity) counts.security += 1
-      else if (severity === "bugfix") counts.bugfix += 1
-      else counts.enhancement += 1
-      return counts
-    },
-    { security: 0, bugfix: 0, enhancement: 0 }
+function severitySentence(counts: SeveritySummary) {
+  if (!counts.classified) {
+    return "Review what changes below, then install everything in one transaction."
+  }
+  const parts: string[] = []
+  if (counts.security > 0) {
+    parts.push(
+      plural(counts.security, "security update") +
+        (counts.critical > 0 ? ` (${counts.critical} critical)` : "")
+    )
+  }
+  if (counts.bugfix > 0)
+    parts.push(plural(counts.bugfix, "bug fix", "bug fixes"))
+  if (counts.enhancement > 0) {
+    parts.push(plural(counts.enhancement, "enhancement"))
+  }
+  if (counts.other > 0) {
+    parts.push(`${counts.other.toLocaleString()} other package updates`)
+  }
+  return `Includes ${parts.join(", ").replace(/, ([^,]*)$/, " and $1")}.`
+}
+
+// Mirrors UpdateChange.Risky in the backend.
+function isRiskyChange(change: UpdateChange) {
+  return (
+    change.action === "remove" ||
+    change.action === "downgrade" ||
+    change.action === "replace" ||
+    Boolean(
+      change.currentRepository &&
+        change.targetRepository &&
+        change.currentRepository !== change.targetRepository
+    ) ||
+    Boolean(
+      change.currentVendor &&
+        change.targetVendor &&
+        change.currentVendor !== change.targetVendor
+    )
   )
+}
+
+const changeActions: Record<string, { label: string; order: number }> = {
+  remove: { label: "Remove", order: 0 },
+  downgrade: { label: "Downgrade", order: 1 },
+  replace: { label: "Replace", order: 2 },
+  install: { label: "Install", order: 3 },
+  upgrade: { label: "Upgrade", order: 4 },
+}
+
+function groupChanges(changes: UpdateChange[]) {
+  const groups = new Map<string, UpdateChange[]>()
+  for (const change of changes) {
+    const list = groups.get(change.action)
+    if (list) list.push(change)
+    else groups.set(change.action, [change])
+  }
+  return Array.from(groups, ([action, list]) => ({
+    action,
+    label:
+      changeActions[action]?.label ??
+      action.charAt(0).toUpperCase() + action.slice(1),
+    risky: list.some(isRiskyChange) && action !== "upgrade",
+    changes: list,
+  })).sort(
+    (a, b) =>
+      (changeActions[a.action]?.order ?? 5) -
+      (changeActions[b.action]?.order ?? 5)
+  )
+}
+
+function useNow(intervalMs: number) {
+  const [now, setNow] = React.useState(() => Date.now())
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs)
+    return () => window.clearInterval(timer)
+  }, [intervalMs])
+  return now
 }
 
 export function UpdateInventory() {
   const queryClient = useQueryClient()
+  const now = useNow(60_000)
   const [jobID, setJobID] = React.useState(readSavedJob)
   const jobIDRef = React.useRef(jobID)
   const progressJobIDRef = React.useRef("")
@@ -436,8 +500,18 @@ export function UpdateInventory() {
 
   if (query.isPending) {
     return (
-      <div className="mx-auto w-full max-w-7xl">
-        <Skeleton className="h-72 w-full" />
+      <div
+        className="mx-auto flex w-full max-w-7xl flex-col gap-6"
+        aria-busy="true"
+      >
+        <span className="sr-only" role="status">
+          Loading updates…
+        </span>
+        <Skeleton className="h-36 w-full rounded-xl" />
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-8 w-full sm:w-72" />
+          <Skeleton className="h-80 w-full rounded-xl" />
+        </div>
       </div>
     )
   }
@@ -447,7 +521,20 @@ export function UpdateInventory() {
         <Alert variant="destructive">
           <TriangleAlert />
           <AlertTitle>Update inventory unavailable</AlertTitle>
-          <AlertDescription>{query.error?.message}</AlertDescription>
+          <AlertDescription>
+            {query.error?.message ||
+              "The package inventory could not be loaded."}
+          </AlertDescription>
+          <AlertAction>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={query.isFetching}
+              onClick={() => void query.refetch()}
+            >
+              Retry
+            </Button>
+          </AlertAction>
         </Alert>
       </div>
     )
@@ -456,14 +543,14 @@ export function UpdateInventory() {
   const status = query.data
   const activeJob = job.data?.job
   const packageCount = status.packages.length
-  const counts = severityCounts(status.packages)
+  const counts = summarizeSeverity(status.packages)
   const trackedJob = Boolean(jobID)
-  const activityActive =
+  const updateRunning =
     trackedJob ||
     Boolean(activeJob && activeUpdateJobStates.has(activeJob.state)) ||
-    observation.progress.active ||
-    refresh.isPending ||
-    previewRequest.isPending
+    observation.progress.active
+  const activityActive =
+    updateRunning || refresh.isPending || previewRequest.isPending
   const pageError =
     terminalError ||
     refresh.error?.message ||
@@ -475,28 +562,63 @@ export function UpdateInventory() {
     packageCount > 0 &&
     !activityActive &&
     !previewRequest.isPending
+  const tone: "ok" | "pending" | "security" | "blocked" =
+    !status.available || status.externalLock
+      ? "blocked"
+      : packageCount === 0
+        ? "ok"
+        : counts.security > 0
+          ? "security"
+          : "pending"
   const statusTitle = !status.available
     ? "Updates unavailable"
     : status.externalLock
       ? "Package manager busy"
       : packageCount === 0
         ? "System is up to date"
-        : `${packageCount} update${packageCount === 1 ? "" : "s"} available`
+        : `${plural(packageCount, "update")} available`
   const statusMessage = !status.available
-    ? status.reason || status.message
+    ? status.reason ||
+      status.message ||
+      "The package manager could not be reached. Check that the Tako session service is running, then try again."
     : status.externalLock
-      ? "Updates are paused until the package manager is free."
+      ? "Updates are paused until the other package operation finishes."
       : packageCount === 0
-        ? "No installed-software updates are waiting."
-        : status.message
-  const icon =
-    !status.available || status.externalLock ? (
-      <TriangleAlert aria-hidden="true" />
-    ) : packageCount === 0 ? (
-      <Check aria-hidden="true" />
-    ) : (
-      <PackageCheck aria-hidden="true" />
-    )
+        ? "Every installed package is on its latest available version."
+        : severitySentence(counts)
+  const StatusIcon =
+    tone === "blocked"
+      ? TriangleAlert
+      : tone === "ok"
+        ? CircleCheck
+        : tone === "security"
+          ? ShieldAlert
+          : PackageCheck
+  const refreshedAt = status.metadataUpdated
+  const meta = [
+    status.version || status.backend,
+    refreshedAt
+      ? `Repositories refreshed ${formatRelative(refreshedAt, now)}`
+      : "",
+  ].filter(Boolean)
+  const recovery = status.recovery
+  const afterNotes = [
+    ...(recovery && !recovery.authoritative && recovery.reason
+      ? [recovery.reason]
+      : []),
+    ...(recovery && !recovery.authoritative ? recovery.hints : []),
+  ]
+  const sideCards = (
+    <>
+      <KpatchSettingsCard
+        csrfToken={session.data?.csrfToken ?? ""}
+        administrative={session.data?.administrative ?? false}
+      />
+      <UpdateHistoryCard enabled={status.available} />
+    </>
+  )
+  const riskyChanges = preview?.changes.filter(isRiskyChange) ?? []
+  const changeGroups = preview ? groupChanges(preview.changes) : []
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -507,7 +629,7 @@ export function UpdateInventory() {
           <AlertDescription>{pageError}</AlertDescription>
           <AlertAction>
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
               disabled={refresh.isPending}
               onClick={retryUpdateState}
@@ -520,180 +642,120 @@ export function UpdateInventory() {
 
       <Card>
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <CardTitle>System updates</CardTitle>
-              <Badge variant={packageCount > 0 ? "secondary" : "outline"}>
-                {packageCount} package{packageCount === 1 ? "" : "s"}
-              </Badge>
+          <div className="flex min-w-0 items-start gap-4">
+            <span
+              className={cn(
+                "flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground",
+                tone === "security" && "bg-destructive/10 text-destructive",
+                tone === "blocked" && "text-muted-foreground"
+              )}
+              aria-hidden="true"
+            >
+              <StatusIcon className="size-5" />
+            </span>
+            <div className="flex min-w-0 flex-col gap-1">
+              <CardTitle className="text-lg font-semibold tracking-tight">
+                <h2>{statusTitle}</h2>
+              </CardTitle>
+              <CardDescription className="text-pretty">
+                {statusMessage}
+              </CardDescription>
+              {meta.length > 0 && (
+                <p
+                  className="text-xs text-muted-foreground"
+                  title={
+                    refreshedAt
+                      ? `Repository metadata downloaded ${formatAbsolute(refreshedAt)}`
+                      : undefined
+                  }
+                >
+                  {meta.join(" · ")}
+                </p>
+              )}
             </div>
-            <CardDescription>
-              Review the exact changes before applying a full-system update.
-            </CardDescription>
           </div>
-          <div className="flex items-center gap-2">
-            {query.isFetching && (
-              <Badge variant="outline">Refreshing inventory…</Badge>
-            )}
+          <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
             <Button
               variant="outline"
-              size="icon"
-              aria-label="Check for updates"
+              className="flex-1 sm:flex-none"
               disabled={refresh.isPending || activityActive}
               onClick={() => refresh.mutate()}
             >
-              <RefreshCw
-                className={refresh.isPending ? "animate-spin" : ""}
-                aria-hidden="true"
-              />
+              {refresh.isPending ? (
+                <Spinner data-icon="inline-start" aria-hidden="true" />
+              ) : (
+                <RefreshCw data-icon="inline-start" aria-hidden="true" />
+              )}
+              {refresh.isPending ? "Checking…" : "Check for updates"}
             </Button>
+            {status.available && packageCount > 0 && !updateRunning && (
+              <Button
+                className="flex-1 sm:flex-none"
+                disabled={!canUpdate}
+                onClick={requestPreview}
+              >
+                {previewRequest.isPending && (
+                  <Spinner data-icon="inline-start" aria-hidden="true" />
+                )}
+                Review and install
+              </Button>
+            )}
           </div>
         </CardHeader>
 
-        <CardContent className="flex flex-col gap-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground">
-              {icon}
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-lg font-semibold tracking-tight">
-                {statusTitle}
-              </h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {statusMessage}
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Badge
-                  variant={counts.security > 0 ? "destructive" : "outline"}
-                >
-                  <ShieldAlert data-icon="inline-start" aria-hidden="true" />
-                  {counts.security} security
-                </Badge>
-                <Badge variant={counts.bugfix > 0 ? "secondary" : "outline"}>
-                  {counts.bugfix} bug fix{counts.bugfix === 1 ? "" : "es"}
-                </Badge>
-                <Badge variant="outline">
-                  {counts.enhancement} enhancement
-                  {counts.enhancement === 1 ? "" : "s"}
-                </Badge>
-              </div>
-            </div>
-          </div>
-
-          {status.externalLock && (
-            <Alert variant="destructive">
-              <TriangleAlert />
-              <AlertTitle>Updates paused</AlertTitle>
-              <AlertDescription>
-                {status.lockReason ||
-                  "Another package-manager operation is active."}
-              </AlertDescription>
-            </Alert>
-          )}
-          {!status.available && (
-            <Alert variant="destructive">
-              <TriangleAlert />
-              <AlertTitle>Update provider unavailable</AlertTitle>
-              <AlertDescription>
-                {status.reason || status.message}
-              </AlertDescription>
-            </Alert>
-          )}
-          {status.recovery?.rebootRequired && (
-            <Alert>
-              <RotateCcw />
-              <AlertTitle>Reboot required after applying updates</AlertTitle>
-              <AlertDescription>
-                {status.recovery.reason ||
-                  status.recovery.hints[0] ||
-                  "Restart the system when the update is complete."}
-                {status.recovery.rebootPackages &&
-                  status.recovery.rebootPackages.length > 0 && (
-                    <span className="mt-1 block">
-                      Affected packages:{" "}
-                      {status.recovery.rebootPackages.join(", ")}
-                    </span>
-                  )}
-              </AlertDescription>
-            </Alert>
-          )}
-          {status.recovery?.restartServices &&
-            status.recovery.restartServices.length > 0 && (
+        {(status.externalLock ||
+          recovery?.rebootRequired ||
+          (recovery?.restartServices.length ?? 0) > 0 ||
+          (recovery?.manualPackages?.length ?? 0) > 0) && (
+          <CardContent className="flex flex-col gap-3">
+            {status.externalLock && (
+              <Alert>
+                <Lock />
+                <AlertTitle>Another package operation is running</AlertTitle>
+                <AlertDescription>
+                  {status.lockReason ||
+                    "Another package-manager operation is active."}{" "}
+                  Check again once it finishes.
+                </AlertDescription>
+              </Alert>
+            )}
+            {recovery?.rebootRequired && (
+              <Alert>
+                <RotateCcw />
+                <AlertTitle>Restart required</AlertTitle>
+                <AlertDescription>
+                  {recovery.reason ||
+                    recovery.hints[0] ||
+                    "Installed updates take effect after the host restarts."}
+                  {recovery.rebootPackages &&
+                    recovery.rebootPackages.length > 0 && (
+                      <span className="mt-1 block">
+                        Affected packages: {recovery.rebootPackages.join(", ")}
+                      </span>
+                    )}
+                </AlertDescription>
+              </Alert>
+            )}
+            {recovery && recovery.restartServices.length > 0 && (
               <Alert>
                 <ServerCog />
                 <AlertTitle>Services may need a restart</AlertTitle>
                 <AlertDescription>
-                  {status.recovery.restartServices.join(", ")}
+                  {recovery.restartServices.join(", ")}
                 </AlertDescription>
               </Alert>
             )}
-          {status.recovery?.manualPackages &&
-            status.recovery.manualPackages.length > 0 && (
+            {recovery?.manualPackages && recovery.manualPackages.length > 0 && (
               <Alert>
                 <TriangleAlert />
                 <AlertTitle>Manual recovery may be required</AlertTitle>
                 <AlertDescription>
-                  {status.recovery.manualPackages.join(", ")}
+                  {recovery.manualPackages.join(", ")}
                 </AlertDescription>
               </Alert>
             )}
-          {status.recovery &&
-            !status.recovery.rebootRequired &&
-            (status.recovery.hints.length > 0 || status.recovery.reason) && (
-              <Alert>
-                <TriangleAlert />
-                <AlertTitle>Recovery guidance</AlertTitle>
-                <AlertDescription>
-                  {status.recovery.reason && <p>{status.recovery.reason}</p>}
-                  {status.recovery.hints.length > 0 && (
-                    <ul className="flex list-disc flex-col gap-1 pl-4">
-                      {status.recovery.hints.map((hint) => (
-                        <li key={hint}>{hint}</li>
-                      ))}
-                    </ul>
-                  )}
-                </AlertDescription>
-              </Alert>
-            )}
-
-          <Separator />
-          <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
-            <span>Backend: {status.backend}</span>
-            <span>Contract: {status.contract}</span>
-            {status.version && <span>Version: {status.version}</span>}
-            {status.lastChecked && (
-              <span>Last checked: {formatLastChecked(status.lastChecked)}</span>
-            )}
-          </div>
-
-          <KpatchSettingsCard
-            csrfToken={session.data?.csrfToken ?? ""}
-            administrative={session.data?.administrative ?? false}
-          />
-        </CardContent>
-
-        <CardFooter className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted-foreground">
-            Preview uses the current inventory fingerprint and preserves the
-            safety checks.
-          </p>
-          <Button
-            className="w-full sm:w-auto"
-            disabled={!canUpdate}
-            onClick={requestPreview}
-          >
-            {previewRequest.isPending && (
-              <RefreshCw data-icon="inline-start" className="animate-spin" />
-            )}
-            {previewRequest.isPending
-              ? "Loading preview…"
-              : !status.available
-                ? "Preview unavailable"
-                : packageCount > 0
-                  ? "Preview full update"
-                  : "No updates available"}
-          </Button>
-        </CardFooter>
+          </CardContent>
+        )}
       </Card>
 
       <UpdateLivePanel
@@ -714,276 +776,302 @@ export function UpdateInventory() {
         }
       />
 
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <CardTitle>Available updates</CardTitle>
-            <CardDescription>
-              {!status.available
-                ? "The update provider did not return a usable inventory."
-                : packageCount > 0
-                  ? "Grouped by advisory so related packages are easy to review."
-                  : "Your installed software is current."}
-            </CardDescription>
-          </div>
-          <Badge variant={packageCount > 0 ? "secondary" : "outline"}>
-            {packageCount} package{packageCount === 1 ? "" : "s"}
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          {packageCount === 0 ? (
-            <Empty className="min-h-56 border">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  {status.available ? (
-                    <Check aria-hidden="true" />
-                  ) : (
-                    <TriangleAlert aria-hidden="true" />
-                  )}
-                </EmptyMedia>
-                <EmptyTitle>
-                  {status.available
-                    ? "No updates available"
-                    : "Inventory unavailable"}
-                </EmptyTitle>
-                <EmptyDescription>
-                  {status.available
-                    ? "Check again whenever you want to verify the package inventory."
-                    : status.reason || status.message}
-                </EmptyDescription>
-              </EmptyHeader>
-              <EmptyContent>
-                <Button
-                  variant="outline"
-                  disabled={refresh.isPending || activityActive}
-                  onClick={() => refresh.mutate()}
-                >
-                  <RefreshCw
-                    data-icon="inline-start"
-                    className={refresh.isPending ? "animate-spin" : ""}
-                  />
-                  Check again
-                </Button>
-              </EmptyContent>
-            </Empty>
-          ) : (
-            <UpdatePackageTable packages={status.packages} />
-          )}
-        </CardContent>
-      </Card>
+      {packageCount > 0 ? (
+        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
+          <section
+            aria-labelledby="pending-updates-heading"
+            className="flex min-w-0 flex-col gap-3"
+          >
+            <div className="flex items-baseline justify-between gap-3">
+              <h3
+                id="pending-updates-heading"
+                className="text-base font-semibold"
+              >
+                Pending updates
+              </h3>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {plural(packageCount, "package")}
+              </span>
+            </div>
+            <UpdateAdvisoryList packages={status.packages} />
+          </section>
+          <aside
+            className="flex min-w-0 flex-col gap-4 xl:sticky xl:top-4"
+            aria-label="Update tools"
+          >
+            {sideCards}
+          </aside>
+        </div>
+      ) : (
+        <div className="grid items-start gap-6 md:grid-cols-2">{sideCards}</div>
+      )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-h-[min(90vh,48rem)] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="flex max-h-[min(90dvh,48rem)] flex-col gap-4 sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {preview?.allowed
+              {preview?.allowed && !preview.stale
                 ? "Confirm full-system update"
                 : preview
                   ? "Update cannot start"
-                  : "Preparing update preview"}
+                  : "Preparing update plan"}
             </DialogTitle>
             <DialogDescription>
-              {preview?.reason ||
-                (preview
-                  ? "Review the planned package changes before applying them."
-                  : "Checking the current inventory and calculating an exact plan.")}
+              {preview?.allowed && !preview.stale
+                ? "The package manager resolved this exact transaction. Nothing changes until you install it."
+                : preview?.reason ||
+                  (preview
+                    ? "Review the details below."
+                    : "Resolving dependencies against the current inventory…")}
             </DialogDescription>
           </DialogHeader>
 
-          {previewRequest.isPending && !preview && (
-            <div className="flex flex-col gap-3" role="status">
-              <Progress value={null} aria-label="Preparing update preview" />
-              <p className="text-sm text-muted-foreground">
-                Preparing a fingerprint-bound preview…
-              </p>
-            </div>
-          )}
-
-          {previewRequest.isError && !preview && (
-            <Alert variant="destructive">
-              <TriangleAlert />
-              <AlertTitle>Preview unavailable</AlertTitle>
-              <AlertDescription>
-                {previewRequest.error.message}
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {preview && (
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">
-                  {preview.changes.length} planned change
-                  {preview.changes.length === 1 ? "" : "s"}
-                </Badge>
-                {preview.warnings.length > 0 && (
-                  <Badge variant="secondary">
-                    {preview.warnings.length} warning
-                    {preview.warnings.length === 1 ? "" : "s"}
-                  </Badge>
-                )}
-                <Badge
-                  variant={
-                    preview.allowed && !preview.stale
-                      ? "secondary"
-                      : "destructive"
-                  }
-                >
-                  {preview.stale
-                    ? "Stale preview"
-                    : preview.allowed
-                      ? "Ready to review"
-                      : "Blocked"}
-                </Badge>
+          <div className="-mx-4 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4">
+            {previewRequest.isPending && !preview && (
+              <div className="flex flex-col gap-2" role="status">
+                <Skeleton className="h-6 w-2/3" />
+                <Skeleton className="h-40 w-full" />
+                <span className="sr-only">Preparing update plan</span>
               </div>
+            )}
 
-              {(preview.stale || !preview.allowed) && (
-                <Alert variant="destructive">
-                  <TriangleAlert />
-                  <AlertTitle>
-                    {preview.stale ? "Inventory changed" : "Update is blocked"}
-                  </AlertTitle>
-                  <AlertDescription>
-                    {preview.stale
-                      ? "Refresh the inventory and create a new preview before applying changes."
-                      : preview.reason ||
-                        "The update backend did not authorize this plan."}
-                  </AlertDescription>
-                </Alert>
-              )}
+            {previewRequest.isError && !preview && (
+              <Alert variant="destructive">
+                <TriangleAlert />
+                <AlertTitle>Preview unavailable</AlertTitle>
+                <AlertDescription>
+                  {previewRequest.error.message}
+                </AlertDescription>
+              </Alert>
+            )}
 
-              {preview.warnings.length > 0 && (
-                <Alert>
-                  <TriangleAlert />
-                  <AlertTitle>Review these warnings</AlertTitle>
-                  <AlertDescription>
-                    <ul className="flex list-disc flex-col gap-1 pl-4">
-                      {preview.warnings.map((warning) => (
-                        <li key={warning}>{warning}</li>
-                      ))}
-                    </ul>
-                  </AlertDescription>
-                </Alert>
-              )}
+            {preview && (
+              <>
+                {(preview.stale || !preview.allowed) && (
+                  <Alert variant="destructive">
+                    <TriangleAlert />
+                    <AlertTitle>
+                      {preview.stale
+                        ? "Inventory changed"
+                        : "Update is blocked"}
+                    </AlertTitle>
+                    <AlertDescription>
+                      {preview.stale
+                        ? "Packages changed since this page loaded. Check for updates, then review again."
+                        : preview.reason ||
+                          "The update backend did not authorize this plan."}
+                    </AlertDescription>
+                  </Alert>
+                )}
 
-              <ScrollArea className="h-64 rounded-lg border">
-                <div className="flex flex-col gap-2 p-3">
-                  {preview.changes.length > 0 ? (
-                    preview.changes.map((change) => (
+                {preview.changes.length > 0 && (
+                  <dl className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-2">
+                    {changeGroups.map((group) => (
                       <div
-                        key={
-                          change.action +
-                          ":" +
-                          change.name +
-                          ":" +
-                          (change.architecture ?? "")
-                        }
-                        className="flex flex-col gap-1 rounded-lg border bg-muted/20 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+                        key={group.action}
+                        className={cn(
+                          "flex flex-col gap-0.5 rounded-lg border px-3 py-2",
+                          group.risky &&
+                            "border-destructive/40 bg-destructive/5"
+                        )}
                       >
-                        <div className="min-w-0">
-                          <p className="break-words font-medium">
-                            {change.name}
-                            {change.architecture
-                              ? ` (${change.architecture})`
-                              : ""}
-                          </p>
-                          <p className="text-xs capitalize text-muted-foreground">
-                            {change.action}
-                          </p>
-                        </div>
-                        <p className="break-all font-mono text-xs text-muted-foreground sm:text-right">
-                          {change.currentVersion || "Not installed"}
-                          {change.candidateVersion
-                            ? ` → ${change.candidateVersion}`
-                            : ""}
-                        </p>
+                        <dt className="text-xs text-muted-foreground">
+                          {group.label}
+                        </dt>
+                        <dd
+                          className={cn(
+                            "text-lg font-semibold tabular-nums",
+                            group.risky && "text-destructive"
+                          )}
+                        >
+                          {group.changes.length}
+                        </dd>
                       </div>
-                    ))
-                  ) : (
-                    <p className="p-3 text-sm text-muted-foreground">
-                      No package changes are included in this preview.
-                    </p>
-                  )}
-                </div>
-              </ScrollArea>
+                    ))}
+                  </dl>
+                )}
 
-              {preview.requiresRiskConfirmation && (
-                <FieldGroup>
-                  <Field
-                    data-invalid={!riskAccepted}
-                    className="rounded-lg border p-3"
-                  >
-                    <FieldLabel>
+                {preview.warnings.length > 0 && (
+                  <Alert>
+                    <TriangleAlert />
+                    <AlertTitle>Review these warnings</AlertTitle>
+                    <AlertDescription>
+                      <ul className="flex list-disc flex-col gap-1 pl-4">
+                        {preview.warnings.map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {preview.changes.length > 0 ? (
+                  <div className="flex flex-col overflow-hidden rounded-lg border">
+                    {changeGroups.map((group) => (
+                      <section
+                        key={group.action}
+                        aria-label={group.label}
+                        className="not-last:border-b"
+                      >
+                        <h3
+                          className={cn(
+                            "sticky top-0 bg-muted px-3 py-1.5 text-xs font-medium",
+                            group.risky && "text-destructive"
+                          )}
+                        >
+                          {group.label} · {group.changes.length}
+                        </h3>
+                        <ul>
+                          {group.changes.map((change) => (
+                            <li
+                              key={`${change.action}:${change.name}:${change.architecture ?? ""}`}
+                              className="flex flex-col gap-0.5 px-3 py-2 text-sm not-last:border-b sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                            >
+                              <span className="min-w-0 truncate">
+                                {change.name}
+                                {change.architecture && (
+                                  <span className="text-muted-foreground">
+                                    .{change.architecture}
+                                  </span>
+                                )}
+                                {isRiskyChange(change) &&
+                                  change.action === "upgrade" && (
+                                    <Badge
+                                      variant="destructive"
+                                      className="ml-2"
+                                    >
+                                      Source changes
+                                    </Badge>
+                                  )}
+                              </span>
+                              {change.candidateVersion ? (
+                                <VersionDiff
+                                  from={change.currentVersion}
+                                  to={change.candidateVersion}
+                                  className="min-w-0 truncate sm:text-right"
+                                />
+                              ) : (
+                                <span className="font-mono text-xs text-muted-foreground">
+                                  {change.currentVersion}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No package changes are included in this plan.
+                  </p>
+                )}
+
+                {afterNotes.length > 0 && preview.allowed && !preview.stale && (
+                  <div className="flex flex-col gap-1 rounded-lg bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground">
+                    <p className="font-medium text-foreground">
+                      After installing
+                    </p>
+                    {afterNotes.map((note) => (
+                      <p key={note}>{note}</p>
+                    ))}
+                  </div>
+                )}
+
+                {preview.requiresRiskConfirmation && (
+                  <FieldGroup>
+                    <Field
+                      orientation="horizontal"
+                      className="rounded-lg border border-destructive/40 p-3"
+                    >
                       <Checkbox
+                        id="update-risk-accepted"
                         checked={riskAccepted}
                         onCheckedChange={(checked) =>
                           setRiskAccepted(checked === true)
                         }
-                        aria-invalid={!riskAccepted}
                       />
-                      <span>
-                        I accept removals, downgrades, replacements, repository
-                        changes, or vendor changes shown above.
-                      </span>
-                    </FieldLabel>
-                    <FieldDescription>
-                      This confirmation is required before the exact
-                      fingerprint-bound plan can start.
-                    </FieldDescription>
-                  </Field>
-                </FieldGroup>
-              )}
+                      <FieldContent>
+                        <FieldLabel htmlFor="update-risk-accepted">
+                          I reviewed the{" "}
+                          {riskyChanges.length > 0
+                            ? plural(riskyChanges.length, "high-risk change")
+                            : "high-risk changes"}
+                        </FieldLabel>
+                        <FieldDescription>
+                          Removals, downgrades, replacements, and repository or
+                          vendor switches can break installed software.
+                        </FieldDescription>
+                      </FieldContent>
+                    </Field>
+                  </FieldGroup>
+                )}
 
-              {session.data && !session.data.administrative && (
-                <Alert variant="destructive">
-                  <ShieldAlert />
-                  <AlertTitle>Administrative access required</AlertTitle>
-                  <AlertDescription>
-                    Gain Administrative access before applying system changes.
-                  </AlertDescription>
-                </Alert>
-              )}
-            </div>
-          )}
+                {session.data && !session.data.administrative && (
+                  <Alert variant="destructive">
+                    <ShieldAlert />
+                    <AlertTitle>Administrative access required</AlertTitle>
+                    <AlertDescription>
+                      Gain administrative access before applying system changes.
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </>
+            )}
+          </div>
 
           <DialogFooter className="flex-col-reverse sm:flex-row">
-            {previewRequest.isError && !preview && (
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+              Cancel
+            </Button>
+            {previewRequest.isError && !preview ? (
               <Button
-                variant="outline"
                 onClick={requestPreview}
                 disabled={previewRequest.isPending}
               >
                 Retry preview
               </Button>
+            ) : preview?.stale ? (
+              <Button
+                onClick={() => {
+                  setDialogOpen(false)
+                  refresh.mutate()
+                }}
+              >
+                <RefreshCw data-icon="inline-start" />
+                Check for updates
+              </Button>
+            ) : (
+              <Button
+                disabled={
+                  !preview?.allowed ||
+                  (preview?.requiresRiskConfirmation && !riskAccepted) ||
+                  session.data?.administrative === false ||
+                  !session.data?.csrfToken ||
+                  apply.isPending
+                }
+                onClick={() =>
+                  preview &&
+                  apply.mutate({
+                    expectedFingerprint: preview.fingerprint,
+                    confirmed: true,
+                    riskAccepted,
+                  })
+                }
+              >
+                {apply.isPending && (
+                  <Spinner data-icon="inline-start" aria-hidden="true" />
+                )}
+                {apply.isPending
+                  ? "Starting…"
+                  : preview && preview.changes.length > 0
+                    ? `Install ${plural(preview.changes.length, "change")}`
+                    : "Install updates"}
+              </Button>
             )}
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={
-                !preview?.allowed ||
-                preview?.stale ||
-                (preview?.requiresRiskConfirmation && !riskAccepted) ||
-                session.data?.administrative === false ||
-                !session.data?.csrfToken ||
-                apply.isPending
-              }
-              onClick={() =>
-                preview &&
-                apply.mutate({
-                  expectedFingerprint: preview.fingerprint,
-                  confirmed: true,
-                  riskAccepted,
-                })
-              }
-            >
-              {apply.isPending ? "Starting update…" : "Apply full update"}
-            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <UpdateHistoryCard enabled />
     </div>
   )
 }
