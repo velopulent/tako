@@ -36,6 +36,7 @@ describe("App session gate", () => {
     const pendingSession = new Promise<Response>((resolve) => {
       resolveSession = resolve
     })
+    let signedIn = false
     const authenticatedSession = {
       user: {
         username: "octopus",
@@ -53,7 +54,9 @@ describe("App session gate", () => {
         const path = String(input)
         void init
         if (path.endsWith("/auth/session")) {
-          return pendingSession
+          return signedIn
+            ? Promise.resolve(jsonResponse(authenticatedSession))
+            : pendingSession
         }
         if (path.endsWith("/branding")) {
           return Promise.resolve(
@@ -65,6 +68,7 @@ describe("App session gate", () => {
           )
         }
         if (path.endsWith("/auth/login")) {
+          signedIn = true
           return Promise.resolve(jsonResponse(authenticatedSession))
         }
         return Promise.reject(new Error(`Unexpected request: ${path}`))
@@ -76,12 +80,12 @@ describe("App session gate", () => {
     expect(screen.getByTestId("auth-pending-shell")).toBeTruthy()
     expect(screen.queryByRole("status")).toBeNull()
     expect(screen.queryByText(/Checking session/)).toBeNull()
-    expect(screen.queryByText(/Login to/)).toBeNull()
+    expect(screen.queryByText(/Sign in to/)).toBeNull()
     expect(screen.queryByLabelText("Username")).toBeNull()
 
     resolveSession(jsonResponse({ code: "unauthorized" }, 401))
     expect(await screen.findByLabelText("Username")).toBeTruthy()
-    expect(screen.getByText("Login to server-01")).toBeTruthy()
+    expect(screen.getByText("Sign in to server-01")).toBeTruthy()
     expect(
       document.querySelector('img[src="/branding/server-01.png"]')
     ).not.toBeNull()
@@ -93,6 +97,6 @@ describe("App session gate", () => {
 
     expect(await screen.findByTestId("dashboard-shell")).toBeTruthy()
     expect(screen.queryByLabelText("Username")).toBeNull()
-    expect(screen.queryByText(/Login to/)).toBeNull()
+    expect(screen.queryByText(/Sign in to/)).toBeNull()
   })
 })

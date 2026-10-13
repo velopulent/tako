@@ -44,23 +44,14 @@ export function qSearch(search: Record<string, unknown>): { q?: string } {
   return { q: optionalString(search.q) }
 }
 
-export const networkViews = [
-  "overview",
-  "configuration",
-  "firewall",
-  "logs",
-] as const
+export const networkViews = ["overview", "firewall", "logs"] as const
 export type NetworkView = (typeof networkViews)[number]
 
 export function networkSearch(search: Record<string, unknown>): {
-  q?: string
   view?: NetworkView
 } {
   const view = parseEnum(search.view, networkViews, "overview")
-  return {
-    q: optionalString(search.q),
-    view: view === "overview" ? undefined : view,
-  }
+  return { view: view === "overview" ? undefined : view }
 }
 
 export function processDetailSearch(search: Record<string, unknown>): {
@@ -104,20 +95,23 @@ export function servicesSearch(search: Record<string, unknown>): {
   }
 }
 
-export function logsSearch(search: Record<string, unknown>): {
-  q?: string
+export const logRanges = ["boot", "1h", "24h", "7d", "all"] as const
+
+export type LogsSearch = {
   priority?: string
-  boot?: string
+  range?: Exclude<(typeof logRanges)[number], "boot">
   since?: string
   until?: string
   unit?: string
   executable?: string
   text?: string
-} {
+}
+
+export function logsSearch(search: Record<string, unknown>): LogsSearch {
+  const range = parseEnum(search.range, logRanges, "boot")
   return {
-    q: optionalString(search.q),
     priority: optionalString(search.priority),
-    boot: optionalString(search.boot),
+    range: range === "boot" ? undefined : range,
     since: optionalString(search.since),
     until: optionalString(search.until),
     unit: optionalString(search.unit),

@@ -4,13 +4,10 @@ import type { ColumnDef } from "@tanstack/react-table"
 import {
   ActivityIcon,
   ArrowLeftIcon,
-  BracesIcon,
-  Clock3Icon,
   CpuIcon,
   HardDriveIcon,
   LayersIcon,
   MemoryStickIcon,
-  NetworkIcon,
   ShieldAlertIcon,
   TerminalIcon,
   UserIcon,
@@ -46,22 +43,16 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
+  APIError,
   api,
   type ProcessDetails as ProcessDetailsData,
   type ProcessSocket,
 } from "@/lib/api"
+import { formatBytes } from "@/lib/format"
+import { processStateName } from "@/lib/process"
 import { processDetailSearch } from "@/lib/search"
 
-const bytes = (value: number) => {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"]
-  let amount = value
-  let index = 0
-  while (amount >= 1024 && index < units.length - 1) {
-    amount /= 1024
-    index += 1
-  }
-  return `${amount.toFixed(index ? 1 : 0)} ${units[index]}`
-}
+const bytes = formatBytes
 
 function StatCard({
   icon: Icon,
@@ -163,7 +154,7 @@ const socketColumns: ColumnDef<DataTableFeatures, ProcessSocket>[] = [
   },
 ]
 
-export function ProcessDetailPage() {
+function ProcessDetailPage() {
   const search = getRouteApi("/processes/$pid").useSearch()
   const params = getRouteApi("/processes/$pid").useParams() as {
     pid: string
@@ -203,9 +194,11 @@ export function ProcessDetailPage() {
   if (query.isPending) return <DetailSkeleton />
 
   if (query.isError) {
-    const message = (query.error as Error).message
-    const isNotFound = message.toLowerCase().includes("no longer exists")
-    const isReused = message.toLowerCase().includes("different process")
+    const error = query.error
+    const code = error instanceof APIError ? error.code : undefined
+    const message = error instanceof Error ? error.message : ""
+    const isNotFound = code === "process-not-found"
+    const isReused = code === "process-reused"
     return (
       <main className="@container/main flex flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6">
         <Breadcrumb>
@@ -296,7 +289,7 @@ export function ProcessDetailPage() {
                   className="capitalize"
                 >
                   <ActivityIcon data-icon="inline-start" />
-                  {proc.state || "unknown"}
+                  {processStateName(proc.state) || "Unknown"}
                 </Badge>
                 {proc.permissionDenied ? (
                   <Badge variant="destructive">
@@ -313,10 +306,6 @@ export function ProcessDetailPage() {
                 <span className="inline-flex items-center gap-1">
                   <UserIcon className="size-3" aria-hidden="true" />
                   {proc.user}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <Clock3Icon className="size-3" aria-hidden="true" />
-                  start {proc.started}
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <LayersIcon className="size-3" aria-hidden="true" />
@@ -350,46 +339,30 @@ export function ProcessDetailPage() {
         )}
       </Card>
 
-      {/* Stat grid */}
-      <div className="grid gap-3 grid-cols-2 @3xl/main:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 @3xl/main:grid-cols-4">
         <StatCard
           icon={CpuIcon}
           label="CPU time"
-          value={`${proc.cpuTime.toFixed(1)}s`}
-          hint={`${proc.threads} thread${proc.threads === 1 ? "" : "s"} · ${proc.state}`}
+          value={`${proc.cpuTime.toFixed(1)} s`}
+          hint={`${proc.threads} thread${proc.threads === 1 ? "" : "s"}`}
         />
         <StatCard
           icon={MemoryStickIcon}
-          label="Memory"
+          label="Resident memory"
           value={bytes(proc.memory)}
+          hint={`${bytes(proc.virtualMemory)} virtual`}
         />
         <StatCard
           icon={HardDriveIcon}
-          label="Disk I/O"
-          value={
-            proc.ioDenied
-              ? "—"
-              : `R ${bytes(proc.diskRead)} · W ${bytes(proc.diskWrite)}`
-          }
-          hint={
-            proc.ioDenied
-              ? "I/O counters require elevated read access"
-              : "Cumulative read/write"
-          }
+          label="Disk read"
+          value={proc.ioDenied ? "Restricted" : bytes(proc.diskRead)}
+          hint="Since start"
         />
         <StatCard
-          icon={NetworkIcon}
-          label="Network"
-          value={
-            proc.networkRxRate !== undefined || proc.networkTxRate !== undefined
-              ? `Rx ${bytes(proc.networkRxRate ?? 0)}/s`
-              : "—"
-          }
-          hint={
-            proc.networkTxRate !== undefined
-              ? `Tx ${bytes(proc.networkTxRate ?? 0)}/s`
-              : "eBPF collector optional"
-          }
+          icon={HardDriveIcon}
+          label="Disk written"
+          value={proc.ioDenied ? "Restricted" : bytes(proc.diskWrite)}
+          hint="Since start"
         />
       </div>
 
@@ -397,78 +370,13 @@ export function ProcessDetailPage() {
       <div className="grid gap-4 sm:gap-6 @5xl/main:grid-cols-3">
         {/* Left: primary details span 2 */}
         <div className="flex flex-col gap-4 sm:gap-6 @5xl/main:col-span-2">
-          {/* Identity + command */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <BracesIcon
-                  className="size-4 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                Identity &amp; command
-              </CardTitle>
-              <CardDescription>
-                PID start identity guards against PID reuse.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <dl className="grid gap-x-4 gap-y-3 text-sm grid-cols-1 sm:grid-cols-[9rem_1fr]">
-                <dt className="font-medium text-muted-foreground">Program</dt>
-                <dd className="font-mono text-sm break-all">{proc.program}</dd>
-                <dt className="font-medium text-muted-foreground">Command</dt>
-                <dd className="break-all font-mono text-xs">{proc.command}</dd>
-                <dt className="font-medium text-muted-foreground">User</dt>
-                <dd className="truncate">{proc.user}</dd>
-                <dt className="font-medium text-muted-foreground">
-                  PID / PPID
-                </dt>
-                <dd className="font-mono">
-                  {proc.pid} / {proc.ppid}
-                </dd>
-                <dt className="font-medium text-muted-foreground">Started</dt>
-                <dd className="font-mono text-xs sm:text-sm break-all">
-                  {proc.started}
-                </dd>
-                <dt className="font-medium text-muted-foreground">State</dt>
-                <dd>
-                  <Badge variant="outline">{proc.state || "—"}</Badge>
-                </dd>
-                {proc.reason ? (
-                  <>
-                    <dt className="font-medium text-muted-foreground">Note</dt>
-                    <dd className="text-muted-foreground break-words">
-                      {proc.reason}
-                    </dd>
-                  </>
-                ) : null}
-              </dl>
-              <Separator />
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  render={
-                    <Link
-                      to="/processes/$pid"
-                      params={{ pid: String(proc.ppid) }}
-                      search={{ started: undefined }}
-                    />
-                  }
-                  disabled={proc.ppid <= 1}
-                >
-                  View parent (PID {proc.ppid})
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* Relationships */}
           <Card>
             <CardHeader>
               <CardTitle>Relationships</CardTitle>
               <CardDescription>Parent and direct children.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="flex flex-col gap-4">
               <div>
                 <p className="mb-1.5 text-sm font-medium">Parent</p>
                 {details.parent ? (
@@ -488,7 +396,8 @@ export function ProcessDetailPage() {
                       PID {details.parent.pid}
                     </Badge>
                     <span className="text-xs text-muted-foreground truncate">
-                      {details.parent.user} · {details.parent.state}
+                      {details.parent.user} ·{" "}
+                      {processStateName(details.parent.state)}
                     </span>
                   </Link>
                 ) : (
@@ -522,7 +431,7 @@ export function ProcessDetailPage() {
                             PID {child.pid}
                           </Badge>
                           <span className="text-xs text-muted-foreground">
-                            {child.user} · {child.state} · {child.threads} thr
+                            {child.user} · {processStateName(child.state)}
                           </span>
                           <span className="hidden truncate font-mono text-xs text-muted-foreground @2xl/main:block ml-auto">
                             {child.command}
@@ -577,7 +486,7 @@ export function ProcessDetailPage() {
             </CardHeader>
             <CardContent>
               {(details.openFiles ?? []).length ? (
-                <ul className="max-h-64 space-y-1 overflow-auto font-mono text-xs">
+                <ul className="flex max-h-64 flex-col gap-0.5 overflow-auto font-mono text-xs">
                   {(details.openFiles ?? []).map((file, index) => (
                     <li
                       // biome-ignore lint/suspicious/noArrayIndexKey: the same path can appear multiple times (one row per file descriptor), so the index disambiguates duplicates

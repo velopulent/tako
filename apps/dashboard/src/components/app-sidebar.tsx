@@ -2,27 +2,35 @@ import { Link, useLocation } from "@tanstack/react-router"
 import {
   ActivityIcon,
   ChartNoAxesCombinedIcon,
-  ClipboardListIcon,
+  ChevronsUpDownIcon,
   FileClockIcon,
   FilesIcon,
   GaugeIcon,
   HardDriveIcon,
+  LogOutIcon,
   NetworkIcon,
   PackageCheckIcon,
   ServerCogIcon,
   ServerIcon,
   SettingsIcon,
-  ShellIcon,
   ShieldCheckIcon,
   SirenIcon,
   SquareTerminalIcon,
   TimerIcon,
-  UserRoundCogIcon,
   UsersIcon,
 } from "lucide-react"
 import type * as React from "react"
+
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Sidebar,
   SidebarContent,
@@ -35,8 +43,10 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar"
-import type { User } from "@/lib/api"
+import { api } from "@/lib/api"
+import { useSession } from "@/lib/session"
 
 const groups = [
   {
@@ -44,7 +54,7 @@ const groups = [
     items: [
       { title: "Dashboard", to: "/", icon: GaugeIcon },
       { title: "Metrics", to: "/metrics", icon: ChartNoAxesCombinedIcon },
-      { title: "Processes", to: "/processes", icon: ActivityIcon },
+      { title: "Incidents", to: "/incidents", icon: SirenIcon },
     ],
   },
   {
@@ -52,6 +62,7 @@ const groups = [
     items: [
       { title: "Services", to: "/services", icon: ServerCogIcon },
       { title: "Timers", to: "/timers", icon: TimerIcon },
+      { title: "Processes", to: "/processes", icon: ActivityIcon },
       { title: "Logs", to: "/logs", icon: FileClockIcon },
       { title: "Terminal", to: "/terminal", icon: SquareTerminalIcon },
     ],
@@ -62,8 +73,6 @@ const groups = [
       { title: "Storage", to: "/storage", icon: HardDriveIcon },
       { title: "Network", to: "/network", icon: NetworkIcon },
       { title: "Files", to: "/files", icon: FilesIcon },
-      { title: "Security", to: "/security", icon: ShieldCheckIcon },
-      { title: "Incidents", to: "/incidents", icon: SirenIcon },
     ],
   },
   {
@@ -71,28 +80,91 @@ const groups = [
     items: [
       { title: "Accounts", to: "/accounts", icon: UsersIcon },
       { title: "Updates", to: "/updates", icon: PackageCheckIcon },
-      { title: "Jobs", to: "/jobs", icon: ClipboardListIcon },
+      { title: "Security", to: "/security", icon: ShieldCheckIcon },
       { title: "Host", to: "/host", icon: ServerIcon },
     ],
   },
-  {
-    label: "Configuration",
-    items: [{ title: "Settings", to: "/settings", icon: SettingsIcon }],
-  },
 ] as const
 
-export function AppSidebar({
-  user,
-  ...props
-}: React.ComponentProps<typeof Sidebar> & { user: User }) {
-  const location = useLocation()
-  const initials = user.name
-    .split(" ")
+function initialsOf(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
     .map((part) => part[0])
     .join("")
     .slice(0, 2)
     .toUpperCase()
+}
 
+function isActive(pathname: string, to: string) {
+  return pathname === to || (to !== "/" && pathname.startsWith(`${to}/`))
+}
+
+function UserMenu() {
+  const session = useSession()
+  const { isMobile, setOpenMobile } = useSidebar()
+  const user = session.user
+  async function signOut() {
+    await api<void>("/auth/logout", { method: "POST" }).catch(() => undefined)
+    window.location.assign("/")
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <SidebarMenuButton
+            size="lg"
+            className="data-popup-open:bg-sidebar-accent"
+          />
+        }
+      >
+        <Avatar className="size-8 rounded-lg">
+          <AvatarFallback className="rounded-lg">
+            {initialsOf(user.name || user.username)}
+          </AvatarFallback>
+        </Avatar>
+        <div className="grid flex-1 text-left text-sm leading-tight">
+          <span className="truncate font-medium">
+            {user.name || user.username}
+          </span>
+          <span className="truncate text-xs text-muted-foreground">
+            {user.username}
+          </span>
+        </div>
+        <ChevronsUpDownIcon className="ml-auto" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side={isMobile ? "bottom" : "right"}
+        align="end"
+        className="w-56"
+      >
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="font-normal">
+            Signed in as <span className="font-medium">{user.username}</span>
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuItem
+            render={<Link to="/settings" />}
+            onClick={() => setOpenMobile(false)}
+          >
+            <SettingsIcon />
+            Settings
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => void signOut()}>
+            <LogOutIcon />
+            Sign out
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
+  const { pathname } = useLocation()
+  const { setOpenMobile } = useSidebar()
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
@@ -103,62 +175,45 @@ export function AppSidebar({
               render={<Link to="/" />}
               tooltip="Tako"
             >
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                <ShellIcon aria-hidden="true" />
-              </div>
+              <img src="/favicon.svg" alt="" className="size-8 rounded-lg" />
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-semibold">Tako</span>
-                <span className="truncate text-xs">System console</span>
+                <span className="truncate text-xs text-muted-foreground">
+                  Server console
+                </span>
               </div>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <ScrollArea className="min-h-0 flex-1">
-          {groups.map((group) => (
-            <SidebarGroup key={group.label}>
-              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  {group.items.map((item) => (
-                    <SidebarMenuItem key={item.to}>
-                      <SidebarMenuButton
-                        render={<Link to={item.to} />}
-                        tooltip={item.title}
-                        isActive={
-                          location.pathname === item.to ||
-                          (item.to !== "/" &&
-                            location.pathname.startsWith(`${item.to}/`))
-                        }
-                      >
-                        <item.icon aria-hidden="true" />
-                        <span>{item.title}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-          ))}
-        </ScrollArea>
+        {groups.map((group) => (
+          <SidebarGroup key={group.label}>
+            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {group.items.map((item) => (
+                  <SidebarMenuItem key={item.to}>
+                    <SidebarMenuButton
+                      render={<Link to={item.to} />}
+                      tooltip={item.title}
+                      isActive={isActive(pathname, item.to)}
+                      onClick={() => setOpenMobile(false)}
+                    >
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" tooltip={user.username}>
-              <Avatar className="size-8 rounded-lg">
-                <AvatarFallback className="rounded-lg">
-                  {initials || <UserRoundCogIcon />}
-                </AvatarFallback>
-              </Avatar>
-              <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">{user.name}</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  {user.username}
-                </span>
-              </div>
-            </SidebarMenuButton>
+            <UserMenu />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

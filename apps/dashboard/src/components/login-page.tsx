@@ -1,13 +1,7 @@
-import {
-  LoaderCircleIcon,
-  LockKeyholeIcon,
-  ShieldCheckIcon,
-  UserIcon,
-} from "lucide-react"
+import { LoaderCircleIcon, LockKeyholeIcon, UserIcon } from "lucide-react"
 import * as React from "react"
 import { LoginPromptFields } from "@/components/login-prompt-fields"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -17,12 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field"
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import {
   InputGroup,
   InputGroupAddon,
@@ -172,24 +161,17 @@ export function LoginPage({
     <LoginBackdrop branding={branding}>
       <Card className="w-full max-w-md border border-foreground/15 bg-card/85 py-0 text-card-foreground shadow-2xl shadow-black/30 ring-1 ring-foreground/15 backdrop-blur-2xl supports-[backdrop-filter]:bg-card/65">
         <CardHeader className="gap-5 border-b border-foreground/10 bg-foreground/5 p-6 sm:p-8">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-black/20 ring-1 ring-primary/40">
-              <ShieldCheckIcon aria-hidden="true" />
-            </div>
-            <Badge
-              className="border-foreground/15 bg-foreground/5 text-muted-foreground"
-              variant="outline"
-            >
-              <LockKeyholeIcon aria-hidden="true" />
-              <span>Private console</span>
-            </Badge>
-          </div>
-          <div className="flex flex-col gap-2">
-            <CardTitle className="break-words text-2xl font-semibold tracking-tight sm:text-3xl">
-              Login to {hostname}
+          <img
+            src="/favicon.svg"
+            alt="Tako"
+            className="size-11 rounded-xl shadow-lg shadow-black/20"
+          />
+          <div className="flex flex-col gap-1.5">
+            <CardTitle className="break-words text-2xl font-semibold tracking-tight">
+              Sign in to {hostname}
             </CardTitle>
-            <CardDescription className="max-w-sm text-sm leading-relaxed text-muted-foreground/90">
-              Sign in with your Linux account to manage this host.
+            <CardDescription className="text-sm text-muted-foreground/90">
+              Use your Linux account to manage this host.
             </CardDescription>
           </div>
         </CardHeader>
@@ -249,11 +231,9 @@ export function LoginPage({
                         type="password"
                         autoComplete="current-password"
                         className="text-foreground placeholder:text-muted-foreground/70"
+                        required
                       />
                     </InputGroup>
-                    <FieldDescription className="text-muted-foreground/90">
-                      Authentication follows this host&apos;s PAM policy.
-                    </FieldDescription>
                   </Field>
                 </>
               )}
@@ -284,14 +264,9 @@ export function LoginPage({
                 Start over
               </Button>
             ) : null}
-            <p className="flex items-start gap-2 text-center text-xs leading-relaxed text-muted-foreground">
-              <LockKeyholeIcon
-                aria-hidden="true"
-                className="mt-0.5 size-3.5 shrink-0"
-              />
-              <span>
-                Credentials are passed to PAM and never stored by Tako.
-              </span>
+            <p className="text-center text-xs text-muted-foreground">
+              Your password goes to the host&apos;s PAM stack. Tako never stores
+              it.
             </p>
           </CardFooter>
         </form>

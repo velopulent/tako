@@ -5,7 +5,7 @@ import type { RefreshInterval } from "@/lib/monitoring"
 export const monitoringPreferenceKey = ["preferences", "monitoring"] as const
 
 const storageKey = "tako-monitoring-default:v1"
-const fallback: RefreshInterval = "1m"
+const fallback: RefreshInterval = "5s"
 
 function readStored(): RefreshInterval {
   try {

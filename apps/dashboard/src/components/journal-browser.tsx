@@ -1,21 +1,53 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteQuery } from "@tanstack/react-query"
 import { getRouteApi, useNavigate } from "@tanstack/react-router"
-import type { ColumnDef } from "@tanstack/react-table"
-import { ArrowDownToLineIcon, EyeIcon, PauseIcon, PlayIcon } from "lucide-react"
+import { useVirtualizer } from "@tanstack/react-virtual"
+import {
+  ArrowUpIcon,
+  BookmarkIcon,
+  DownloadIcon,
+  FilterIcon,
+  PauseIcon,
+  PlayIcon,
+  SearchIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react"
 import * as React from "react"
-import { DataTable, type DataTableFeatures } from "@/components/data-table"
-import { SavedLogViews } from "@/components/saved-log-views"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+
+import { logPriority, PriorityBadge } from "@/components/log-list"
 import { Badge } from "@/components/ui/badge"
-import { Button, buttonVariants } from "@/components/ui/button"
+import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Empty,
   EmptyDescription,
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty"
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -24,6 +56,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
 import {
   Sheet,
   SheetContent,
@@ -32,575 +65,753 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Spinner } from "@/components/ui/spinner"
 import { api, type JournalPage, type LogEntry } from "@/lib/api"
+import { formatDateTime, formatTimestamp } from "@/lib/format"
+import { QueryError } from "@/lib/page"
+import type { LogsSearch } from "@/lib/search"
+import { cn } from "@/lib/utils"
 
-const journalPriorityItems = [
+const priorityItems = [
   { value: "all", label: "All priorities" },
-  { value: "0..3", label: "Emergency–Error" },
-  { value: "4", label: "Warning" },
-  { value: "5..7", label: "Notice–Debug" },
+  { value: "0..3", label: "Errors and worse" },
+  { value: "0..4", label: "Warnings and worse" },
+  { value: "0..5", label: "Notices and worse" },
+  { value: "0..6", label: "Info and worse" },
 ]
 
-const priorities = [
-  "Emergency",
-  "Alert",
-  "Critical",
-  "Error",
-  "Warning",
-  "Notice",
-  "Info",
-  "Debug",
-]
-const entryKey = (entry: LogEntry) =>
-  entry.id ??
-  `${entry.timestamp}:${entry.unit}:${entry.priority}:${entry.message}`
-const uniqueEntries = (entries: LogEntry[]) => [
-  ...new Map(entries.map((entry) => [entryKey(entry), entry])).values(),
+const rangeItems = [
+  { value: "boot", label: "Current boot" },
+  { value: "1h", label: "Last hour" },
+  { value: "24h", label: "Last 24 hours" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "all", label: "All time" },
 ]
 
-const columns: ColumnDef<DataTableFeatures, LogEntry>[] = [
-  {
-    accessorKey: "timestamp",
-    header: "Time",
-    cell: ({ row }) => new Date(row.original.timestamp).toLocaleString(),
-  },
-  {
-    accessorKey: "priority",
-    header: "Priority",
-    cell: ({ row }) => (
-      <Badge
-        variant={Number(row.original.priority) <= 3 ? "destructive" : "outline"}
-      >
-        {priorities[Number(row.original.priority)] ?? "Unknown"}
-      </Badge>
-    ),
-  },
-  { accessorKey: "unit", header: "Unit" },
-  {
-    accessorKey: "message",
-    header: "Message",
-    size: 360,
-    meta: { wrap: true },
-    cell: ({ row }) => (
-      <span className="font-mono text-xs whitespace-normal">
-        {row.original.message}
-      </span>
-    ),
-  },
-]
+const rangeMilliseconds: Record<string, number> = {
+  "1h": 3_600_000,
+  "24h": 86_400_000,
+  "7d": 604_800_000,
+}
 
-function makeParams(filters: {
-  priority: string
-  boot: string
-  since: string
-  until: string
-  unit: string
-  executable: string
-  text: string
-  details: boolean
-  cursor?: string
-  limit?: number
-}) {
-  const params = new URLSearchParams({
-    limit: String(filters.limit ?? 200),
-  })
+type Filters = Pick<
+  LogsSearch,
+  "priority" | "range" | "unit" | "executable" | "text" | "since" | "until"
+>
+
+const savedKey = "tako-log-views:v2"
+type SavedView = { id: string; name: string; filters: Filters }
+
+function readSaved(): SavedView[] {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(savedKey) ?? "[]"
+    ) as SavedView[]
+    return Array.isArray(parsed)
+      ? parsed.filter((view) => view?.id && view?.name)
+      : []
+  } catch {
+    return []
+  }
+}
+
+function writeSaved(views: SavedView[]) {
+  try {
+    localStorage.setItem(savedKey, JSON.stringify(views))
+  } catch {
+    // Saved views are a convenience; ignore storage failures.
+  }
+}
+
+// queryParams builds the journal query for the current filters. Relative
+// ranges are resolved when the query runs, so "last hour" stays current.
+function queryParams(filters: Filters, extra: Record<string, string> = {}) {
+  const params = new URLSearchParams(extra)
+  const range = filters.range ?? "boot"
+  if (filters.since || filters.until) {
+    if (filters.since) params.set("since", filters.since)
+    if (filters.until) params.set("until", filters.until)
+  } else if (range === "boot") {
+    params.set("boot", "current")
+  } else if (rangeMilliseconds[range]) {
+    params.set(
+      "since",
+      new Date(Date.now() - rangeMilliseconds[range]).toISOString()
+    )
+  }
   if (filters.priority) params.set("priority", filters.priority)
-  if (filters.boot) params.set("boot", filters.boot)
-  if (filters.since) params.set("since", filters.since)
-  if (filters.until) params.set("until", filters.until)
   if (filters.unit) params.set("unit", filters.unit)
   if (filters.executable) params.set("executable", filters.executable)
   if (filters.text) params.set("text", filters.text)
-  if (filters.details) params.set("details", "true")
-  if (filters.cursor) params.set("cursor", filters.cursor)
   return params
 }
+
+const entryKey = (entry: LogEntry) =>
+  entry.id ?? `${entry.timestamp}:${entry.unit}:${entry.message}`
+
+const rowHeight = 36
+const maxLive = 1000
 
 export function JournalBrowser() {
   const search = getRouteApi("/logs").useSearch()
   const navigate = useNavigate({ from: "/logs" })
-  const patch = (next: Partial<typeof search>) =>
+  const filters: Filters = {
+    priority: search.priority,
+    range: search.range,
+    unit: search.unit,
+    executable: search.executable,
+    text: search.text,
+    since: search.since,
+    until: search.until,
+  }
+  const setFilters = (next: Partial<Filters>) =>
     navigate({
       search: (previous) => ({ ...previous, ...next }),
       replace: true,
     })
-  const committed = {
-    boot: search.boot ?? "",
-    since: search.since ?? "",
-    until: search.until ?? "",
-    unit: search.unit ?? "",
-    executable: search.executable ?? "",
-    text: search.text ?? "",
-  }
-  const [draft, setDraft] = React.useState(committed)
-  const [seen, setSeen] = React.useState(committed)
-  if (
-    committed.boot !== seen.boot ||
-    committed.since !== seen.since ||
-    committed.until !== seen.until ||
-    committed.unit !== seen.unit ||
-    committed.executable !== seen.executable ||
-    committed.text !== seen.text
-  ) {
-    setSeen(committed)
-    setDraft(committed)
-  }
-  const boot = draft.boot
-  const since = draft.since
-  const until = draft.until
-  const unit = draft.unit
-  const executable = draft.executable
-  const text = draft.text
-  const setBoot = (value: string) =>
-    setDraft((current) => ({ ...current, boot: value }))
-  const setSince = (value: string) =>
-    setDraft((current) => ({ ...current, since: value }))
-  const setUntil = (value: string) =>
-    setDraft((current) => ({ ...current, until: value }))
-  const setUnit = (value: string) =>
-    setDraft((current) => ({ ...current, unit: value }))
-  const setExecutable = (value: string) =>
-    setDraft((current) => ({ ...current, executable: value }))
-  const setText = (value: string) =>
-    setDraft((current) => ({ ...current, text: value }))
-  const [advanced, setAdvanced] = React.useState(false)
-  const [connection, setConnection] = React.useState("Connecting")
-  const [reading, setReading] = React.useState(false)
-  const readingRef = React.useRef(false)
-  const [details, setDetails] = React.useState(false)
-  const [cursor, setCursor] = React.useState("")
-  const [following, setFollowing] = React.useState(true)
-  const [atLatest, setAtLatest] = React.useState(true)
-  const [pendingLive, setPendingLive] = React.useState(0)
-  const queryClient = useQueryClient()
-  const [scrollVersion, setScrollVersion] = React.useState(0)
-  const [live, setLive] = React.useState<LogEntry[]>([])
-  const [selected, setSelected] = React.useState<LogEntry | null>(null)
-  const atLatestRef = React.useRef(true)
+  const filterKey = JSON.stringify(filters)
 
-  const setLatest = (value: boolean) => {
-    atLatestRef.current = value
-    setAtLatest(value)
-  }
-  const filterValues = {
-    priority: search.priority ?? "",
-    boot: search.boot ?? "",
-    since: search.since ?? "",
-    until: search.until ?? "",
-    unit: search.unit ?? "",
-    executable: search.executable ?? "",
-    text: search.text ?? "",
-    details,
-  }
-  const query = useQuery({
-    staleTime: 0,
-    queryKey: ["logs", filterValues, cursor],
-    queryFn: ({ signal }) =>
+  const [following, setFollowing] = React.useState(true)
+  const [live, setLive] = React.useState<LogEntry[]>([])
+  const [waiting, setWaiting] = React.useState(0)
+  const [selected, setSelected] = React.useState<LogEntry | null>(null)
+  const viewport = React.useRef<HTMLDivElement>(null)
+  const atTop = React.useRef(true)
+
+  const query = useInfiniteQuery({
+    queryKey: ["journal", filterKey],
+    initialPageParam: "",
+    queryFn: ({ pageParam, signal }) =>
       api<JournalPage>(
-        `/logs?${makeParams({ ...filterValues, cursor }).toString()}`,
+        `/logs?${queryParams(filters, { limit: "200", details: "true", ...(pageParam ? { cursor: pageParam } : {}) })}`,
         { signal }
       ),
+    getNextPageParam: (page) => page.nextCursor || undefined,
   })
-  const streamParams = makeParams(filterValues).toString()
-  const exportParams = makeParams({ ...filterValues, limit: 500 }).toString()
-  // biome-ignore lint/correctness/useExhaustiveDependencies: setLatest is a render-local helper (ref write + setState); listing it would re-arm the debounce timer on every render
-  React.useEffect(() => {
-    const timer = window.setTimeout(() => {
-      if (
-        boot === (search.boot ?? "") &&
-        since === (search.since ?? "") &&
-        until === (search.until ?? "") &&
-        unit === (search.unit ?? "") &&
-        executable === (search.executable ?? "") &&
-        text === (search.text ?? "")
-      ) {
-        return
-      }
-      void navigate({
-        search: (previous) => ({
-          ...previous,
-          boot: boot || undefined,
-          since: since || undefined,
-          until: until || undefined,
-          unit: unit || undefined,
-          executable: executable || undefined,
-          text: text || undefined,
-        }),
-        replace: true,
-      })
-      setCursor("")
-      setLive([])
-      setPendingLive(0)
-      setLatest(true)
-    }, 250)
-    return () => window.clearTimeout(timer)
-  }, [
-    boot,
-    since,
-    until,
-    unit,
-    executable,
-    text,
-    search.boot,
-    search.since,
-    search.until,
-    search.unit,
-    search.executable,
-    search.text,
-    navigate,
-  ])
 
+  // Reset live entries whenever the filters change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filterKey is the dependency that matters
   React.useEffect(() => {
-    if (!following || typeof EventSource === "undefined") return
-    const source = new EventSource(`/api/v1/logs/stream?${streamParams}`)
-    let queue: LogEntry[] = []
-    source.addEventListener("open", () => setConnection("Live"))
-    source.addEventListener("error", () => setConnection("Reconnecting"))
+    setLive([])
+    setWaiting(0)
+  }, [filterKey])
+
+  // Live tail: new entries arrive at the top. While the reader is scrolled
+  // into history they are held back and counted instead.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filterKey captures the filters used by queryParams
+  React.useEffect(() => {
+    if (!following || filters.until) return
+    const params = queryParams(
+      { ...filters, since: undefined, until: undefined, range: "all" },
+      { details: "true" }
+    )
+    const source = new EventSource(`/api/v1/logs/stream?${params}`)
+    let pending: LogEntry[] = []
     source.addEventListener("log", (event) => {
       try {
-        const entry = JSON.parse(
-          (event as MessageEvent<string>).data
-        ) as LogEntry
-        if (!entry.timestamp || typeof entry.message !== "string") return
-        if (!atLatestRef.current || readingRef.current) {
-          setPendingLive((current) => Math.min(current + 1, 500))
-          return
-        }
-        queue.push(entry)
-        if (queue.length > 500) queue = queue.slice(-500)
+        pending.push(
+          JSON.parse((event as MessageEvent<string>).data) as LogEntry
+        )
       } catch {
-        /* Invalid events do not replace the last valid snapshot. */
+        // Ignore malformed events.
       }
     })
-    const timer = window.setInterval(() => {
-      if (!queue.length) return
-      if (readingRef.current || !atLatestRef.current) {
-        setPendingLive((current) => Math.min(current + queue.length, 500))
-        queue = []
-        return
+    const flush = window.setInterval(() => {
+      if (!pending.length) return
+      const batch = pending.reverse()
+      pending = []
+      if (!atTop.current) {
+        setWaiting((count) => count + batch.length)
       }
-      const batch = queue.reverse()
-      queue = []
-      setLive((current) => uniqueEntries([...batch, ...current]).slice(0, 500))
-    }, 200)
+      setLive((current) => [...batch, ...current].slice(0, maxLive))
+    }, 250)
     return () => {
-      window.clearInterval(timer)
+      window.clearInterval(flush)
       source.close()
     }
-  }, [following, streamParams])
+  }, [following, filterKey])
 
-  const items = atLatest
-    ? uniqueEntries([...live, ...(query.data?.items ?? [])])
-    : (query.data?.items ?? [])
-  const jumpToLatest = () => {
-    readingRef.current = false
-    setReading(false)
-    void queryClient.invalidateQueries({ queryKey: ["logs"] })
-    setScrollVersion((current) => current + 1)
-    setLive([])
-    setPendingLive(0)
-    setCursor("")
-    setLatest(true)
-    setFollowing(true)
+  const items = React.useMemo(() => {
+    const seen = new Set<string>()
+    const merged: LogEntry[] = []
+    for (const entry of [
+      ...live,
+      ...(query.data?.pages.flatMap((page) => page.items) ?? []),
+    ]) {
+      const key = entryKey(entry)
+      if (seen.has(key)) continue
+      seen.add(key)
+      merged.push(entry)
+    }
+    return merged
+  }, [live, query.data])
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => viewport.current,
+    estimateSize: () => rowHeight,
+    overscan: 20,
+  })
+
+  const scrollToTop = () => {
+    viewport.current?.scrollTo({ top: 0, behavior: "smooth" })
+    setWaiting(0)
   }
-  const applySavedFilter = (saved: {
-    boot?: string
-    since?: string
-    until?: string
-    priority?: string
-    unit?: string
-    executable?: string
-    text?: string
-    details?: boolean
-  }) => {
-    setBoot(saved.boot ?? "")
-    setSince(saved.since ?? "")
-    setUntil(saved.until ?? "")
-    setUnit(saved.unit ?? "")
-    setExecutable(saved.executable ?? "")
-    setText(saved.text ?? "")
-    setDetails(Boolean(saved.details))
-    patch({
-      boot: saved.boot || undefined,
-      since: saved.since || undefined,
-      until: saved.until || undefined,
-      unit: saved.unit || undefined,
-      executable: saved.executable || undefined,
-      text: saved.text || undefined,
-      priority: saved.priority || undefined,
-    })
-    setCursor("")
-    setLive([])
-    setPendingLive(0)
-    setLatest(true)
-  }
+
+  const activeFilters = [
+    filters.unit && `Unit: ${filters.unit}`,
+    filters.executable && `Executable: ${filters.executable}`,
+    (filters.since || filters.until) && "Custom time range",
+  ].filter(Boolean) as string[]
 
   return (
-    <>
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">
-            {following ? connection : "Paused"}
-            {reading ? " · reading history" : ""}
-          </Badge>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <SearchField
+          value={filters.text ?? ""}
+          onChange={(text) => setFilters({ text: text || undefined })}
+        />
+        <Select
+          items={rangeItems}
+          value={
+            filters.since || filters.until
+              ? "custom"
+              : (filters.range ?? "boot")
+          }
+          onValueChange={(value) =>
+            setFilters({
+              range:
+                value === "boot"
+                  ? undefined
+                  : (String(value) as Filters["range"]),
+              since: undefined,
+              until: undefined,
+            })
+          }
+        >
+          <SelectTrigger size="sm" aria-label="Time range" className="w-40">
+            <SelectValue placeholder="Custom range" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              {rangeItems.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+        <Select
+          items={priorityItems}
+          value={filters.priority ?? "all"}
+          onValueChange={(value) =>
+            setFilters({
+              priority: value === "all" ? undefined : String(value),
+            })
+          }
+        >
+          <SelectTrigger size="sm" aria-label="Priority" className="w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              {priorityItems.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+        <MoreFilters filters={filters} onApply={setFilters} />
+        <div className="ml-auto flex items-center gap-2">
           <Button
-            variant="outline"
-            onClick={() => setAdvanced(!advanced)}
-            aria-expanded={advanced}
+            variant={following ? "secondary" : "outline"}
+            size="sm"
+            onClick={() => setFollowing((value) => !value)}
+            aria-pressed={following}
           >
-            Advanced filters
+            {following ? (
+              <PauseIcon data-icon="inline-start" />
+            ) : (
+              <PlayIcon data-icon="inline-start" />
+            )}
+            {following ? "Live" : "Paused"}
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setSince(new Date(Date.now() - 3600000).toISOString())
-              setUntil("")
-            }}
-          >
-            Last hour
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setSince(new Date(Date.now() - 86400000).toISOString())
-              setUntil("")
-            }}
-          >
-            Last 24 hours
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setBoot("current")
-              setSince("")
-              setUntil("")
-            }}
-          >
-            Current boot
-          </Button>
-        </div>
-        <FieldGroup className="grid gap-4 @lg/main:grid-cols-2 @4xl/main:grid-cols-4">
-          <Field>
-            <FieldLabel htmlFor="journal-text">Message contains</FieldLabel>
-            <Input
-              id="journal-text"
-              maxLength={512}
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              placeholder="failed"
-            />
-          </Field>
-          {advanced && (
-            <>
-              <Field>
-                <FieldLabel htmlFor="journal-boot">Boot</FieldLabel>
-                <Input
-                  id="journal-boot"
-                  maxLength={32}
-                  value={boot}
-                  onChange={(event) => setBoot(event.target.value)}
-                  placeholder="current or boot ID"
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="journal-since">Since (RFC3339)</FieldLabel>
-                <Input
-                  id="journal-since"
-                  maxLength={64}
-                  value={since}
-                  onChange={(event) => setSince(event.target.value)}
-                  placeholder="2026-08-13T00:00:00Z"
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="journal-until">Until (RFC3339)</FieldLabel>
-                <Input
-                  id="journal-until"
-                  maxLength={64}
-                  value={until}
-                  onChange={(event) => setUntil(event.target.value)}
-                  placeholder="2026-08-13T23:59:59Z"
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="journal-unit">Unit</FieldLabel>
-                <Input
-                  id="journal-unit"
-                  maxLength={256}
-                  value={unit}
-                  onChange={(event) => setUnit(event.target.value)}
-                  placeholder="worker.service"
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="journal-executable">Executable</FieldLabel>
-                <Input
-                  id="journal-executable"
-                  maxLength={4096}
-                  value={executable}
-                  onChange={(event) => setExecutable(event.target.value)}
-                  placeholder="/usr/bin/worker"
-                />
-              </Field>
-            </>
-          )}
-          <Field>
-            <FieldLabel htmlFor="journal-priority">Priority</FieldLabel>
-            <Select
-              items={journalPriorityItems}
-              value={search.priority || "all"}
-              onValueChange={(value) => {
-                patch({
-                  priority:
-                    value === "all" || !value ? undefined : String(value),
-                })
-                setCursor("")
-                setLive([])
-                setPendingLive(0)
-                setLatest(true)
-              }}
-            >
-              <SelectTrigger
-                id="journal-priority"
-                aria-label="Journal priority"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {journalPriorityItems.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-        </FieldGroup>
-        <SavedLogViews filter={filterValues} onApply={applySavedFilter} />
-        {pendingLive > 0 && (
-          <Button variant="secondary" size="sm" onClick={jumpToLatest}>
-            <ArrowDownToLineIcon data-icon="inline-start" />
-            {pendingLive} new {pendingLive === 1 ? "entry" : "entries"} — jump
-            to latest
-          </Button>
-        )}
-        {query.isPending && <Skeleton className="h-72" />}
-        {query.isError && (
-          <Alert variant="destructive">
-            <AlertTitle>Journal unavailable</AlertTitle>
-            <AlertDescription>
-              {query.error.message || "The journal query failed."}
-            </AlertDescription>
-          </Alert>
-        )}
-        {!query.isPending && !query.isError && !items.length && (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No journal entries</EmptyTitle>
-              <EmptyDescription>
-                Try a broader filter or time range.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        )}
-        {!query.isPending && !query.isError && items.length > 0 && (
-          <DataTable
-            key={scrollVersion}
-            onScrollPosition={(top) => {
-              const paused = top > 40
-              readingRef.current = paused
-              setReading(paused)
-            }}
-            data={items}
-            columns={columns}
-            searchPlaceholder="Search loaded entries"
-            search={search.q}
-            onSearchChange={(q) => patch({ q: q || undefined })}
-            onRowClick={setSelected}
-            toolbar={
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setFollowing((value) => !value)}
-                >
-                  {following ? (
-                    <PauseIcon data-icon="inline-start" />
-                  ) : (
-                    <PlayIcon data-icon="inline-start" />
-                  )}
-                  {following ? "Pause" : "Follow"}
-                </Button>
-                <Button
-                  variant={details ? "secondary" : "outline"}
-                  size="sm"
-                  onClick={() => {
-                    setDetails((value) => !value)
-                    setCursor("")
-                    setLive([])
-                    setPendingLive(0)
-                    setLatest(true)
-                  }}
-                >
-                  <EyeIcon data-icon="inline-start" />
-                  {details ? "Details on" : "Details off"}
-                </Button>
-                <a
-                  className={buttonVariants({ variant: "outline", size: "sm" })}
-                  href={`/api/v1/logs/export?${exportParams}`}
-                  download
-                >
-                  <ArrowDownToLineIcon data-icon="inline-start" />
-                  Export CSV
-                </a>
-                {query.data?.nextCursor && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setLive([])
-                      setPendingLive(0)
-                      setCursor(query.data?.nextCursor ?? "")
-                      setLatest(false)
-                    }}
-                  >
-                    Older entries
-                  </Button>
-                )}
-                {(!atLatest || pendingLive > 0) && (
-                  <Button variant="outline" size="sm" onClick={jumpToLatest}>
-                    Jump to latest
-                  </Button>
-                )}
-              </div>
+          <SavedViews
+            filters={filters}
+            onApply={(saved) =>
+              navigate({ search: { ...saved }, replace: true })
             }
           />
-        )}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button variant="outline" size="sm" />}
+            >
+              <DownloadIcon data-icon="inline-start" />
+              Export
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>
+                  Up to 500 matching entries
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  render={
+                    <a
+                      href={`/api/v1/logs/export?${queryParams(filters, { format: "csv" })}`}
+                      download
+                    />
+                  }
+                >
+                  CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  render={
+                    <a
+                      href={`/api/v1/logs/export?${queryParams(filters, { format: "json", details: "true" })}`}
+                      download
+                    />
+                  }
+                >
+                  JSON
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
+
+      {activeFilters.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {activeFilters.map((label) => (
+            <Badge key={label} variant="secondary" className="font-normal">
+              {label}
+            </Badge>
+          ))}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              setFilters({
+                unit: undefined,
+                executable: undefined,
+                since: undefined,
+                until: undefined,
+              })
+            }
+          >
+            <XIcon data-icon="inline-start" />
+            Clear
+          </Button>
+        </div>
+      )}
+
+      {query.isPending ? (
+        <Skeleton className="h-[60vh]" />
+      ) : query.isError ? (
+        <QueryError error={query.error} retry={() => void query.refetch()} />
+      ) : items.length === 0 ? (
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyTitle>No journal entries</EmptyTitle>
+            <EmptyDescription>
+              Nothing matches these filters. Try a wider time range or a lower
+              priority.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
+          {waiting > 0 && (
+            <Button
+              size="sm"
+              className="absolute top-2 left-1/2 z-10 -translate-x-1/2 shadow-md"
+              onClick={scrollToTop}
+            >
+              <ArrowUpIcon data-icon="inline-start" />
+              {waiting} new {waiting === 1 ? "entry" : "entries"}
+            </Button>
+          )}
+          <div
+            ref={viewport}
+            className="h-[calc(100svh-15rem)] min-h-80 overflow-auto"
+            onScroll={(event) => {
+              atTop.current = event.currentTarget.scrollTop < rowHeight
+              if (atTop.current) setWaiting(0)
+              const remaining =
+                event.currentTarget.scrollHeight -
+                event.currentTarget.scrollTop -
+                event.currentTarget.clientHeight
+              if (
+                remaining < 600 &&
+                query.hasNextPage &&
+                !query.isFetchingNextPage
+              )
+                void query.fetchNextPage()
+            }}
+          >
+            <ul
+              style={{
+                height: virtualizer.getTotalSize(),
+                position: "relative",
+              }}
+              aria-label="Journal entries"
+            >
+              {virtualizer.getVirtualItems().map((row) => {
+                const entry = items[row.index]
+                return (
+                  <li
+                    key={entryKey(entry)}
+                    className="absolute inset-x-0"
+                    style={{
+                      height: rowHeight,
+                      transform: `translateY(${row.start}px)`,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSelected(entry)}
+                      className={cn(
+                        "flex size-full items-center gap-3 border-b px-3 text-left font-mono text-xs outline-none hover:bg-accent/50 focus-visible:bg-accent",
+                        Number(entry.priority) <= 3 &&
+                          entry.priority !== "" &&
+                          "bg-destructive/5"
+                      )}
+                    >
+                      <time
+                        className="w-36 shrink-0 text-muted-foreground tabular-nums"
+                        dateTime={entry.timestamp}
+                      >
+                        {formatTimestamp(entry.timestamp)}
+                      </time>
+                      <PriorityBadge
+                        value={entry.priority}
+                        className="hidden shrink-0 sm:inline-flex"
+                      />
+                      <span className="hidden w-48 shrink-0 truncate font-sans font-medium md:inline">
+                        {entry.unit || "kernel"}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {entry.message}
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+            <div className="flex justify-center p-3 text-xs text-muted-foreground">
+              {query.isFetchingNextPage ? (
+                <Spinner />
+              ) : query.hasNextPage ? (
+                "Scroll for older entries"
+              ) : (
+                `${items.length.toLocaleString()} entries · start of range`
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <Sheet
         open={selected !== null}
         onOpenChange={(open) => !open && setSelected(null)}
       >
-        <SheetContent className="w-full sm:max-w-xl">
-          <SheetHeader>
-            <SheetTitle>Journal entry details</SheetTitle>
-            <SheetDescription>
-              Structured fields from the authenticated journal record.
-            </SheetDescription>
-          </SheetHeader>
+        <SheetContent className="w-full gap-0 sm:max-w-xl">
           {selected && (
-            <pre className="m-4 max-h-[calc(100vh-10rem)] overflow-auto rounded-lg bg-muted p-4 text-xs whitespace-pre-wrap">
-              {JSON.stringify(
-                { ...selected, details: selected.details ?? {} },
-                null,
-                2
-              )}
-            </pre>
+            <>
+              <SheetHeader className="border-b">
+                <SheetTitle className="flex items-center gap-2">
+                  <PriorityBadge value={selected.priority} />
+                  <span className="truncate">{selected.unit || "kernel"}</span>
+                </SheetTitle>
+                <SheetDescription>
+                  {formatDateTime(selected.timestamp)}
+                </SheetDescription>
+              </SheetHeader>
+              <div className="flex flex-col gap-4 overflow-auto p-4">
+                <pre className="rounded-lg bg-muted p-3 font-mono text-xs whitespace-pre-wrap break-words">
+                  {selected.message}
+                </pre>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
+                  <dt className="text-muted-foreground">Priority</dt>
+                  <dd>{logPriority(selected.priority).label}</dd>
+                  {Object.entries(selected.details ?? {})
+                    .filter(([key]) => key !== "MESSAGE" && key !== "PRIORITY")
+                    .sort(([a], [b]) => a.localeCompare(b))
+                    .map(([key, value]) => (
+                      <div key={key} className="contents">
+                        <dt className="font-mono text-muted-foreground">
+                          {key}
+                        </dt>
+                        <dd className="min-w-0 font-mono break-all">{value}</dd>
+                      </div>
+                    ))}
+                </dl>
+                {selected.unit && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="self-start"
+                    onClick={() => {
+                      setSelected(null)
+                      setFilters({ unit: selected.unit })
+                    }}
+                  >
+                    <FilterIcon data-icon="inline-start" />
+                    Show only {selected.unit}
+                  </Button>
+                )}
+              </div>
+            </>
           )}
         </SheetContent>
       </Sheet>
-    </>
+    </div>
+  )
+}
+
+// SearchField searches the journal on the server after a short pause.
+function SearchField({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (value: string) => void
+}) {
+  const [draft, setDraft] = React.useState(value)
+  React.useEffect(() => setDraft(value), [value])
+  React.useEffect(() => {
+    if (draft === value) return
+    const timer = window.setTimeout(() => onChange(draft.trim()), 400)
+    return () => window.clearTimeout(timer)
+  }, [draft, value, onChange])
+  return (
+    <InputGroup className="w-full sm:w-72">
+      <InputGroupAddon>
+        <SearchIcon />
+      </InputGroupAddon>
+      <InputGroupInput
+        value={draft}
+        maxLength={512}
+        onChange={(event) => setDraft(event.target.value)}
+        placeholder="Search messages"
+        aria-label="Search messages"
+      />
+    </InputGroup>
+  )
+}
+
+function MoreFilters({
+  filters,
+  onApply,
+}: {
+  filters: Filters
+  onApply: (next: Partial<Filters>) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  const [unit, setUnit] = React.useState(filters.unit ?? "")
+  const [executable, setExecutable] = React.useState(filters.executable ?? "")
+  const [since, setSince] = React.useState(
+    filters.since ? toLocalInput(filters.since) : ""
+  )
+  const [until, setUntil] = React.useState(
+    filters.until ? toLocalInput(filters.until) : ""
+  )
+  const count = [
+    filters.unit,
+    filters.executable,
+    filters.since || filters.until,
+  ].filter(Boolean).length
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (next) {
+          setUnit(filters.unit ?? "")
+          setExecutable(filters.executable ?? "")
+          setSince(filters.since ? toLocalInput(filters.since) : "")
+          setUntil(filters.until ? toLocalInput(filters.until) : "")
+        }
+      }}
+    >
+      <PopoverTrigger render={<Button variant="outline" size="sm" />}>
+        <FilterIcon data-icon="inline-start" />
+        Filters
+        {count > 0 && <Badge className="ml-1 h-4 min-w-4 px-1">{count}</Badge>}
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            onApply({
+              unit: unit.trim() || undefined,
+              executable: executable.trim() || undefined,
+              since: since ? new Date(since).toISOString() : undefined,
+              until: until ? new Date(until).toISOString() : undefined,
+            })
+            setOpen(false)
+          }}
+        >
+          <FieldGroup className="gap-4">
+            <Field>
+              <FieldLabel htmlFor="log-unit">Unit</FieldLabel>
+              <Input
+                id="log-unit"
+                placeholder="nginx.service"
+                maxLength={256}
+                value={unit}
+                onChange={(event) => setUnit(event.target.value)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="log-executable">Executable</FieldLabel>
+              <Input
+                id="log-executable"
+                placeholder="/usr/bin/sshd"
+                maxLength={4096}
+                value={executable}
+                onChange={(event) => setExecutable(event.target.value)}
+              />
+            </Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field>
+                <FieldLabel htmlFor="log-since">From</FieldLabel>
+                <Input
+                  id="log-since"
+                  type="datetime-local"
+                  value={since}
+                  onChange={(event) => setSince(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="log-until">To</FieldLabel>
+                <Input
+                  id="log-until"
+                  type="datetime-local"
+                  value={until}
+                  onChange={(event) => setUntil(event.target.value)}
+                />
+              </Field>
+            </div>
+            <FieldDescription>
+              A custom time range replaces the range preset.
+            </FieldDescription>
+            <Button type="submit" size="sm">
+              Apply filters
+            </Button>
+          </FieldGroup>
+        </form>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function toLocalInput(value: string) {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ""
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16)
+}
+
+function SavedViews({
+  filters,
+  onApply,
+}: {
+  filters: Filters
+  onApply: (filters: Filters) => void
+}) {
+  const [views, setViews] = React.useState(readSaved)
+  const [naming, setNaming] = React.useState(false)
+  const [name, setName] = React.useState("")
+  const persist = (next: SavedView[]) => {
+    setViews(next)
+    writeSaved(next)
+  }
+  return (
+    <Popover onOpenChange={(open) => !open && setNaming(false)}>
+      <PopoverTrigger
+        render={<Button variant="outline" size="sm" aria-label="Saved views" />}
+      >
+        <BookmarkIcon data-icon="inline-start" />
+        <span className="hidden lg:inline">Views</span>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 gap-2 p-2">
+        <p className="px-2 pt-1 text-xs font-medium text-muted-foreground">
+          Saved in this browser
+        </p>
+        {views.length === 0 && (
+          <p className="px-2 py-1 text-sm text-muted-foreground">
+            No saved views yet.
+          </p>
+        )}
+        <ul className="flex flex-col">
+          {views.map((view) => (
+            <li key={view.id} className="group flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="flex-1 justify-start truncate"
+                onClick={() => onApply(view.filters)}
+              >
+                {view.name}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Delete ${view.name}`}
+                onClick={() =>
+                  persist(views.filter((item) => item.id !== view.id))
+                }
+              >
+                <Trash2Icon />
+              </Button>
+            </li>
+          ))}
+        </ul>
+        <Separator className="my-1" />
+        {naming ? (
+          <form
+            className="flex gap-1"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const trimmed = name.trim()
+              if (!trimmed) return
+              persist([
+                ...views.filter((view) => view.name !== trimmed),
+                { id: crypto.randomUUID(), name: trimmed, filters },
+              ])
+              setName("")
+              setNaming(false)
+            }}
+          >
+            <Input
+              autoFocus
+              aria-label="View name"
+              placeholder="View name"
+              maxLength={64}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              className="h-8"
+            />
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </form>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="justify-start"
+            onClick={() => setNaming(true)}
+          >
+            Save current filters…
+          </Button>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }

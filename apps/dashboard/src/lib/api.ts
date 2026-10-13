@@ -240,8 +240,6 @@ export type ProcessInfo = {
   cpuPercent?: number
   diskReadRate?: number
   diskWriteRate?: number
-  networkRxRate?: number
-  networkTxRate?: number
   permissionDenied?: boolean
   reason?: string
 }
@@ -748,21 +746,29 @@ export type SecurityOperation = {
   expectedFingerprint?: string
   confirmation?: string
 }
-export type IncidentEvent = {
+export type Incident = {
   id: string
-  timestamp: string
-  severity: "critical" | "error" | "warning"
-  kind: string
+  severity: "critical" | "error"
+  kind:
+    | "memory"
+    | "crash"
+    | "storage"
+    | "security"
+    | "network"
+    | "service"
+    | "other"
   source?: string
   summary: string
-  cursor?: string
+  count: number
+  firstSeen: string
+  lastSeen: string
+  state: "open" | "acknowledged"
 }
 export type IncidentTimeline = {
-  items: IncidentEvent[]
+  items: Incident[]
   since: string
   until: string
   partial: boolean
-  warnings?: string[]
 }
 export type ServiceInfo = {
   name: string
@@ -773,6 +779,9 @@ export type ServiceInfo = {
   fileState: string
   scope: "system" | "user"
   type: "service" | "target" | "socket" | "timer" | "path"
+  nextRun?: string
+  lastRun?: string
+  activates?: string
 }
 export type ServiceDetail = ServiceInfo & {
   path: string
@@ -1079,12 +1088,26 @@ export class APIError extends Error {
   }
 }
 
+let csrfToken = ""
+
+// setCSRFToken records the session's CSRF token. Every unsafe request made
+// through csrfHeaders or api() carries it automatically.
+export function setCSRFToken(token: string) {
+  csrfToken = token
+}
+
+export function csrfHeaders(method = "GET"): Record<string, string> {
+  const unsafe = !["GET", "HEAD"].includes(method.toUpperCase())
+  return unsafe && csrfToken ? { "X-CSRF-Token": csrfToken } : {}
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     credentials: "same-origin",
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...csrfHeaders(init?.method),
       ...init?.headers,
     },
   })

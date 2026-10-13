@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import * as React from "react"
 
+import { AdminRequired, useAdminAccess } from "@/components/admin-access"
 import { KpatchSettingsCard } from "@/components/kpatch-settings-card"
 import {
   Alert,
@@ -56,7 +57,6 @@ import {
   APIError,
   api,
   type DiagnosticJob,
-  type SessionResponse,
   type UpdateChange,
   type UpdateObservation,
   type UpdateOperation,
@@ -213,10 +213,7 @@ export function UpdateInventory() {
     queryKey: ["updates"],
     queryFn: () => api<UpdateStatus>("/updates"),
   })
-  const session = useQuery({
-    queryKey: ["session"],
-    queryFn: () => api<SessionResponse>("/auth/session"),
-  })
+  const { administrative } = useAdminAccess()
   const job = useQuery({
     queryKey: ["update-job", jobID],
     queryFn: () => api<{ job: DiagnosticJob }>(`/jobs/${jobID}`),
@@ -441,7 +438,6 @@ export function UpdateInventory() {
     mutationFn: (operation: UpdateOperation) =>
       api<{ job: DiagnosticJob }>("/updates", {
         method: "POST",
-        headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
         body: JSON.stringify(operation),
       }),
     onMutate: () => setTerminalError(null),
@@ -462,7 +458,6 @@ export function UpdateInventory() {
       const trackedJobID = jobIDRef.current
       return api<{ job: DiagnosticJob }>(`/jobs/${trackedJobID}/cancel`, {
         method: "POST",
-        headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
       })
     },
     onMutate: () => setTerminalError(null),
@@ -610,10 +605,7 @@ export function UpdateInventory() {
   ]
   const sideCards = (
     <>
-      <KpatchSettingsCard
-        csrfToken={session.data?.csrfToken ?? ""}
-        administrative={session.data?.administrative ?? false}
-      />
+      <KpatchSettingsCard administrative={administrative} />
       <UpdateHistoryCard enabled={status.available} />
     </>
   )
@@ -1007,14 +999,10 @@ export function UpdateInventory() {
                   </FieldGroup>
                 )}
 
-                {session.data && !session.data.administrative && (
-                  <Alert variant="destructive">
-                    <ShieldAlert />
-                    <AlertTitle>Administrative access required</AlertTitle>
-                    <AlertDescription>
-                      Gain administrative access before applying system changes.
-                    </AlertDescription>
-                  </Alert>
+                {!administrative && (
+                  <AdminRequired>
+                    Installing updates requires administrative access.
+                  </AdminRequired>
                 )}
               </>
             )}
@@ -1046,8 +1034,7 @@ export function UpdateInventory() {
                 disabled={
                   !preview?.allowed ||
                   (preview?.requiresRiskConfirmation && !riskAccepted) ||
-                  session.data?.administrative === false ||
-                  !session.data?.csrfToken ||
+                  !administrative ||
                   apply.isPending
                 }
                 onClick={() =>

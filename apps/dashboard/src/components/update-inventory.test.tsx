@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { UpdateInventory } from "@/components/update-inventory"
+import { renderWithProviders } from "@/test/render"
 
 class EventSourceStub {
   static instances: EventSourceStub[] = []
@@ -43,14 +43,7 @@ function jsonResponse(value: unknown, status = 200) {
 }
 
 function renderInventory() {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  return render(
-    <QueryClientProvider client={client}>
-      <UpdateInventory />
-    </QueryClientProvider>
-  )
+  return renderWithProviders(<UpdateInventory />, { administrative: true })
 }
 
 function status(

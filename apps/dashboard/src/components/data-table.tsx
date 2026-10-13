@@ -91,7 +91,11 @@ export function DataTable<T extends RowData>({
   search,
   onSearchChange,
   onScrollPosition,
+  initialSorting = [],
+  emptyMessage = "No matching results.",
 }: {
+  initialSorting?: SortingState
+  emptyMessage?: string
   onScrollPosition?: (top: number) => void
   data: T[]
   columns: ColumnDef<DataTableFeatures, T>[]
@@ -104,7 +108,7 @@ export function DataTable<T extends RowData>({
   search?: string
   onSearchChange?: (value: string) => void
 }) {
-  const [sorting, setSorting] = React.useState<SortingState>([])
+  const [sorting, setSorting] = React.useState<SortingState>(initialSorting)
   const [uncontrolledFilter, setUncontrolledFilter] = React.useState("")
   const filter = search ?? uncontrolledFilter
   const setFilter = onSearchChange ?? setUncontrolledFilter
@@ -145,6 +149,8 @@ export function DataTable<T extends RowData>({
     ? virtualizer.getVirtualItems()
     : rows.map((_, index) => ({ index, start: 0 }))
   const totalSize = table.getTotalSize()
+  // Short tables shrink to their rows; long ones scroll inside `height`.
+  const fittedHeight = `min(${height}, ${((rows.length || 3) + 1) * 44 + 2}px)`
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -197,13 +203,13 @@ export function DataTable<T extends RowData>({
           onScrollPosition?.(event.currentTarget.scrollTop)
         }
         className="rounded-lg border"
-        style={{ height }}
+        style={{ height: fittedHeight }}
       >
         <Table
           containerClassName="overflow-visible"
           style={{ minWidth: totalSize }}
         >
-          <TableHeader className="sticky top-0 z-10 bg-background">
+          <TableHeader className="sticky top-0 z-10 bg-muted">
             {table.getHeaderGroups().map((group) => (
               <TableRow
                 key={group.id}
@@ -314,7 +320,7 @@ export function DataTable<T extends RowData>({
                             cell.getContext()
                           )
                         ) : (
-                          <div className="min-w-0 truncate">
+                          <div className="min-w-0 flex-1 truncate">
                             {flexRender(
                               cell.column.columnDef.cell,
                               cell.getContext()
@@ -331,7 +337,7 @@ export function DataTable<T extends RowData>({
         </Table>
         {rows.length === 0 && (
           <p className="p-10 text-center text-sm text-muted-foreground">
-            No matching results.
+            {emptyMessage}
           </p>
         )}
       </ScrollArea>

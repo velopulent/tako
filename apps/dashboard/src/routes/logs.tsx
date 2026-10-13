@@ -6,7 +6,7 @@ import { logsSearch } from "@/lib/search"
 
 function LogsPage() {
   return (
-    <Page description="Searchable, virtualized live journal with bounded browser memory.">
+    <Page>
       <JournalBrowser />
     </Page>
   )

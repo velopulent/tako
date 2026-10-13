@@ -17,3 +17,13 @@ export function useIsMobile() {
 
   return !!isMobile
 }
+
+// isNarrowViewport reads the viewport once, for initial layout choices such
+// as which table columns start hidden.
+export function isNarrowViewport() {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches
+  )
+}

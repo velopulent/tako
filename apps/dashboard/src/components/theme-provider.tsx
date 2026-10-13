@@ -1,238 +1,96 @@
 import * as React from "react"
 
-export type Theme = "dark" | "light" | "tako-light" | "tako-dark" | "system"
-type ResolvedTheme = "dark" | "light"
-
-type ThemeProviderProps = {
-  children: React.ReactNode
-  defaultTheme?: Theme
-  storageKey?: string
-  disableTransitionOnChange?: boolean
-}
+export type Theme = "light" | "dark" | "system"
 
 type ThemeProviderState = {
   theme: Theme
+  resolvedTheme: "light" | "dark"
   setTheme: (theme: Theme) => void
 }
 
-const COLOR_SCHEME_QUERY = "(prefers-color-scheme: dark)"
-const THEME_VALUES: Theme[] = [
-  "dark",
-  "light",
-  "tako-light",
-  "tako-dark",
-  "system",
-]
+const storageKey = "tako-theme"
+const colorSchemeQuery = "(prefers-color-scheme: dark)"
 
 const ThemeProviderContext = React.createContext<
   ThemeProviderState | undefined
 >(undefined)
 
-function isTheme(value: string | null): value is Theme {
-  if (value === null) {
-    return false
+function readTheme(): Theme {
+  try {
+    const stored = localStorage.getItem(storageKey)
+    if (stored === "light" || stored === "dark" || stored === "system")
+      return stored
+  } catch {
+    // Storage may be unavailable; fall back to the system preference.
   }
-
-  return THEME_VALUES.includes(value as Theme)
+  return "system"
 }
 
-function getSystemTheme(): ResolvedTheme {
-  if (window.matchMedia(COLOR_SCHEME_QUERY).matches) {
-    return "dark"
-  }
-
-  return "light"
+function systemTheme(): "light" | "dark" {
+  return window.matchMedia(colorSchemeQuery).matches ? "dark" : "light"
 }
 
-function disableTransitionsTemporarily() {
+// applyTheme switches the class without animating every color transition.
+function applyTheme(resolved: "light" | "dark") {
+  const root = document.documentElement
   const style = document.createElement("style")
-  style.appendChild(
-    document.createTextNode(
-      "*,*::before,*::after{-webkit-transition:none!important;transition:none!important}"
-    )
-  )
+  style.textContent = "*,*::before,*::after{transition:none!important}"
   document.head.appendChild(style)
-
-  return () => {
-    window.getComputedStyle(document.body)
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        style.remove()
-      })
-    })
-  }
+  root.classList.toggle("dark", resolved === "dark")
+  root.style.colorScheme = resolved
+  window.getComputedStyle(document.body)
+  requestAnimationFrame(() => style.remove())
 }
 
-function isEditableTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false
-  }
-
-  if (target.isContentEditable) {
-    return true
-  }
-
-  const editableParent = target.closest(
-    "input, textarea, select, [contenteditable='true']"
-  )
-  if (editableParent) {
-    return true
-  }
-
-  return false
-}
-
-export function ThemeProvider({
-  children,
-  defaultTheme = "system",
-  storageKey = "tako-theme",
-  disableTransitionOnChange = true,
-  ...props
-}: ThemeProviderProps) {
-  const [theme, setThemeState] = React.useState<Theme>(() => {
-    const storedTheme = localStorage.getItem(storageKey)
-    if (isTheme(storedTheme)) {
-      return storedTheme
-    }
-
-    return defaultTheme
-  })
-
-  const setTheme = React.useCallback(
-    (nextTheme: Theme) => {
-      localStorage.setItem(storageKey, nextTheme)
-      setThemeState(nextTheme)
-    },
-    [storageKey]
-  )
-
-  const applyTheme = React.useCallback(
-    (nextTheme: Theme) => {
-      const root = document.documentElement
-      const resolvedTheme =
-        nextTheme === "system" ? `tako-${getSystemTheme()}` : nextTheme
-      const restoreTransitions = disableTransitionOnChange
-        ? disableTransitionsTemporarily()
-        : null
-
-      const colorScheme = resolvedTheme.endsWith("dark") ? "dark" : "light"
-      root.classList.remove("light", "dark", "tako-light", "tako-dark")
-      root.classList.add(colorScheme, resolvedTheme)
-      root.style.colorScheme = colorScheme
-
-      if (restoreTransitions) {
-        restoreTransitions()
-      }
-    },
-    [disableTransitionOnChange]
-  )
-
-  React.useLayoutEffect(() => {
-    applyTheme(theme)
-
-    if (theme !== "system") {
-      return undefined
-    }
-
-    const mediaQuery = window.matchMedia(COLOR_SCHEME_QUERY)
-    const handleChange = () => {
-      applyTheme("system")
-    }
-
-    mediaQuery.addEventListener("change", handleChange)
-
-    return () => {
-      mediaQuery.removeEventListener("change", handleChange)
-    }
-  }, [theme, applyTheme])
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [theme, setThemeState] = React.useState<Theme>(readTheme)
+  const [system, setSystem] = React.useState(systemTheme)
+  const resolvedTheme = theme === "system" ? system : theme
 
   React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) {
-        return
-      }
+    const media = window.matchMedia(colorSchemeQuery)
+    const update = () => setSystem(media.matches ? "dark" : "light")
+    media.addEventListener("change", update)
+    return () => media.removeEventListener("change", update)
+  }, [])
 
-      if (event.metaKey || event.ctrlKey || event.altKey) {
-        return
-      }
-
-      if (isEditableTarget(event.target)) {
-        return
-      }
-
-      if (event.key.toLowerCase() !== "d") {
-        return
-      }
-
-      setThemeState((currentTheme) => {
-        const resolvedTheme =
-          currentTheme === "system" ? `tako-${getSystemTheme()}` : currentTheme
-        const nextTheme: Theme = resolvedTheme.startsWith("tako-")
-          ? resolvedTheme === "tako-dark"
-            ? "tako-light"
-            : "tako-dark"
-          : resolvedTheme === "dark"
-            ? "light"
-            : "dark"
-
-        localStorage.setItem(storageKey, nextTheme)
-        return nextTheme
-      })
-    }
-
-    window.addEventListener("keydown", handleKeyDown)
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown)
-    }
-  }, [storageKey])
+  React.useLayoutEffect(() => applyTheme(resolvedTheme), [resolvedTheme])
 
   React.useEffect(() => {
-    const handleStorageChange = (event: StorageEvent) => {
-      if (event.storageArea !== localStorage) {
-        return
-      }
-
-      if (event.key !== storageKey) {
-        return
-      }
-
-      if (isTheme(event.newValue)) {
-        setThemeState(event.newValue)
-        return
-      }
-
-      setThemeState(defaultTheme)
+    const sync = (event: StorageEvent) => {
+      if (event.key === storageKey) setThemeState(readTheme())
     }
+    window.addEventListener("storage", sync)
+    return () => window.removeEventListener("storage", sync)
+  }, [])
 
-    window.addEventListener("storage", handleStorageChange)
-
-    return () => {
-      window.removeEventListener("storage", handleStorageChange)
-    }
-  }, [defaultTheme, storageKey])
-
-  const value = React.useMemo(
+  const value = React.useMemo<ThemeProviderState>(
     () => ({
       theme,
-      setTheme,
+      resolvedTheme,
+      setTheme: (next) => {
+        try {
+          localStorage.setItem(storageKey, next)
+        } catch {
+          // The choice still applies for this page.
+        }
+        setThemeState(next)
+      },
     }),
-    [theme, setTheme]
+    [theme, resolvedTheme]
   )
 
   return (
-    <ThemeProviderContext.Provider {...props} value={value}>
+    <ThemeProviderContext.Provider value={value}>
       {children}
     </ThemeProviderContext.Provider>
   )
 }
 
-export const useTheme = () => {
+export function useTheme() {
   const context = React.useContext(ThemeProviderContext)
-
   if (context === undefined) {
     throw new Error("useTheme must be used within a ThemeProvider")
   }
-
   return context
 }

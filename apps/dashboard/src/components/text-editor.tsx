@@ -1,72 +1,80 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import * as React from "react"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Kbd } from "@/components/ui/kbd"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Textarea } from "@/components/ui/textarea"
+import { Spinner } from "@/components/ui/spinner"
+import { toast } from "@/components/ui/toast"
 import { api, type FileResult } from "@/lib/api"
+
+const maxEditable = 5 * 1024 * 1024
 
 function encodeContent(value: string) {
   const bytes = new TextEncoder().encode(value)
   let binary = ""
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte)
-  })
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+  }
   return btoa(binary)
 }
 
 export function TextEditor({
   path,
-  scope = "home",
-  onDirtyChange,
-  size = 0,
+  scope,
+  size,
+  writable,
   previewToken,
-  csrfToken,
+  onDirtyChange,
+  download,
 }: {
-  onDirtyChange?: (dirty: boolean) => void
-  scope?: string
-  size?: number
   path: string
+  scope: string
+  size: number
+  writable: boolean
   previewToken?: string
-  csrfToken: string
+  onDirtyChange?: (dirty: boolean) => void
+  download: React.ReactNode
 }) {
-  const queryClient = useQueryClient()
+  const client = useQueryClient()
   const queryKey = ["file-content", scope, path, previewToken]
-  const [draft, setDraft] = React.useState<string | undefined>(undefined)
+  const [draft, setDraft] = React.useState<string>()
   const content = useQuery({
     queryKey,
     queryFn: async ({ signal }) => {
-      if (size > 5 * 1024 * 1024)
-        throw new Error("File is too large to edit. Download it instead.")
+      if (size > maxEditable)
+        throw new Error("This file is larger than 5 MiB. Download it instead.")
       const response = await fetch(
-        `/api/v1/files/content?path=${encodeURIComponent(path)}&scope=${scope}`,
+        `/api/v1/files/content?${new URLSearchParams({ path, scope, ...(previewToken ? { token: previewToken } : {}) })}`,
         { credentials: "same-origin", signal }
       )
-      if (!response.ok) throw new Error("file read failed")
+      if (!response.ok) throw new Error("The file could not be read.")
       return {
         text: await response.text(),
         fingerprint: response.headers.get("X-File-Fingerprint") ?? "",
       }
     },
+    staleTime: Number.POSITIVE_INFINITY,
   })
-  const value = draft ?? content.data?.text ?? ""
-  React.useEffect(() => {
-    onDirtyChange?.(draft !== undefined && draft !== content.data?.text)
-  }, [draft, content.data?.text, onDirtyChange])
+  const dirty = draft !== undefined && draft !== content.data?.text
+  React.useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange])
   React.useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
   React.useEffect(() => {
-    if (draft === undefined) return
-    const warn = (event: BeforeUnloadEvent) => {
-      event.preventDefault()
-    }
+    if (!dirty) return
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault()
     window.addEventListener("beforeunload", warn)
     return () => window.removeEventListener("beforeunload", warn)
-  }, [draft])
+  }, [dirty])
   const save = useMutation({
     mutationFn: (saved: string) =>
       api<FileResult>("/files", {
         method: "POST",
-        headers: { "X-CSRF-Token": csrfToken },
         body: JSON.stringify({
           action: "write-text",
           scope,
@@ -76,61 +84,87 @@ export function TextEditor({
         }),
       }),
     onSuccess: (result, saved) => {
-      queryClient.setQueryData(queryKey, {
+      client.setQueryData(queryKey, {
         text: saved,
         fingerprint: result.entry?.fingerprint ?? "",
       })
       setDraft((current) => (current === saved ? undefined : current))
+      toast.add({ title: "Saved", type: "success" })
     },
   })
-  if (content.isPending) return <Skeleton className="h-40" />
-  if (content.isError)
-    return (
-      <Alert variant="destructive">
-        <AlertTitle>Text unavailable</AlertTitle>
-        <AlertDescription>{content.error.message}</AlertDescription>
-      </Alert>
-    )
+  const value = draft ?? content.data?.text ?? ""
+  const canSave = writable && dirty && !save.isPending
   return (
-    <div className="flex flex-col gap-2">
-      <Textarea
-        value={value}
-        onChange={(event) => setDraft(event.target.value)}
-        className="min-h-64 resize-y font-mono text-xs"
-        spellCheck={false}
-        aria-label={`Edit ${path}`}
-      />
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">
-          Changes save atomically. Maximum size: 5 MiB.
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-2 border-b px-4 py-2">
+        <span className="flex-1 text-xs text-muted-foreground">
+          {!writable ? "Read-only" : dirty ? "Unsaved changes" : "Saved"}
         </span>
-        <Button
-          onClick={() => save.mutate(value)}
-          disabled={
-            save.isPending ||
-            content.data === undefined ||
-            draft === undefined ||
-            draft === content.data.text
-          }
-        >
-          Save
-        </Button>
+        {download}
+        {writable && (
+          <Button
+            size="sm"
+            disabled={!canSave}
+            onClick={() => save.mutate(value)}
+          >
+            {save.isPending && <Spinner data-icon="inline-start" />}
+            Save
+            <Kbd className="ml-1 hidden sm:inline-flex">Ctrl S</Kbd>
+          </Button>
+        )}
       </div>
       {save.isError && (
-        <Alert variant="destructive">
-          <AlertTitle>Save rejected</AlertTitle>
-          <AlertDescription>
-            {save.error.message}
+        <Alert variant="destructive" className="m-4 mb-0 w-auto">
+          <AlertTitle>Not saved</AlertTitle>
+          <AlertDescription>{save.error.message}</AlertDescription>
+          <AlertAction>
             <Button
+              size="sm"
               variant="outline"
-              onClick={() => {
-                void content.refetch()
-              }}
+              onClick={() => void content.refetch()}
             >
-              Reload current file
+              Reload file
             </Button>
-          </AlertDescription>
+          </AlertAction>
         </Alert>
+      )}
+      {content.isPending ? (
+        <Skeleton className="m-4 flex-1" />
+      ) : content.isError ? (
+        <Alert className="m-4 w-auto">
+          <AlertTitle>Cannot edit this file</AlertTitle>
+          <AlertDescription>{content.error.message}</AlertDescription>
+        </Alert>
+      ) : (
+        <textarea
+          value={value}
+          readOnly={!writable}
+          spellCheck={false}
+          wrap="off"
+          aria-label={`Contents of ${path}`}
+          className="min-h-0 flex-1 resize-none bg-transparent p-4 font-mono text-xs leading-5 outline-none"
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              (event.ctrlKey || event.metaKey) &&
+              event.key.toLowerCase() === "s"
+            ) {
+              event.preventDefault()
+              if (canSave) save.mutate(value)
+            }
+            if (event.key === "Tab" && !event.shiftKey && writable) {
+              event.preventDefault()
+              const target = event.currentTarget
+              const { selectionStart, selectionEnd } = target
+              setDraft(
+                `${value.slice(0, selectionStart)}\t${value.slice(selectionEnd)}`
+              )
+              requestAnimationFrame(() =>
+                target.setSelectionRange(selectionStart + 1, selectionStart + 1)
+              )
+            }
+          }}
+        />
       )}
     </div>
   )

@@ -41,10 +41,8 @@ function stateLabel(settings: KpatchSettings) {
 }
 
 export function KpatchSettingsCard({
-  csrfToken,
   administrative,
 }: {
-  csrfToken: string
   administrative: boolean
 }) {
   const queryClient = useQueryClient()
@@ -62,7 +60,6 @@ export function KpatchSettingsCard({
     mutationFn: (operation: KpatchOperation) =>
       api<KpatchSettings>("/updates/kpatch", {
         method: "PUT",
-        headers: { "X-CSRF-Token": csrfToken },
         body: JSON.stringify(operation),
       }),
     onSuccess: () => {

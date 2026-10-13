@@ -1,4 +1,6 @@
 import {
+  MutationCache,
+  QueryCache,
   QueryClient,
   QueryClientProvider,
   useQuery,
@@ -6,14 +8,18 @@ import {
 import { createRouter, RouterProvider } from "@tanstack/react-router"
 import { useEffect } from "react"
 
+import { AdminAccessProvider } from "@/components/admin-access"
 import { LoginPage } from "@/components/login-page"
+import { Toaster } from "@/components/ui/toast"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { api, type BrandingResponse, type SessionResponse } from "@/lib/api"
+import { APIError, api, type BrandingResponse, setCSRFToken } from "@/lib/api"
+import { loadSession, sessionKey } from "@/lib/session"
 import { routeTree } from "./routeTree.gen"
 
 const router = createRouter({
   routeTree,
-  context: { session: undefined as unknown as SessionResponse },
+  defaultPreload: "intent",
+  scrollRestoration: true,
 })
 
 declare module "@tanstack/react-router" {
@@ -22,17 +28,25 @@ declare module "@tanstack/react-router" {
   }
 }
 
-const queryClient = new QueryClient({
+// An expired or revoked session returns 401 from any endpoint. Dropping the
+// cached session swaps the whole app back to the sign-in screen.
+function signOutOnExpiry(error: unknown) {
+  if (error instanceof APIError && error.status === 401) {
+    setCSRFToken("")
+    queryClient.setQueryData(sessionKey, null)
+  }
+}
+
+const queryClient: QueryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: signOutOnExpiry }),
+  mutationCache: new MutationCache({ onError: signOutOnExpiry }),
   defaultOptions: {
     queries: { retry: false, refetchOnWindowFocus: false },
   },
 })
 
 function AuthenticatedApp() {
-  const session = useQuery({
-    queryKey: ["session"],
-    queryFn: () => api<SessionResponse>("/auth/session"),
-  })
+  const session = useQuery({ queryKey: sessionKey, queryFn: loadSession })
   const branding = useQuery({
     queryKey: ["branding"],
     queryFn: () => api<BrandingResponse>("/branding"),
@@ -42,7 +56,7 @@ function AuthenticatedApp() {
   const hostname = branding.data?.hostname?.trim()
 
   useEffect(() => {
-    document.title = hostname ? `${hostname} | Tako` : "Tako"
+    document.title = hostname ? `${hostname} · Tako` : "Tako"
   }, [hostname])
 
   if (session.isPending) {
@@ -58,21 +72,33 @@ function AuthenticatedApp() {
     return (
       <LoginPage
         branding={branding.data}
-        onAuthenticated={(value) =>
-          queryClient.setQueryData(["session"], value)
-        }
+        onAuthenticated={(value) => {
+          setCSRFToken(value.csrfToken)
+          // Drop data from any previous user, but keep the session query
+          // itself: clearing it would detach this component's observer.
+          queryClient.removeQueries({
+            predicate: (query) => query.queryKey[0] !== sessionKey[0],
+          })
+          queryClient.setQueryData(sessionKey, value)
+        }}
       />
     )
   }
 
-  return <RouterProvider router={router} context={{ session: session.data }} />
+  return (
+    <AdminAccessProvider>
+      <RouterProvider router={router} />
+    </AdminAccessProvider>
+  )
 }
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <AuthenticatedApp />
+        <Toaster>
+          <AuthenticatedApp />
+        </Toaster>
       </TooltipProvider>
     </QueryClientProvider>
   )

@@ -28,33 +28,19 @@ const samples = [
 ]
 
 describe("directional page metrics", () => {
-  it("shows only separate storage directions", () => {
+  it("shows only the storage directions", () => {
     render(<StorageMetrics samples={samples} interval="off" />)
-    expect(screen.getByText("Storage reads")).toBeTruthy()
-    expect(screen.getByText("Storage writes")).toBeTruthy()
-    expect(screen.getByText("All devices")).toBeTruthy()
-    expect(screen.queryByText("CPU utilization")).toBeNull()
-    expect(screen.queryByText("Network traffic")).toBeNull()
+    expect(screen.getByText("Disk reads")).toBeTruthy()
+    expect(screen.getByText("Disk writes")).toBeTruthy()
+    expect(screen.queryByText("Received")).toBeNull()
+    expect(screen.queryByText("CPU")).toBeNull()
   })
 
-  it("shows only separate network directions", () => {
+  it("shows only the network directions", () => {
     render(<NetworkMetrics samples={samples} interval="off" />)
-    expect(screen.getByText("Network receiving")).toBeTruthy()
-    expect(screen.getByText("Network transmitting")).toBeTruthy()
-    expect(screen.queryByText("CPU utilization")).toBeNull()
-    expect(screen.queryByText("Storage I/O")).toBeNull()
-  })
-
-  it("keeps both directional cards responsive in dark mode", () => {
-    document.documentElement.classList.add("dark")
-    const { container } = render(
-      <StorageMetrics samples={samples} interval="off" />
-    )
-    const grid = container.querySelector("section.grid")
-    expect(document.documentElement.classList.contains("dark")).toBe(true)
-    expect(grid?.classList.contains("grid")).toBe(true)
-    expect(grid?.classList.contains("@4xl/main:grid-cols-2")).toBe(true)
-    document.documentElement.classList.remove("dark")
+    expect(screen.getByText("Received")).toBeTruthy()
+    expect(screen.getByText("Sent")).toBeTruthy()
+    expect(screen.queryByText("Disk reads")).toBeNull()
   })
 
   it("distinguishes telemetry loading, failure, and empty states", () => {

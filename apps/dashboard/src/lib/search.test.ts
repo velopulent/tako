@@ -3,24 +3,19 @@ import { describe, expect, it } from "vitest"
 import { networkSearch } from "./search"
 
 describe("networkSearch", () => {
-  it("omits the overview view while preserving search", () => {
-    expect(networkSearch({ q: "eno1", view: "overview" })).toEqual({
-      q: "eno1",
-      view: undefined,
-    })
+  it("omits the default overview view", () => {
+    expect(networkSearch({ view: "overview" })).toEqual({ view: undefined })
   })
 
   it("keeps supported views in the URL search", () => {
-    expect(networkSearch({ q: "ssh", view: "firewall" })).toEqual({
-      q: "ssh",
-      view: "firewall",
-    })
+    expect(networkSearch({ view: "firewall" })).toEqual({ view: "firewall" })
+    expect(networkSearch({ view: "logs" })).toEqual({ view: "logs" })
   })
 
-  it("falls back to overview for an invalid view", () => {
-    expect(networkSearch({ q: "eno1", view: "unknown" })).toEqual({
-      q: "eno1",
+  it("falls back to overview for removed or invalid views", () => {
+    expect(networkSearch({ view: "configuration" })).toEqual({
       view: undefined,
     })
+    expect(networkSearch({ view: "unknown" })).toEqual({ view: undefined })
   })
 })

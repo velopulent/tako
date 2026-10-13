@@ -1,4 +1,4 @@
-import { MetricsCharts } from "@/components/metrics-chart"
+import { MetricsCharts, useLiveSamples } from "@/components/metrics-chart"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Empty,
@@ -70,10 +70,10 @@ function DirectionalMetrics({
     )
   }
   return (
-    <MetricsCharts
-      initialSamples={samples}
+    <LiveDirection
+      samples={samples}
       interval={interval}
-      scope={direction}
+      direction={direction}
     />
   )
 }
@@ -120,4 +120,17 @@ export function NetworkMetrics({
       error={error}
     />
   )
+}
+
+function LiveDirection({
+  samples,
+  interval,
+  direction,
+}: {
+  samples: MetricSample[]
+  interval: RefreshInterval
+  direction: Direction
+}) {
+  const live = useLiveSamples(samples, interval)
+  return <MetricsCharts samples={live} scope={direction} />
 }

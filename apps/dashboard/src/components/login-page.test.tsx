@@ -28,8 +28,8 @@ describe("LoginPage", () => {
       />
     )
 
-    expect(screen.getByText("Login to server-01")).toBeTruthy()
-    const image = document.querySelector("main img")
+    expect(screen.getByText("Sign in to server-01")).toBeTruthy()
+    const image = document.querySelector("main img[aria-hidden]")
     expect(image).not.toBeNull()
     expect(image?.classList.contains("opacity-0")).toBe(true)
 
@@ -49,7 +49,7 @@ describe("LoginPage", () => {
       />
     )
 
-    const image = document.querySelector("main img")
+    const image = document.querySelector("main img[aria-hidden]")
     expect(image).not.toBeNull()
     fireEvent.error(image as HTMLImageElement)
     expect(image?.classList.contains("opacity-0")).toBe(true)
@@ -63,7 +63,7 @@ describe("LoginPage", () => {
       />
     )
 
-    expect(screen.getByText("Login to server-03")).toBeTruthy()
+    expect(screen.getByText("Sign in to server-03")).toBeTruthy()
     expect(screen.getByLabelText("Username")).toBeTruthy()
     expect(screen.queryByRole("status")).toBeNull()
   })

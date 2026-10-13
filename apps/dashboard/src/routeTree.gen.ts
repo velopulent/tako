@@ -14,7 +14,6 @@ import { Route as AccountsRouteImport } from './routes/accounts'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as HostRouteImport } from './routes/host'
 import { Route as IncidentsRouteImport } from './routes/incidents'
-import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as MetricsRouteImport } from './routes/metrics'
 import { Route as NetworkRouteImport } from './routes/network'
@@ -28,8 +27,6 @@ import { Route as TimersRouteImport } from './routes/timers'
 import { Route as UpdatesRouteImport } from './routes/updates'
 import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
 import { Route as AccountsGroupsRouteImport } from './routes/accounts.groups'
-import { Route as AccountsPasswordsRouteImport } from './routes/accounts.passwords'
-import { Route as AccountsSshKeysRouteImport } from './routes/accounts.ssh-keys'
 import { Route as AccountsUsersRouteImport } from './routes/accounts.users'
 import { Route as ProcessesIndexRouteImport } from './routes/processes.index'
 import { Route as ProcessesPidRouteImport } from './routes/processes.$pid'
@@ -59,11 +56,6 @@ const HostRoute = HostRouteImport.update({
 const IncidentsRoute = IncidentsRouteImport.update({
   id: '/incidents',
   path: '/incidents',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const JobsRoute = JobsRouteImport.update({
-  id: '/jobs',
-  path: '/jobs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LogsRoute = LogsRouteImport.update({
@@ -131,16 +123,6 @@ const AccountsGroupsRoute = AccountsGroupsRouteImport.update({
   path: '/groups',
   getParentRoute: () => AccountsRoute,
 } as any)
-const AccountsPasswordsRoute = AccountsPasswordsRouteImport.update({
-  id: '/passwords',
-  path: '/passwords',
-  getParentRoute: () => AccountsRoute,
-} as any)
-const AccountsSshKeysRoute = AccountsSshKeysRouteImport.update({
-  id: '/ssh-keys',
-  path: '/ssh-keys',
-  getParentRoute: () => AccountsRoute,
-} as any)
 const AccountsUsersRoute = AccountsUsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -173,7 +155,6 @@ export interface FileRoutesByFullPath {
   '/files': typeof FilesRoute
   '/host': typeof HostRoute
   '/incidents': typeof IncidentsRoute
-  '/jobs': typeof JobsRoute
   '/logs': typeof LogsRoute
   '/metrics': typeof MetricsRoute
   '/network': typeof NetworkRoute
@@ -186,8 +167,6 @@ export interface FileRoutesByFullPath {
   '/timers': typeof TimersRoute
   '/updates': typeof UpdatesRoute
   '/accounts/groups': typeof AccountsGroupsRoute
-  '/accounts/passwords': typeof AccountsPasswordsRoute
-  '/accounts/ssh-keys': typeof AccountsSshKeysRoute
   '/accounts/users': typeof AccountsUsersRoute
   '/processes/$pid': typeof ProcessesPidRoute
   '/accounts/': typeof AccountsIndexRoute
@@ -200,7 +179,6 @@ export interface FileRoutesByTo {
   '/files': typeof FilesRoute
   '/host': typeof HostRoute
   '/incidents': typeof IncidentsRoute
-  '/jobs': typeof JobsRoute
   '/logs': typeof LogsRoute
   '/metrics': typeof MetricsRoute
   '/network': typeof NetworkRoute
@@ -211,8 +189,6 @@ export interface FileRoutesByTo {
   '/timers': typeof TimersRoute
   '/updates': typeof UpdatesRoute
   '/accounts/groups': typeof AccountsGroupsRoute
-  '/accounts/passwords': typeof AccountsPasswordsRoute
-  '/accounts/ssh-keys': typeof AccountsSshKeysRoute
   '/accounts/users': typeof AccountsUsersRoute
   '/processes/$pid': typeof ProcessesPidRoute
   '/accounts': typeof AccountsIndexRoute
@@ -227,7 +203,6 @@ export interface FileRoutesById {
   '/files': typeof FilesRoute
   '/host': typeof HostRoute
   '/incidents': typeof IncidentsRoute
-  '/jobs': typeof JobsRoute
   '/logs': typeof LogsRoute
   '/metrics': typeof MetricsRoute
   '/network': typeof NetworkRoute
@@ -240,8 +215,6 @@ export interface FileRoutesById {
   '/timers': typeof TimersRoute
   '/updates': typeof UpdatesRoute
   '/accounts/groups': typeof AccountsGroupsRoute
-  '/accounts/passwords': typeof AccountsPasswordsRoute
-  '/accounts/ssh-keys': typeof AccountsSshKeysRoute
   '/accounts/users': typeof AccountsUsersRoute
   '/processes/$pid': typeof ProcessesPidRoute
   '/accounts/': typeof AccountsIndexRoute
@@ -257,7 +230,6 @@ export interface FileRouteTypes {
     | '/files'
     | '/host'
     | '/incidents'
-    | '/jobs'
     | '/logs'
     | '/metrics'
     | '/network'
@@ -270,8 +242,6 @@ export interface FileRouteTypes {
     | '/timers'
     | '/updates'
     | '/accounts/groups'
-    | '/accounts/passwords'
-    | '/accounts/ssh-keys'
     | '/accounts/users'
     | '/processes/$pid'
     | '/accounts/'
@@ -284,7 +254,6 @@ export interface FileRouteTypes {
     | '/files'
     | '/host'
     | '/incidents'
-    | '/jobs'
     | '/logs'
     | '/metrics'
     | '/network'
@@ -295,8 +264,6 @@ export interface FileRouteTypes {
     | '/timers'
     | '/updates'
     | '/accounts/groups'
-    | '/accounts/passwords'
-    | '/accounts/ssh-keys'
     | '/accounts/users'
     | '/processes/$pid'
     | '/accounts'
@@ -310,7 +277,6 @@ export interface FileRouteTypes {
     | '/files'
     | '/host'
     | '/incidents'
-    | '/jobs'
     | '/logs'
     | '/metrics'
     | '/network'
@@ -323,8 +289,6 @@ export interface FileRouteTypes {
     | '/timers'
     | '/updates'
     | '/accounts/groups'
-    | '/accounts/passwords'
-    | '/accounts/ssh-keys'
     | '/accounts/users'
     | '/processes/$pid'
     | '/accounts/'
@@ -339,7 +303,6 @@ export interface RootRouteChildren {
   FilesRoute: typeof FilesRoute
   HostRoute: typeof HostRoute
   IncidentsRoute: typeof IncidentsRoute
-  JobsRoute: typeof JobsRoute
   LogsRoute: typeof LogsRoute
   MetricsRoute: typeof MetricsRoute
   NetworkRoute: typeof NetworkRoute
@@ -388,13 +351,6 @@ declare module '@tanstack/react-router' {
       path: '/incidents'
       fullPath: '/incidents'
       preLoaderRoute: typeof IncidentsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/jobs': {
-      id: '/jobs'
-      path: '/jobs'
-      fullPath: '/jobs'
-      preLoaderRoute: typeof JobsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/logs': {
@@ -488,20 +444,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AccountsGroupsRouteImport
       parentRoute: typeof AccountsRoute
     }
-    '/accounts/passwords': {
-      id: '/accounts/passwords'
-      path: '/passwords'
-      fullPath: '/accounts/passwords'
-      preLoaderRoute: typeof AccountsPasswordsRouteImport
-      parentRoute: typeof AccountsRoute
-    }
-    '/accounts/ssh-keys': {
-      id: '/accounts/ssh-keys'
-      path: '/ssh-keys'
-      fullPath: '/accounts/ssh-keys'
-      preLoaderRoute: typeof AccountsSshKeysRouteImport
-      parentRoute: typeof AccountsRoute
-    }
     '/accounts/users': {
       id: '/accounts/users'
       path: '/users'
@@ -542,16 +484,12 @@ declare module '@tanstack/react-router' {
 
 interface AccountsRouteChildren {
   AccountsGroupsRoute: typeof AccountsGroupsRoute
-  AccountsPasswordsRoute: typeof AccountsPasswordsRoute
-  AccountsSshKeysRoute: typeof AccountsSshKeysRoute
   AccountsUsersRoute: typeof AccountsUsersRoute
   AccountsIndexRoute: typeof AccountsIndexRoute
 }
 
 const AccountsRouteChildren: AccountsRouteChildren = {
   AccountsGroupsRoute: AccountsGroupsRoute,
-  AccountsPasswordsRoute: AccountsPasswordsRoute,
-  AccountsSshKeysRoute: AccountsSshKeysRoute,
   AccountsUsersRoute: AccountsUsersRoute,
   AccountsIndexRoute: AccountsIndexRoute,
 }
@@ -594,7 +532,6 @@ const rootRouteChildren: RootRouteChildren = {
   FilesRoute: FilesRoute,
   HostRoute: HostRoute,
   IncidentsRoute: IncidentsRoute,
-  JobsRoute: JobsRoute,
   LogsRoute: LogsRoute,
   MetricsRoute: MetricsRoute,
   NetworkRoute: NetworkRoute,

@@ -1,19 +1,16 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import {
-  createFileRoute,
-  getRouteApi,
-  Link,
-  useNavigate,
-  useParams,
-} from "@tanstack/react-router"
-import type { ColumnDef } from "@tanstack/react-table"
-import * as React from "react"
-import { DataTable, type DataTableFeatures } from "@/components/data-table"
+import { useQuery } from "@tanstack/react-query"
+import { createFileRoute, Link } from "@tanstack/react-router"
+import { ArrowLeftIcon } from "lucide-react"
+import type * as React from "react"
+
+import { AdminRequired } from "@/components/admin-access"
+import { LogList } from "@/components/log-list"
 import { ServiceActions } from "@/components/service-actions"
 import { ServiceConfiguration } from "@/components/service-configuration"
 import { ServiceOverride } from "@/components/service-override"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { capitalize, StatusBadge, unitStatus } from "@/components/status-badge"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -21,204 +18,323 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
-  api,
-  type LogEntry,
-  type ServiceDetail,
-  type SessionResponse,
-} from "@/lib/api"
-import { qSearch } from "@/lib/search"
-import type { ServiceActionName } from "@/lib/service-actions"
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { api, type LogEntry, type ServiceDetail } from "@/lib/api"
+import { formatBytes, formatDateTime, formatRelative } from "@/lib/format"
+import { QueryError } from "@/lib/page"
+import { parseEnum } from "@/lib/search"
 
-const bytes = (value: number) =>
-  value
-    ? new Intl.NumberFormat(undefined, {
-        notation: "compact",
-        style: "unit",
-        unit: "byte",
-        unitDisplay: "narrow",
-      }).format(value)
-    : "—"
+const tabs = ["overview", "logs", "file", "override"] as const
 
-export function ServiceDetailPage() {
-  const { scope, unit } = useParams({ strict: false }) as {
-    scope: string
-    unit: string
-  }
-  const search = getRouteApi("/services/$scope/$unit").useSearch()
-  const navigate = useNavigate({ from: "/services/$scope/$unit" })
-  const client = useQueryClient()
-  const session = useQuery({
-    queryKey: ["session"],
-    queryFn: () => api<SessionResponse>("/auth/session"),
-  })
+function ServiceDetailPage() {
+  const { scope: rawScope, unit } = Route.useParams()
+  const scope = rawScope === "user" ? "user" : "system"
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const tab = search.tab ?? "overview"
   const detail = useQuery({
     queryKey: ["service", scope, unit],
     queryFn: () =>
       api<ServiceDetail>(`/services/${scope}/${encodeURIComponent(unit)}`),
-    refetchInterval: 10_000,
+    refetchInterval: 5_000,
   })
   const logs = useQuery({
-    queryKey: ["service-logs", unit],
+    queryKey: ["service-logs", scope, unit],
     queryFn: () =>
       api<{ items: LogEntry[] }>(
-        `/logs?limit=300&unit=${encodeURIComponent(unit)}`
+        `/logs?limit=200&unit=${encodeURIComponent(unit)}`
       ),
+    enabled: tab === "logs",
+    refetchInterval: tab === "logs" ? 10_000 : false,
   })
-  const action = useMutation({
-    mutationFn: (name: ServiceActionName) =>
-      api<ServiceDetail>(
-        `/services/${scope}/${encodeURIComponent(unit)}/actions`,
-        {
-          method: "POST",
-          headers: { "X-CSRF-Token": session.data?.csrfToken ?? "" },
-          body: JSON.stringify({ action: name }),
-        }
-      ),
-    onSuccess: (value) => client.setQueryData(["service", scope, unit], value),
-  })
-  if (detail.isPending)
+
+  const back = (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="-ml-2 self-start"
+      render={
+        <Link
+          to="/services"
+          search={scope === "user" ? { scope: "user" } : {}}
+        />
+      }
+    >
+      <ArrowLeftIcon data-icon="inline-start" />
+      Services
+    </Button>
+  )
+
+  if (detail.isPending) {
     return (
-      <main className="p-6">
-        <Skeleton className="h-96" />
+      <main className="flex flex-1 flex-col gap-4 p-4 lg:p-6">
+        {back}
+        <Skeleton className="h-28" />
+        <Skeleton className="h-80" />
       </main>
     )
-  if (!detail.data)
+  }
+  if (detail.isError) {
     return (
-      <main className="p-6">
-        <Alert variant="destructive">
-          <AlertTitle>Service unavailable</AlertTitle>
-          <AlertDescription>Could not load unit details.</AlertDescription>
-        </Alert>
+      <main className="flex flex-1 flex-col gap-4 p-4 lg:p-6">
+        {back}
+        <QueryError
+          error={detail.error}
+          title={`Could not load ${unit}`}
+          retry={() => void detail.refetch()}
+        />
       </main>
     )
+  }
+
   const item = detail.data
+  const status = unitStatus(item.activeState, item.subState)
+  const since = item.activeEnterTimestamp
+    ? new Date(item.activeEnterTimestamp / 1000)
+    : undefined
   const relations: [string, string[]][] = [
     ["Requires", item.requires],
     ["Wants", item.wants],
     ["Wanted by", item.wantedBy],
-    ["Conflicts", item.conflicts],
-    ["Before", item.before],
     ["After", item.after],
+    ["Before", item.before],
+    ["Conflicts", item.conflicts],
   ]
-  const logColumns: ColumnDef<DataTableFeatures, LogEntry>[] = [
-    {
-      accessorKey: "timestamp",
-      header: "Time",
-      cell: ({ row }) => new Date(row.original.timestamp).toLocaleString(),
-    },
-    { accessorKey: "priority", header: "Priority" },
-    {
-      accessorKey: "message",
-      header: "Message",
-      size: 360,
-      meta: { wrap: true },
-      cell: ({ row }) => (
-        <span className="font-mono text-xs whitespace-normal">
-          {row.original.message}
-        </span>
-      ),
-    },
-  ]
+
   return (
-    <main className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <CardTitle>{item.description || item.name}</CardTitle>
-              <CardDescription>
-                {item.name} · {scope}
-              </CardDescription>
-            </div>
-            <Badge
-              variant={item.activeState === "active" ? "secondary" : "outline"}
-            >
-              {item.activeState} / {item.subState}
-            </Badge>
+    <main className="@container/main flex min-w-0 flex-1 flex-col gap-4 p-4 lg:p-6">
+      {back}
+      <header className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="truncate text-xl font-semibold tracking-tight">
+              {item.name}
+            </h2>
+            <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+            {item.fileState && (
+              <Badge variant="outline" className="font-normal">
+                {capitalize(item.fileState)}
+              </Badge>
+            )}
+            {scope === "user" && <Badge variant="secondary">User unit</Badge>}
           </div>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-5">
-          {action.isError && (
-            <Alert variant="destructive">
-              <AlertTitle>Action failed</AlertTitle>
-              <AlertDescription>{action.error.message}</AlertDescription>
-            </Alert>
-          )}
-          <ServiceActions
-            scope={scope}
-            unit={unit}
-            csrfToken={session.data?.csrfToken ?? ""}
-            administrative={session.data?.administrative === true}
-            pending={action.isPending}
-            onAction={(name) => action.mutate(name)}
-          />
-          <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[10rem_1fr]">
-            <dt className="font-medium">Path</dt>
-            <dd className="font-mono text-xs">{item.path || "—"}</dd>
-            <dt className="font-medium">Main PID</dt>
-            <dd>{item.mainPid || "—"}</dd>
-            <dt className="font-medium">Memory</dt>
-            <dd>{bytes(item.memoryCurrent)}</dd>
-            <dt className="font-medium">Tasks</dt>
-            <dd>{item.tasksCurrent || "—"}</dd>
-            {relations.map(([label, values]) => (
-              <React.Fragment key={label}>
-                <dt className="font-medium">{label}</dt>
-                <dd className="flex flex-wrap gap-2">
-                  {values?.length
-                    ? values.map((value) => (
+          <p className="mt-1 text-sm text-muted-foreground">
+            {item.description || "No description"}
+          </p>
+        </div>
+        <ServiceActions unit={item} />
+      </header>
+      {scope === "system" && (
+        <AdminRequired>
+          Starting, stopping, and configuring system services requires
+          administrative access.
+        </AdminRequired>
+      )}
+
+      <Tabs
+        value={tab}
+        onValueChange={(next) =>
+          navigate({
+            search: {
+              tab:
+                next === "overview"
+                  ? undefined
+                  : (next as "logs" | "file" | "override"),
+            },
+            replace: true,
+          })
+        }
+      >
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
+          <TabsTrigger value="file">Unit file</TabsTrigger>
+          <TabsTrigger value="override">Override</TabsTrigger>
+        </TabsList>
+        <TabsContent
+          value="overview"
+          className="grid gap-4 pt-2 @4xl/main:grid-cols-2"
+        >
+          <Card>
+            <CardHeader>
+              <CardTitle>Runtime</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Facts
+                facts={[
+                  [
+                    "State",
+                    `${capitalize(item.activeState)} (${item.subState})`,
+                  ],
+                  [
+                    "Since",
+                    since ? (
+                      <span key="since" title={formatDateTime(since)}>
+                        {formatRelative(since)}
+                      </span>
+                    ) : (
+                      "—"
+                    ),
+                  ],
+                  [
+                    "Main process",
+                    item.mainPid ? (
+                      <Link
+                        key="main-process"
+                        to="/processes/$pid"
+                        params={{ pid: String(item.mainPid) }}
+                        className="text-primary underline-offset-4 hover:underline"
+                      >
+                        {item.mainPid}
+                      </Link>
+                    ) : (
+                      "—"
+                    ),
+                  ],
+                  [
+                    "Memory",
+                    item.memoryCurrent ? formatBytes(item.memoryCurrent) : "—",
+                  ],
+                  ["Tasks", item.tasksCurrent || "—"],
+                  [
+                    "Unit file",
+                    <span key="path" className="font-mono text-xs">
+                      {item.path || "—"}
+                    </span>,
+                  ],
+                ]}
+              />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Dependencies</CardTitle>
+              <CardDescription>
+                Units this one is ordered or linked with
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              {relations.map(([label, values]) => (
+                <div key={label} className="flex flex-col gap-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {label}
+                  </p>
+                  {values?.length ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {values.slice(0, 24).map((value) => (
                         <Link
                           key={value}
                           to="/services/$scope/$unit"
                           params={{ scope, unit: value }}
-                          className="text-primary underline-offset-4 hover:underline"
+                          className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs hover:bg-accent hover:text-accent-foreground"
                         >
                           {value}
                         </Link>
-                      ))
-                    : "—"}
-                </dd>
-              </React.Fragment>
-            ))}
-          </dl>
-        </CardContent>
-      </Card>
-      <ServiceConfiguration scope={scope} unit={unit} />
-      <ServiceOverride
-        scope={scope}
-        unit={unit}
-        csrfToken={session.data?.csrfToken ?? ""}
-        administrative={session.data?.administrative === true}
-      />
-      <Card>
-        <CardHeader>
-          <CardTitle>Service logs</CardTitle>
-          <CardDescription>
-            Recent journal entries for this unit.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <DataTable
-            data={logs.data?.items ?? []}
-            columns={logColumns}
-            height="45vh"
-            search={search.q}
-            onSearchChange={(q) =>
-              navigate({
-                search: (previous) => ({ ...previous, q: q || undefined }),
-                replace: true,
-              })
-            }
-          />
-        </CardContent>
-      </Card>
+                      ))}
+                      {values.length > 24 && (
+                        <span className="text-xs text-muted-foreground">
+                          +{values.length - 24} more
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">None</p>
+                  )}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="logs" className="pt-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent journal entries</CardTitle>
+              <CardDescription>
+                The latest 200 entries for this unit.{" "}
+                <Link
+                  to="/logs"
+                  search={{ unit }}
+                  className="text-primary underline-offset-4 hover:underline"
+                >
+                  Open in Logs
+                </Link>
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {logs.isPending ? (
+                <Skeleton className="h-64" />
+              ) : logs.isError ? (
+                <QueryError
+                  error={logs.error}
+                  retry={() => void logs.refetch()}
+                />
+              ) : logs.data.items.length ? (
+                <LogList
+                  items={logs.data.items}
+                  showUnit={false}
+                  className="max-h-[60vh] overflow-auto"
+                />
+              ) : (
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyTitle>No journal entries</EmptyTitle>
+                    <EmptyDescription>
+                      This unit has not logged anything you can read.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="file" className="pt-2">
+          <ServiceConfiguration scope={scope} unit={unit} />
+        </TabsContent>
+        <TabsContent value="override" className="pt-2">
+          {item.type === "service" || unit.endsWith(".service") ? (
+            <ServiceOverride scope={scope} unit={unit} />
+          ) : (
+            <Empty className="border">
+              <EmptyHeader>
+                <EmptyTitle>Overrides apply to services</EmptyTitle>
+                <EmptyDescription>
+                  Tako manages drop-in overrides for .service units only.
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
+        </TabsContent>
+      </Tabs>
     </main>
   )
 }
 
+function Facts({ facts }: { facts: [string, React.ReactNode][] }) {
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2.5 text-sm">
+      {facts.map(([label, value]) => (
+        <div key={label} className="contents">
+          <dt className="text-muted-foreground">{label}</dt>
+          <dd className="min-w-0 truncate text-right">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 export const Route = createFileRoute("/services/$scope/$unit")({
-  validateSearch: qSearch,
+  validateSearch: (
+    search: Record<string, unknown>
+  ): { tab?: "logs" | "file" | "override" } => {
+    const tab = parseEnum(search.tab, tabs, "overview")
+    return { tab: tab === "overview" ? undefined : tab }
+  },
   component: ServiceDetailPage,
 })
