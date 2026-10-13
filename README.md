@@ -31,17 +31,17 @@ All of this is in the dashboard after login. Read paths work for any authenticat
 * Overview: host info, current CPU, memory, disk and network samples, storage summary, recent logs and processes.
 * Metrics: 24-hour in-memory history with charts, plus live updates over server-sent events at intervals from 1s to 5m.
 * Logs: journal browser with filters for boot, unit, priority, executable, and text, live tail, and CSV or JSON export.
-* Services: system and user units of type service, target, socket, timer, and path. Inspect status, relationships, and raw unit config. Start, stop, restart, reload, enable, disable, mask, and unmask through allowlisted actions with a preview step.
-* Processes: full process list from procfs with detail views. Optional per-process network accounting where the eBPF helper is present.
+* Services: system and user units of type service, target, socket, timer, and path. Inspect status, logs, relationships, and the unit file. Start, stop, restart, reload, enable, disable, mask, and unmask through allowlisted actions; disruptive ones show what depends on the unit first.
+* Processes: full process list from procfs with CPU, memory, and disk rates, detail views, and signals.
 * Terminal: browser PTY over WebSocket running as your UID and GID.
-* Accounts: local users and groups, group membership, administrator role, SSH authorized keys, and password change or reset. Login history comes straight from the journal. Destructive operations show a preview before they apply.
-* Updates: distro-native update inventory using apt, dnf, pacman, or zypper depending on the host. Preview changes, refresh metadata, and run updates as a serialized background job with live progress. RHEL hosts also get kernel live-patch status.
-* Storage: mounted filesystems and physical devices, with UDisks2 operations behind preview and confirm.
-* Network: interface inventory with NetworkManager operations, plus firewall rules (UFW or firewalld) behind preview and confirm.
-* Host: hostname, timezone, NTP state, reboot and shutdown with inhibitor checks, and boot history.
-* Files: browse, search, read, and upload in bounded chunks, scoped to what your session is allowed to see.
-* Timers and overrides: create structured systemd timer pairs and manage Tako's own service drop-ins, both with preview.
-* Incidents, notifications, and jobs: a correlated incident timeline, a small built-in notification list, and background diagnostic jobs such as host inventory.
+* Accounts: local users and groups, group membership, administrator role, sign-in locking, SSH authorized keys, and password change or reset. Recent sign-ins come straight from the journal.
+* Updates: distro-native update inventory using apt, dnf, pacman, or zypper depending on the host. Review the plan, refresh metadata, and run updates as a serialized background job with live progress. RHEL hosts also get kernel live-patch status.
+* Storage: disk activity, mounted filesystems, and drives with health. Mount, unmount, and manage Tako-owned `/etc/fstab` entries.
+* Network: interfaces, traffic, routes, and DNS, with NetworkManager addressing changes that roll back on their own unless you confirm them. Firewall zones, services, ports, and sources for firewalld or UFW, with the same keep-or-revert guard for changes that could lock you out.
+* Host: hostname, time zone, network time, and restart or shutdown with inhibitor checks.
+* Files: browse, search, preview, edit text, upload resumably, and manage trash, scoped to what your session is allowed to see.
+* Timers and overrides: create and edit systemd timer pairs, and manage Tako's own service drop-ins for environment, restart policy, and resource limits.
+* Incidents: journal errors grouped when they repeat, with acknowledgement that reopens when a problem recurs.
 * Security posture: SELinux and AppArmor status with findings.
 
 Capability reporting is honest about degraded hosts. If the user bus, user manager, NetworkManager, or another integration is missing, the affected page reports it instead of pretending.
@@ -70,7 +70,7 @@ For layout work without login or terminals:
 bun run dev:ui
 ```
 
-This starts `serve --dev` with a fake broker on port 9090 and Vite on `http://127.0.0.1:5173`. It skips PAM and disables the terminal. Use `bun run dev` for anything involving auth, elevation, or sessiond.
+This starts `serve --dev` on port 9090 and Vite on `http://127.0.0.1:5173`. Sign in as your own user with the password in `TAKO_DEV_PASSWORD`, or the one the gateway logs at startup. Reads run as you; there is no PAM, terminal, or privileged write. Use `bun run dev` for anything involving auth, elevation, or sessiond.
 
 Common commands:
 
@@ -180,7 +180,7 @@ The backend keeps platform logic in small module-owned adapters under `apps/back
 
 Tako is under active development and not yet at v1. The API explicitly offers no third-party compatibility promise during this phase.
 
-What holds today: login and sessions, dashboard and metrics, logs, services, processes, terminal, accounts, updates, storage, network, firewall, host config and power, files, timers, incidents, and notifications, all behind the gateway/sessiond/bridge split described above.
+What holds today: login and sessions, dashboard and metrics, logs, services, processes, terminal, accounts, updates, storage, network, firewall, host config and power, files, timers, and incidents, all behind the gateway/sessiond/bridge split described above.
 
 What Tako will not do: run privileged work in the gateway process, fall back to the gateway's own runtime bus or filesystem for host authority, or perform process, account, package, storage, or network mutations outside narrow authenticated sessiond operations. New destructive actions arrive as small adapters with distribution VM tests, not as gateway code.
 

@@ -93,16 +93,20 @@ watch updates appear without restarting the gateway.
 
 ## UI-only lane (not the product)
 
-Passwordless loopback mode for layout work only. No PAM, no PTY, no user
-bridge:
+Loopback mode for layout work. There is no PAM, no sessiond, and no user
+bridge. Reads run directly as your own user, so pages show real data
+wherever an unprivileged user can see it. Privileged writes, the terminal,
+and root-only reads report "Not available in development mode".
 
 ```bash
-bun run dev:ui
+TAKO_DEV_PASSWORD=dev bun run dev:ui
 ```
 
-Open `http://127.0.0.1:5173`. Vite proxies `/api` to `serve --dev` on port
-9090. Prefer `bun run dev` whenever you need terminals, admin elevation, or
-anything that talks to sessiond.
+Open `http://127.0.0.1:5173` and sign in as your own username with that
+password. Without `TAKO_DEV_PASSWORD`, the gateway generates a random
+password and logs it at startup. The same password unlocks administrative
+access, which only changes what the UI offers. Prefer `bun run dev` whenever
+you need terminals, real elevation, or anything that talks to sessiond.
 
 ## Packaging and VMs
 

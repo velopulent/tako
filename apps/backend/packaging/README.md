@@ -7,7 +7,7 @@ The package installs one `/usr/bin/tako` multicall executable and keeps the trus
 - `tako-sessiond.socket` listens on `/run/tako/session.sock` as `root:tako-session` mode `0660` and starts the root-owned `tako-sessiond.service` on demand. Sessiond exits when no connections, PAM conversations, or grants remain for the configured idle interval.
 - `tmpfiles.d/tako.conf` creates `/run/tako` as `root:tako-session` with mode `0750` before socket activation.
 - `tako bridge` is launched by the session service for an authenticated UNIX user and is never reachable from the network gateway.
-- `tako-sessiond.service` is a login and host-authority helper: it PAM-authenticates, resolves typed operations, then setuid-execs `tako bridge` as that user. The child inherits the unit sandbox, so sessiond is not locked down like `tako.service`. `tako serve --dev` uses a fake broker, skips PAM and the user bridge, and is not a production auth test.
+- `tako-sessiond.service` is a login and host-authority helper: it PAM-authenticates, resolves typed operations, then setuid-execs `tako bridge` as that user. The child inherits the unit sandbox, so sessiond is not locked down like `tako.service`. `tako serve --dev` signs in only the current OS user with a development password, runs reads in-process as that user, skips PAM and the user bridge, and is not a production auth test.
 
 Sessiond reads the same `/etc/tako/config.toml` as the gateway (`--config` is
 included in the packaged unit). The gateway never opens a host D-Bus bus or
@@ -68,7 +68,16 @@ Fresh installs enable and start `tako-sessiond.socket` before the public `tako.s
 
 Removal stops Tako units and never creates masks. RPM final removal disables the sockets. Debian removal keeps helper enablement state so reinstall restores package-managed defaults; purge clears that helper state. Configuration, application state, the `tako-session` group, and administrator drop-ins remain in place.
 
-Install `polkit/org.velopulent.tako.policy` when deploying manually outside generated packages. The optional `sudoers.d/tako.example` documents the exact `NOPASSWD` probe; copy and edit it only for a dedicated local operator group. Do not grant the gateway service account unrestricted sudo.
+Install `polkit/org.velopulent.tako.policy` when deploying manually outside generated packages. Administrative access is granted when the user passes `sudo` (NOPASSWD or password) or when a Polkit rule returns `YES` for `org.velopulent.tako.administrate`. Tako has no Polkit authentication agent, so `auth_admin` defaults alone never grant access. Example rule for a dedicated group, saved as `/etc/polkit-1/rules.d/50-tako.rules`:
+
+```js
+polkit.addRule(function (action, subject) {
+  if (action.id == "org.velopulent.tako.administrate" && subject.isInGroup("tako-admin")) {
+    return polkit.Result.YES;
+  }
+});
+```
+ The optional `sudoers.d/tako.example` documents the exact `NOPASSWD` probe; copy and edit it only for a dedicated local operator group. Do not grant the gateway service account unrestricted sudo.
 
 For direct access, omit `allowed_origin`: Tako accepts same-origin requests based on the request scheme and host, including the server's IP address or hostname. For a reverse proxy, terminate public TLS at the proxy and forward only to a loopback Tako listener. Preserve WebSocket upgrade headers for `/api/v1/terminal/ws`, do not cache `/api/v1/*`, and restrict the proxy's upstream to `127.0.0.1:9090`. Configure `allowed_origin` with the exact public scheme, host, and port when the browser origin differs from the upstream request (comma-separated list allowed).
 
