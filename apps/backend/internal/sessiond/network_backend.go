@@ -2,7 +2,6 @@ package sessiond
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -160,73 +159,5 @@ func (coordinator *networkCoordinator) Close() {
 	defer cancel()
 	for _, item := range pending {
 		_, _ = coordinator.apply(ctx, platform.NetworkOperation{Backend: item.backend, Action: "rollback", Checkpoint: item.checkpoint, ReconnectToken: item.token, Confirmation: "CONFIRM NETWORK RECONNECT"})
-	}
-}
-
-func networkErrorCode(err error) string {
-	switch {
-	case errors.Is(err, platform.ErrInvalidNetworkOperation):
-		return "invalid-network-operation"
-	case errors.Is(err, platform.ErrNetworkConflict):
-		return "network-conflict"
-	case errors.Is(err, platform.ErrNetworkOwnership):
-		return "network-ownership-conflict"
-	case errors.Is(err, platform.ErrNetworkCheckpoint):
-		return "network-checkpoint-invalid"
-	case errors.Is(err, platform.ErrNetworkUnavailable):
-		return "network-unavailable"
-	default:
-		return "network-operation-failed"
-	}
-}
-
-func storageErrorCode(err error) string {
-	switch {
-	case errors.Is(err, platform.ErrInvalidStorageOperation):
-		return "invalid-storage-operation"
-	case errors.Is(err, platform.ErrStorageConflict):
-		return "storage-conflict"
-	case errors.Is(err, platform.ErrStorageUnsafe):
-		return "storage-unsafe"
-	case errors.Is(err, platform.ErrStorageBusy):
-		return "storage-busy"
-	case errors.Is(err, platform.ErrStorageUnavailable):
-		return "storage-unavailable"
-	default:
-		return "storage-operation-failed"
-	}
-}
-
-func firewallErrorCode(err error) string {
-	switch {
-	case errors.Is(err, platform.ErrInvalidFirewallOperation):
-		return "invalid-firewall-operation"
-	case errors.Is(err, platform.ErrFirewallConflict):
-		return "firewall-conflict"
-	case errors.Is(err, platform.ErrFirewallOwnership):
-		return "firewall-ownership-conflict"
-	case errors.Is(err, platform.ErrFirewallAccessRisk):
-		return "firewall-access-risk"
-	case errors.Is(err, platform.ErrFirewallCheckpoint):
-		return "firewall-checkpoint-invalid"
-	case errors.Is(err, platform.ErrFirewallUnavailable):
-		return "firewall-unavailable"
-	default:
-		return "firewall-operation-failed"
-	}
-}
-
-func securityErrorCode(err error) string {
-	switch {
-	case errors.Is(err, platform.ErrInvalidSecurityOperation):
-		return "invalid-security-operation"
-	case errors.Is(err, platform.ErrSecurityConflict):
-		return "security-conflict"
-	case errors.Is(err, platform.ErrSecurityUnsafe):
-		return "security-unsafe"
-	case errors.Is(err, platform.ErrSecurityUnavailable):
-		return "security-unavailable"
-	default:
-		return "security-operation-failed"
 	}
 }

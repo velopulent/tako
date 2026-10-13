@@ -60,6 +60,10 @@ func journalFields(details bool) []string {
 	return journalDetailFields[:7]
 }
 
+const maxJournalUnits = 16
+
+var journalPriorityPattern = regexp.MustCompile(`^[0-7](\.\.[0-7])?$`)
+
 type JournalQuery struct {
 	Limit      int
 	Cursor     string
@@ -67,7 +71,7 @@ type JournalQuery struct {
 	Since      time.Time
 	Until      time.Time
 	Priority   string
-	Unit       string
+	Units      []string
 	Executable string
 	Text       string
 	Details    bool
@@ -98,11 +102,16 @@ func (query JournalQuery) Validate() error {
 	if !query.Since.IsZero() && !query.Until.IsZero() && query.Since.After(query.Until) {
 		return ErrInvalidJournalQuery
 	}
-	if query.Priority != "" && !regexp.MustCompile(`^[0-7](\.\.[0-7])?$`).MatchString(query.Priority) {
+	if query.Priority != "" && !journalPriorityPattern.MatchString(query.Priority) {
 		return ErrInvalidJournalQuery
 	}
-	if query.Unit != "" && (len(query.Unit) > MaxServiceUnitLength || strings.ContainsAny(query.Unit, "/\x00\r\n")) {
+	if len(query.Units) > maxJournalUnits {
 		return ErrInvalidJournalQuery
+	}
+	for _, unit := range query.Units {
+		if unit == "" || len(unit) > MaxServiceUnitLength || strings.ContainsAny(unit, "/\x00\r\n") {
+			return ErrInvalidJournalQuery
+		}
 	}
 	if query.Executable != "" && (len(query.Executable) > 4096 || !strings.HasPrefix(query.Executable, "/") || strings.ContainsAny(query.Executable, "\x00\r\n")) {
 		return ErrInvalidJournalQuery
@@ -219,7 +228,12 @@ func journalctlArgs(query JournalQuery, follow bool, fetchLimit int) []string {
 	if query.Cursor != "" && !follow {
 		arguments = append(arguments, "--cursor="+query.Cursor)
 	}
-	if query.Boot != "" {
+	switch query.Boot {
+	case "":
+	case "current":
+		// journalctl names the running boot by offset 0.
+		arguments = append(arguments, "--boot=0")
+	default:
 		arguments = append(arguments, "--boot="+query.Boot)
 	}
 	if !query.Since.IsZero() {
@@ -231,8 +245,8 @@ func journalctlArgs(query JournalQuery, follow bool, fetchLimit int) []string {
 	if query.Priority != "" {
 		arguments = append(arguments, "--priority="+query.Priority)
 	}
-	if query.Unit != "" {
-		arguments = append(arguments, "--unit="+query.Unit)
+	for _, unit := range query.Units {
+		arguments = append(arguments, "--unit="+unit)
 	}
 	if query.Executable != "" {
 		arguments = append(arguments, "_EXE="+query.Executable)

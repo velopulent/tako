@@ -3,11 +3,12 @@ package pacman
 import (
 	"bufio"
 	"context"
-	"github.com/velopulent/tako/internal/platform"
 	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/velopulent/tako/internal/platform"
 )
 
 type Provider struct{}

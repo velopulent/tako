@@ -6,9 +6,9 @@ import (
 )
 
 func FuzzValidateFileOperation(f *testing.F) {
-	f.Add("read", "notes.txt", "", "", "", "", "", "", int64(0), int64(4096), int64(0), 100, 100, 100, false, false, false)
-	f.Add("archive", "source", "", "archive.tar.gz", "", "", "", "", int64(0), int64(0), int64(0), 0, 0, 0, false, false, false)
-	f.Fuzz(func(t *testing.T, action, path, destination, archivePath, query, content, contentSHA, expectedFingerprint string, offset, limit, totalSize int64, lineOffset, lineLimit, maxEntries int, overwrite, recursive, permanent bool) {
+	f.Add("read", "notes.txt", "", "", "", "", "", "", int64(0), int64(4096), int64(0), 100, false, false, false)
+	f.Add("archive", "source", "", "archive.tar.gz", "", "", "", "", int64(0), int64(0), int64(0), 0, false, false, false)
+	f.Fuzz(func(t *testing.T, action, path, destination, archivePath, query, content, contentSHA, expectedFingerprint string, offset, limit, totalSize int64, maxEntries int, overwrite, recursive, permanent bool) {
 		_ = ValidateFileOperation(FileOperation{
 			Action:              action,
 			Path:                path,
@@ -21,8 +21,6 @@ func FuzzValidateFileOperation(f *testing.F) {
 			Offset:              offset,
 			Limit:               limit,
 			TotalSize:           totalSize,
-			LineOffset:          lineOffset,
-			LineLimit:           lineLimit,
 			MaxEntries:          maxEntries,
 			Overwrite:           overwrite,
 			Recursive:           recursive,

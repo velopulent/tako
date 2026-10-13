@@ -377,30 +377,6 @@ func (service *UpdateService) Preview(ctx context.Context, operation UpdateOpera
 	return preview, nil
 }
 
-// PreviewUpdateStatus provides a deterministic preview for cached readers.
-// Authoritative mutation still replans through UpdateService immediately
-// before commit and requires the exact plan fingerprint.
-func PreviewUpdateStatus(status UpdateStatus, operation UpdateOperation) (UpdatePreview, error) {
-	if err := ValidateUpdateOperation(operation, false); err != nil {
-		return UpdatePreview{}, err
-	}
-	changes := make([]UpdateChange, 0, len(status.Packages))
-	for _, item := range status.Packages {
-		changes = append(changes, UpdateChange{Action: "upgrade", Name: item.Name, Architecture: item.Architecture, CurrentVersion: item.CurrentVersion, CandidateVersion: item.CandidateVersion})
-	}
-	changes = SortUpdateChanges(changes)
-	preview := UpdatePreview{Current: status, Changes: changes, Warnings: []string{}, Fingerprint: UpdatePlanFingerprint(status.Backend, changes), Allowed: status.Available && !status.ExternalLock && len(changes) > 0, RequiresConfirmation: len(changes) > 0}
-	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != status.Fingerprint && operation.ExpectedFingerprint != preview.Fingerprint {
-		preview.Stale = true
-		preview.Allowed = false
-		preview.Reason = "Available update inventory changed; refresh before applying."
-	}
-	if status.ExternalLock {
-		preview.Reason = status.LockReason
-	}
-	return preview, nil
-}
-
 func (service *UpdateService) Apply(ctx context.Context, operation UpdateOperation) (UpdateResult, error) {
 	if err := ValidateUpdateOperation(operation, true); err != nil {
 		return UpdateResult{}, err
@@ -791,7 +767,6 @@ func streamUpdateOutput(reader io.Reader, stream, jobID string, emit func(Update
 	}
 }
 func CommandExists(name string) bool { _, err := exec.LookPath(name); return err == nil }
-func commandExists(name string) bool { return CommandExists(name) }
 
 // Kept private because kpatch shares the same bounded command runner without
 // becoming coupled to a distro update adapter.
@@ -799,17 +774,6 @@ type updateCommandResult = UpdateCommandResult
 
 func runUpdateCommand(ctx context.Context, name string, arguments ...string) updateCommandResult {
 	return RunUpdateCommand(ctx, name, arguments, nil, nil)
-}
-
-var versionAtLeastPattern = regexp.MustCompile(`(?:^|\s)([0-9]+)(?:\.[0-9]+)?`)
-
-func versionAtLeast(version string, minimumMajor int) bool {
-	match := versionAtLeastPattern.FindStringSubmatch(version)
-	if len(match) < 2 {
-		return false
-	}
-	major, err := strconv.Atoi(match[1])
-	return err == nil && major >= minimumMajor
 }
 
 func UpdateLockHeld(path string) bool {

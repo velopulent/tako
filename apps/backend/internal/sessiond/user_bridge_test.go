@@ -3,6 +3,7 @@ package sessiond
 import (
 	"os/user"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/velopulent/tako/internal/auth"
@@ -46,11 +47,11 @@ func TestUserCredentialIncludesSupplementaryGroups(t *testing.T) {
 }
 
 func lookupTestIdentity(account *user.User) (auth.Identity, error) {
-	uid, err := parseID(account.Uid)
+	uid, err := strconv.Atoi(account.Uid)
 	if err != nil {
 		return auth.Identity{}, err
 	}
-	gid, err := parseID(account.Gid)
+	gid, err := strconv.Atoi(account.Gid)
 	if err != nil {
 		return auth.Identity{}, err
 	}

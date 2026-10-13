@@ -41,8 +41,15 @@ func newAdministrativePolicy() administrativePolicy {
 		}
 		if pkcheckPath, err := exec.LookPath("pkcheck"); err == nil {
 			policyFound = true
-			if runAsIdentity(ctx, pkcheckPath, identity, "", "--action-id", policyActionID, "--allow-user-interaction") == nil {
-				return nil
+			if subject, err := polkitSubject(identity); err == nil {
+				// Root may name the subject's UID. Without an authentication
+				// agent only rules that return YES grant access.
+				output := &boundedOutput{limit: policyOutputLimit}
+				command := exec.CommandContext(ctx, pkcheckPath, "--action-id", policyActionID, "--process", subject)
+				command.Stdout, command.Stderr = output, output
+				if command.Run() == nil && !output.overflow {
+					return nil
+				}
 			}
 		}
 		if policyFound {
@@ -126,4 +133,23 @@ func runAsIdentity(ctx context.Context, executable string, identity auth.Identit
 		return err
 	}
 	return nil
+}
+
+// polkitSubject names this process, started at its recorded boot-relative
+// time, acting for the user's UID.
+func polkitSubject(identity auth.Identity) (string, error) {
+	stat, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return "", err
+	}
+	// The command name may contain spaces; fields resume after the last ')'.
+	end := bytes.LastIndexByte(stat, ')')
+	if end < 0 {
+		return "", errors.New("unexpected /proc/self/stat format")
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	if len(fields) < 20 {
+		return "", errors.New("unexpected /proc/self/stat format")
+	}
+	return strconv.Itoa(os.Getpid()) + "," + fields[19] + "," + strconv.Itoa(identity.UID), nil
 }

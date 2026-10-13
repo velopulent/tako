@@ -29,6 +29,13 @@ func ReadHostConfiguration(ctx context.Context) (HostConfiguration, error) {
 	if err != nil {
 		return HostConfiguration{}, fmt.Errorf("read hostname: %w", err)
 	}
+	if hostname == "" {
+		// No static hostname is set; show the one the kernel is using.
+		hostname, err = dbusStringProperty(ctx, connection, "org.freedesktop.hostname1", "/org/freedesktop/hostname1", "org.freedesktop.hostname1.Hostname")
+		if err != nil {
+			return HostConfiguration{}, fmt.Errorf("read hostname: %w", err)
+		}
+	}
 	timezone, err := dbusStringProperty(ctx, connection, "org.freedesktop.timedate1", "/org/freedesktop/timedate1", "org.freedesktop.timedate1.Timezone")
 	if err != nil {
 		return HostConfiguration{}, fmt.Errorf("read timezone: %w", err)

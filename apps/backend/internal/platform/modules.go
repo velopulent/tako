@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"net"
 	"os"
 	"os/user"
@@ -37,6 +38,11 @@ type Process struct {
 	IODenied         bool    `json:"ioDenied,omitempty"`
 	PermissionDenied bool    `json:"permissionDenied,omitempty"`
 	Reason           string  `json:"reason,omitempty"`
+	// Rates compare against the previous snapshot of the same process; they
+	// are zero on its first sighting.
+	CPUPercent    float64 `json:"cpuPercent"`
+	DiskReadRate  float64 `json:"diskReadRate"`
+	DiskWriteRate float64 `json:"diskWriteRate"`
 }
 
 func Processes() ([]Process, error) {
@@ -215,6 +221,10 @@ type Unit struct {
 	FileState   string `json:"fileState"`
 	Scope       string `json:"scope"`
 	Type        string `json:"type"`
+	// Timer schedule, reported for timer units only.
+	NextRun   *time.Time `json:"nextRun,omitempty"`
+	LastRun   *time.Time `json:"lastRun,omitempty"`
+	Activates string     `json:"activates,omitempty"`
 }
 
 func Units(ctx context.Context, scope, unitType string) ([]Unit, error) {
@@ -256,7 +266,11 @@ func Units(ctx context.Context, scope, unitType string) ([]Unit, error) {
 		if unitType != "" && typeName != unitType {
 			continue
 		}
-		resultByName[item.Name] = Unit{Name: item.Name, Description: item.Description, LoadState: item.LoadState, ActiveState: item.ActiveState, SubState: item.SubState, FileState: files[item.Name], Scope: scope, Type: typeName}
+		unit := Unit{Name: item.Name, Description: item.Description, LoadState: item.LoadState, ActiveState: item.ActiveState, SubState: item.SubState, FileState: files[item.Name], Scope: scope, Type: typeName}
+		if typeName == "timer" {
+			readTimerSchedule(ctx, conn, item.Path, &unit)
+		}
+		resultByName[item.Name] = unit
 	}
 	for name, state := range files {
 		typeName := strings.TrimPrefix(filepath.Ext(name), ".")
@@ -278,6 +292,38 @@ func Units(ctx context.Context, scope, unitType string) ([]Unit, error) {
 		return result[i].Name < result[j].Name
 	})
 	return result, nil
+}
+
+// readTimerSchedule fills in when a loaded timer last fired and fires next.
+func readTimerSchedule(ctx context.Context, conn *dbus.Conn, path dbus.ObjectPath, unit *Unit) {
+	object := conn.Object("org.freedesktop.systemd1", path)
+	var properties map[string]dbus.Variant
+	if err := object.CallWithContext(ctx, "org.freedesktop.DBus.Properties.GetAll", 0, "org.freedesktop.systemd1.Timer").Store(&properties); err != nil {
+		return
+	}
+	microseconds := func(name string) *time.Time {
+		value, ok := properties[name].Value().(uint64)
+		if !ok || value == 0 || value == math.MaxUint64 {
+			return nil
+		}
+		moment := time.UnixMicro(int64(value)).UTC()
+		return &moment
+	}
+	unit.NextRun = microseconds("NextElapseUSecRealtime")
+	if monotonic, ok := properties["NextElapseUSecMonotonic"].Value().(uint64); unit.NextRun == nil && ok && monotonic > 0 && monotonic != math.MaxUint64 {
+		// Monotonic timers count from boot; place them on the wall clock.
+		if uptime, err := os.ReadFile("/proc/uptime"); err == nil {
+			if seconds, err := strconv.ParseFloat(strings.Fields(string(uptime))[0], 64); err == nil {
+				boot := time.Now().Add(-time.Duration(seconds * float64(time.Second)))
+				moment := boot.Add(time.Duration(monotonic) * time.Microsecond).UTC()
+				unit.NextRun = &moment
+			}
+		}
+	}
+	unit.LastRun = microseconds("LastTriggerUSec")
+	if activates, ok := properties["Unit"].Value().(string); ok {
+		unit.Activates = activates
+	}
 }
 
 type UnitDetail struct {
@@ -393,28 +439,6 @@ type LogEntry struct {
 	Message   string            `json:"message"`
 	Details   map[string]string `json:"details,omitempty"`
 	Cursor    string            `json:"-"`
-}
-
-func Logs(ctx context.Context, limit int) ([]LogEntry, error) {
-	page, err := QueryLogs(ctx, JournalQuery{Limit: limit})
-	return page.Items, err
-}
-
-// FollowLogs emits new journal entries until ctx is cancelled. The subprocess
-// inherits cancellation, while the synchronous callback supplies backpressure.
-func FollowLogs(ctx context.Context, emit func(LogEntry) error) error {
-	return FollowJournal(ctx, JournalQuery{}, emit)
-}
-
-// FollowJournal emits filtered, structured journal entries until ctx is
-// cancelled. It does not buffer entries; emit supplies backpressure and owns
-// the stream's memory bound.
-func FollowJournal(ctx context.Context, query JournalQuery, emit func(LogEntry) error) error {
-	return FollowJournalAs(ctx, query, nil, emit)
-}
-
-func parseLogEntry(payload []byte) (LogEntry, bool) {
-	return parseLogEntryWithDetails(payload, false)
 }
 
 func parseLogEntryWithDetails(payload []byte, details bool) (LogEntry, bool) {

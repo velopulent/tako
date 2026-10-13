@@ -340,10 +340,6 @@ func parsePolicyDenials(output string, framework string) []string {
 	return result
 }
 
-func readSELinuxStatus(ctx context.Context) SELinuxStatus {
-	return readSELinuxStatusWithRunner(ctx, systemSecurityCommandRunner{})
-}
-
 func readSELinuxStatusWithRunner(ctx context.Context, runner SecurityCommandRunner) SELinuxStatus {
 	status := SELinuxStatus{KernelPresent: fileExists("/sys/fs/selinux"), Booleans: []string{}, Denials: []string{}}
 	getenforceOutput, getenforceErr := runner.Run(ctx, "getenforce")
@@ -382,10 +378,6 @@ func readSELinuxStatusWithRunner(ctx context.Context, runner SecurityCommandRunn
 	return status
 }
 
-func readAppArmorStatus(ctx context.Context) AppArmorStatus {
-	return readAppArmorStatusWithRunner(ctx, systemSecurityCommandRunner{})
-}
-
 func readAppArmorStatusWithRunner(ctx context.Context, runner SecurityCommandRunner) AppArmorStatus {
 	status := AppArmorStatus{KernelPresent: fileExists("/sys/module/apparmor"), Profiles: []string{}, ProfileModes: map[string]string{}, Denials: []string{}}
 	if output, err := runner.Run(ctx, "aa-status", "--json"); err == nil {
@@ -403,21 +395,6 @@ func readAppArmorStatusWithRunner(ctx context.Context, runner SecurityCommandRun
 	sort.Strings(status.Profiles)
 	status.Denials = readSecurityDenials(ctx, runner, "AppArmor")
 	return status
-}
-
-func parseAppArmorProfiles(output string) []string {
-	result := []string{}
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "profiles are ") || strings.Contains(line, "processes are ") {
-			continue
-		}
-		if strings.HasSuffix(line, ":") {
-			continue
-		}
-		result = append(result, line)
-	}
-	return sortedUnique(result)
 }
 
 func readSecurityDenials(ctx context.Context, runner SecurityCommandRunner, framework string) []string {
@@ -444,19 +421,4 @@ func trustedAppArmorProfile(path string) bool {
 		}
 	}
 	return false
-}
-
-func securityErrorCode(err error) string {
-	switch {
-	case errors.Is(err, ErrInvalidSecurityOperation):
-		return "invalid-security-operation"
-	case errors.Is(err, ErrSecurityConflict):
-		return "security-conflict"
-	case errors.Is(err, ErrSecurityUnsafe):
-		return "security-unsafe"
-	case errors.Is(err, ErrSecurityUnavailable):
-		return "security-unavailable"
-	default:
-		return "security-operation-failed"
-	}
 }

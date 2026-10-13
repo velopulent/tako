@@ -3,93 +3,121 @@ package platform
 import (
 	"context"
 	"errors"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
-type IncidentEvent struct {
+// Incident groups repeated journal errors that share a source and message
+// shape. The ID is stable across reads so acknowledgements survive refreshes.
+type Incident struct {
 	ID        string    `json:"id"`
-	Timestamp time.Time `json:"timestamp"`
 	Severity  string    `json:"severity"`
 	Kind      string    `json:"kind"`
 	Source    string    `json:"source,omitempty"`
 	Summary   string    `json:"summary"`
-	Cursor    string    `json:"cursor,omitempty"`
+	Count     int       `json:"count"`
+	FirstSeen time.Time `json:"firstSeen"`
+	LastSeen  time.Time `json:"lastSeen"`
+	State     string    `json:"state"`
 }
 
 type IncidentTimeline struct {
-	Items    []IncidentEvent `json:"items"`
-	Since    time.Time       `json:"since"`
-	Until    time.Time       `json:"until"`
-	Partial  bool            `json:"partial"`
-	Warnings []string        `json:"warnings,omitempty"`
+	Items   []Incident `json:"items"`
+	Since   time.Time  `json:"since"`
+	Until   time.Time  `json:"until"`
+	Partial bool       `json:"partial"`
 }
 
-func CorrelateIncidents(ctx context.Context, since, until time.Time) (IncidentTimeline, error) {
-	return CorrelateIncidentsWithLogs(ctx, since, until, QueryLogs)
-}
+const (
+	incidentScanLimit = MaxJournalPageSize
+	incidentMaxGroups = 200
+)
 
-func CorrelateIncidentsWithLogs(ctx context.Context, since, until time.Time, queryLogs func(context.Context, JournalQuery) (JournalPage, error)) (IncidentTimeline, error) {
-	if since.IsZero() {
-		since = time.Now().Add(-24 * time.Hour)
-	}
+var (
+	ErrInvalidIncidentWindow = errors.New("incident window is invalid")
+	incidentVolatile         = regexp.MustCompile(`0x[0-9a-fA-F]+|\b[0-9a-fA-F]{8,}\b|\d+`)
+)
+
+// CorrelateIncidents reads error-priority journal entries in the window and
+// groups them, most recent first.
+func CorrelateIncidents(ctx context.Context, since, until time.Time, queryLogs func(context.Context, JournalQuery) (JournalPage, error)) (IncidentTimeline, error) {
+	now := time.Now()
 	if until.IsZero() {
-		until = time.Now()
+		until = now
 	}
-	if since.After(until) || until.Sub(since) > 7*24*time.Hour {
-		return IncidentTimeline{}, errors.New("incident window is invalid")
+	if since.IsZero() {
+		since = until.Add(-24 * time.Hour)
 	}
-	if queryLogs == nil {
-		queryLogs = QueryLogs
+	if !since.Before(until) || until.Sub(since) > 7*24*time.Hour {
+		return IncidentTimeline{}, ErrInvalidIncidentWindow
 	}
-	page, err := queryLogs(ctx, JournalQuery{Limit: 500, Since: since, Until: until, Details: false})
+	page, err := queryLogs(ctx, JournalQuery{Limit: incidentScanLimit, Since: since, Until: until, Priority: "0..3"})
 	if err != nil {
 		return IncidentTimeline{}, err
 	}
-	result := IncidentTimeline{Items: []IncidentEvent{}, Since: since, Until: until, Partial: page.NextCursor != ""}
-	for _, item := range page.Items {
-		kind, severity := classifyIncident(item)
-		if kind == "" {
+	groups := map[string]*Incident{}
+	result := IncidentTimeline{Items: []Incident{}, Since: since, Until: until, Partial: page.NextCursor != ""}
+	for _, entry := range page.Items {
+		timestamp, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+		if err != nil {
 			continue
 		}
-		timestamp, parseErr := time.Parse(time.RFC3339Nano, item.Timestamp)
-		if parseErr != nil {
-			timestamp = time.Now().UTC()
+		key := entry.Unit + "\x00" + incidentVolatile.ReplaceAllString(strings.TrimSpace(entry.Message), "#")
+		group, ok := groups[key]
+		if !ok {
+			if len(groups) >= incidentMaxGroups {
+				result.Partial = true
+				continue
+			}
+			group = &Incident{ID: fingerprintBytes([]byte(key))[:24], Kind: classifyIncident(entry), Severity: incidentSeverity(entry.Priority), Source: entry.Unit, Summary: boundedText(entry.Message, 512), FirstSeen: timestamp, LastSeen: timestamp, State: "open"}
+			groups[key] = group
 		}
-		id := item.Cursor
-		if id == "" {
-			id = timestamp.Format(time.RFC3339Nano) + ":" + item.Message
+		group.Count++
+		if timestamp.Before(group.FirstSeen) {
+			group.FirstSeen = timestamp
 		}
-		result.Items = append(result.Items, IncidentEvent{ID: id, Timestamp: timestamp, Severity: severity, Kind: kind, Source: item.Unit, Summary: boundedText(item.Message, 512), Cursor: item.Cursor})
-		if len(result.Items) >= 500 {
-			result.Partial = true
-			break
+		if timestamp.After(group.LastSeen) {
+			group.LastSeen = timestamp
+			group.Summary = boundedText(entry.Message, 512)
 		}
 	}
-	if result.Partial {
-		result.Warnings = append(result.Warnings, "Only the first bounded journal page was correlated; older evidence remains in the journal browser.")
+	for _, group := range groups {
+		result.Items = append(result.Items, *group)
 	}
+	sort.Slice(result.Items, func(i, j int) bool { return result.Items[i].LastSeen.After(result.Items[j].LastSeen) })
 	return result, nil
 }
 
-func classifyIncident(entry LogEntry) (string, string) {
-	message := strings.ToLower(entry.Message + " " + entry.Unit)
-	if strings.Contains(message, "oom") || strings.Contains(message, "out of memory") {
-		return "memory", "critical"
+func incidentSeverity(priority string) string {
+	switch priority {
+	case "0", "1", "2":
+		return "critical"
+	default:
+		return "error"
 	}
-	if strings.Contains(message, "segfault") || strings.Contains(message, "panic") || strings.Contains(message, "kernel bug") {
-		return "crash", "critical"
+}
+
+func classifyIncident(entry LogEntry) string {
+	message := strings.ToLower(entry.Message)
+	unit := strings.ToLower(entry.Unit)
+	switch {
+	case strings.Contains(message, "out of memory") || strings.Contains(message, "oom"):
+		return "memory"
+	case strings.Contains(message, "segfault") || strings.Contains(message, "core dump") || strings.Contains(message, "panic") || strings.Contains(unit, "systemd-coredump"):
+		return "crash"
+	case strings.Contains(message, "i/o error") || strings.Contains(message, "ext4-fs error") || strings.Contains(message, "btrfs") || strings.Contains(message, "nvme") || strings.Contains(message, "smart"):
+		return "storage"
+	case strings.Contains(message, "avc:") || strings.Contains(message, "apparmor") || strings.Contains(message, "authentication failure"):
+		return "security"
+	case strings.Contains(unit, "networkmanager") || strings.Contains(unit, "networkd") || strings.Contains(message, "link is down"):
+		return "network"
+	case strings.Contains(message, "failed with result") || strings.Contains(message, "failed to start"):
+		return "service"
+	default:
+		return "other"
 	}
-	if strings.Contains(message, "denied") || strings.Contains(message, "avc:") || strings.Contains(message, "apparmor") {
-		return "security-denial", "warning"
-	}
-	if strings.Contains(message, "networkmanager") || strings.Contains(message, "link is down") || strings.Contains(message, "carrier") {
-		return "network", "warning"
-	}
-	if strings.Contains(message, "failed") || strings.Contains(message, "failure") || strings.Contains(message, "error") {
-		return "service-failure", "error"
-	}
-	return "", ""
 }
 
 func boundedText(value string, limit int) string {

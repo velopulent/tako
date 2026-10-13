@@ -1,109 +1,282 @@
 package app
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
 )
 
-func (server *Server) previewLocalAccount(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	if !hasAdministrativeAccess(current) {
-		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before managing local accounts")
+func (server *Server) identities(writer http.ResponseWriter, request *http.Request) (platform.IdentityInventory, bool) {
+	var inventory platform.IdentityInventory
+	if err := server.broker.Call(request.Context(), "identities.list", sessionCredentials(currentSession(request)), nil, &inventory); err != nil {
+		fail(writer, err, "system-backend-unavailable")
+		return inventory, false
+	}
+	return inventory, true
+}
+
+func (server *Server) users(writer http.ResponseWriter, request *http.Request) {
+	if inventory, ok := server.identities(writer, request); ok {
+		if inventory.Users == nil {
+			inventory.Users = []platform.User{}
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"items": inventory.Users})
+	}
+}
+
+func (server *Server) groups(writer http.ResponseWriter, request *http.Request) {
+	if inventory, ok := server.identities(writer, request); ok {
+		if inventory.Groups == nil {
+			inventory.Groups = []platform.IdentityGroup{}
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"items": inventory.Groups})
+	}
+}
+
+// adminChange runs an administrative preview or apply. The operation type
+// carries its own Preview flag, which the caller sets before validation.
+func adminChange[T any](server *Server, writer http.ResponseWriter, request *http.Request, operation, invalidCode string, limit int64, prepare func(*T, bool) (string, error), preview bool) {
+	current := currentSession(request)
+	if !requireAdmin(writer, current) {
 		return
 	}
-	operation, ok := decodeLocalAccountOperation(writer, request, true)
+	payload, ok := decodeBody[T](writer, request, limit, invalidCode)
 	if !ok {
 		return
 	}
-	if server.previewAccountFn == nil {
-		problem(writer, http.StatusServiceUnavailable, "local-account-unavailable", "Privileged local account service is unavailable")
-		return
-	}
-	preview, err := server.previewAccountFn(request.Context(), auth.LocalAccountRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
+	target, err := prepare(&payload, preview)
 	if err != nil {
-		writeLocalAccountError(writer, err)
+		reject(writer, invalidCode)
 		return
 	}
-	writeJSON(writer, http.StatusOK, preview)
+	var result any
+	err = server.broker.Call(request.Context(), operation, adminCredentials(current), payload, &result)
+	if !preview {
+		server.audit(request, target, err, true)
+	}
+	if err != nil {
+		fail(writer, err, invalidCode)
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func prepareLocalAccount(operation *platform.LocalAccountOperation, preview bool) (string, error) {
+	operation.Preview = preview
+	return "user/" + operation.Username + "/" + operation.Action, platform.ValidateLocalAccountOperation(*operation)
+}
+
+func (server *Server) previewLocalAccount(writer http.ResponseWriter, request *http.Request) {
+	adminChange(server, writer, request, "accounts.local", "invalid-local-account-operation", 16<<10, prepareLocalAccount, true)
 }
 
 func (server *Server) applyLocalAccount(writer http.ResponseWriter, request *http.Request) {
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	if !hasAdministrativeAccess(current) {
-		problem(writer, http.StatusForbidden, "administrative-access-required", "Gain Administrative access before managing local accounts")
-		return
-	}
-	operation, ok := decodeLocalAccountOperation(writer, request, false)
+	adminChange(server, writer, request, "accounts.local", "invalid-local-account-operation", 16<<10, prepareLocalAccount, false)
+}
+
+func prepareGroupMembership(operation *platform.GroupMembershipOperation, preview bool) (string, error) {
+	operation.Preview = preview
+	return "group/" + operation.Group + "/" + operation.Username + "/" + operation.Action, platform.ValidateGroupMembershipOperation(*operation)
+}
+
+func (server *Server) previewGroupMembership(writer http.ResponseWriter, request *http.Request) {
+	adminChange(server, writer, request, "groups.membership", "invalid-group-operation", 16<<10, prepareGroupMembership, true)
+}
+
+func (server *Server) applyGroupMembership(writer http.ResponseWriter, request *http.Request) {
+	adminChange(server, writer, request, "groups.membership", "invalid-group-operation", 16<<10, prepareGroupMembership, false)
+}
+
+func prepareAdministrativeRole(operation *platform.AdministrativeRoleOperation, preview bool) (string, error) {
+	operation.Preview = preview
+	return "admin-role/" + operation.Username + "/" + operation.Action, platform.ValidateAdministrativeRoleOperation(*operation)
+}
+
+func (server *Server) previewAdministrativeRole(writer http.ResponseWriter, request *http.Request) {
+	adminChange(server, writer, request, "groups.admin-role", "invalid-group-operation", 16<<10, prepareAdministrativeRole, true)
+}
+
+func (server *Server) applyAdministrativeRole(writer http.ResponseWriter, request *http.Request) {
+	adminChange(server, writer, request, "groups.admin-role", "invalid-group-operation", 16<<10, prepareAdministrativeRole, false)
+}
+
+func prepareLocalGroup(operation *platform.LocalGroupOperation, preview bool) (string, error) {
+	operation.Preview = preview
+	return "group/" + operation.Group + "/" + operation.Action, platform.ValidateLocalGroupOperation(*operation)
+}
+
+func (server *Server) previewLocalGroup(writer http.ResponseWriter, request *http.Request) {
+	adminChange(server, writer, request, "groups.local", "invalid-local-group-operation", 16<<10, prepareLocalGroup, true)
+}
+
+func (server *Server) applyLocalGroup(writer http.ResponseWriter, request *http.Request) {
+	adminChange(server, writer, request, "groups.local", "invalid-local-group-operation", 16<<10, prepareLocalGroup, false)
+}
+
+func (server *Server) changePassword(writer http.ResponseWriter, request *http.Request) {
+	current := currentSession(request)
+	operation, ok := decodeBody[auth.PasswordChangeOperation](writer, request, 16<<10, "invalid-password-operation")
+	defer operation.Clear()
 	if !ok {
 		return
 	}
-	operation.Preview = false
-	startedAt := time.Now().UTC()
-	if server.applyAccountFn == nil {
-		problem(writer, http.StatusServiceUnavailable, "local-account-unavailable", "Privileged local account service is unavailable")
+	if auth.ValidatePasswordChangeOperation(operation) != nil {
+		reject(writer, "invalid-password-operation")
 		return
 	}
-	state, err := server.applyAccountFn(request.Context(), auth.LocalAccountRequest{AdminToken: current.Identity.AdminToken, Operation: operation})
-	target := "user/" + operation.Username + "/" + operation.Action
+	credentials := userCredentials(current)
+	target := "user/" + current.Identity.Username + "/password-change"
+	if operation.Action == "reset" {
+		if !requireAdmin(writer, current) {
+			return
+		}
+		credentials = adminCredentials(current)
+		target = "user/" + operation.Username + "/password-reset"
+	} else if current.Identity.BridgeToken == "" {
+		reject(writer, "user-bridge-unavailable")
+		return
+	}
+	err := server.broker.Call(request.Context(), "passwords.change", credentials, &operation, nil)
+	server.audit(request, target, err, operation.Action == "reset")
 	if err != nil {
-		server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "failed", "local account operation failed", true)
-		writeLocalAccountError(writer, err)
+		fail(writer, err, "password-unavailable")
 		return
 	}
-	server.recordOperation(request.Context(), current.Identity.Username, target, startedAt, "succeeded", "", true)
-	writeJSON(writer, http.StatusOK, state)
+	writer.WriteHeader(http.StatusNoContent)
 }
 
-func decodeLocalAccountOperation(writer http.ResponseWriter, request *http.Request, preview bool) (platform.LocalAccountOperation, bool) {
-	request.Body = http.MaxBytesReader(writer, request.Body, 16<<10)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	var operation platform.LocalAccountOperation
-	if err := decoder.Decode(&operation); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		problem(writer, http.StatusBadRequest, "invalid-local-account-operation", "The local account operation is invalid")
-		return platform.LocalAccountOperation{}, false
+// sshKeyCredentials uses the user's own bridge for their own keys and the
+// administrative lane for anyone else's.
+func sshKeyCredentials(writer http.ResponseWriter, current session.Session, username string) (auth.Credentials, bool) {
+	if username == current.Identity.Username {
+		if current.Identity.BridgeToken != "" {
+			return userCredentials(current), true
+		}
+		if hasAdministrativeAccess(current) {
+			return adminCredentials(current), true
+		}
+		reject(writer, "user-bridge-unavailable")
+		return auth.Credentials{}, false
+	}
+	if !requireAdmin(writer, current) {
+		return auth.Credentials{}, false
+	}
+	return adminCredentials(current), true
+}
+
+func (server *Server) sshKeys(writer http.ResponseWriter, request *http.Request) {
+	current := currentSession(request)
+	operation := platform.SSHKeyOperation{Action: "list", Username: request.URL.Query().Get("username"), Preview: true}
+	if operation.Username == "" {
+		operation.Username = current.Identity.Username
+	}
+	if platform.ValidateSSHKeyOperation(operation) != nil {
+		reject(writer, "invalid-ssh-key-operation")
+		return
+	}
+	credentials, ok := sshKeyCredentials(writer, current, operation.Username)
+	if !ok {
+		return
+	}
+	var preview platform.SSHKeyPreview
+	if err := server.broker.Call(request.Context(), "ssh-keys.apply", credentials, operation, &preview); err != nil {
+		fail(writer, err, "ssh-key-unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, preview.Current)
+}
+
+func (server *Server) changeSSHKeys(writer http.ResponseWriter, request *http.Request, preview bool) {
+	current := currentSession(request)
+	operation, ok := decodeBody[platform.SSHKeyOperation](writer, request, 32<<10, "invalid-ssh-key-operation")
+	if !ok {
+		return
 	}
 	operation.Preview = preview
-	if err := platform.ValidateLocalAccountOperation(operation); err != nil {
-		problem(writer, http.StatusBadRequest, "invalid-local-account-operation", "The local account operation is invalid")
-		return platform.LocalAccountOperation{}, false
+	if platform.ValidateSSHKeyOperation(operation) != nil {
+		reject(writer, "invalid-ssh-key-operation")
+		return
 	}
-	return operation, true
+	credentials, ok := sshKeyCredentials(writer, current, operation.Username)
+	if !ok {
+		return
+	}
+	var result any
+	err := server.broker.Call(request.Context(), "ssh-keys.apply", credentials, operation, &result)
+	if !preview {
+		server.audit(request, "user/"+operation.Username+"/ssh-keys/"+operation.Action, err, credentials.AdminToken != "")
+	}
+	if err != nil {
+		fail(writer, err, "ssh-key-unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
 }
 
-func hasAdministrativeAccess(current session.Session) bool {
-	return current.Identity.AdminToken != "" && time.Now().Before(current.AdminUntil)
+func (server *Server) previewSSHKeys(writer http.ResponseWriter, request *http.Request) {
+	server.changeSSHKeys(writer, request, true)
 }
 
-func writeLocalAccountError(writer http.ResponseWriter, err error) {
-	message := "Local account management is unavailable"
-	code := "local-account-unavailable"
-	status := http.StatusBadGateway
-	switch {
-	case errors.Is(err, platform.ErrInvalidLocalAccountOperation), strings.Contains(err.Error(), "invalid-local-account-operation"):
-		code, message, status = "invalid-local-account-operation", "The local account operation is invalid", http.StatusBadRequest
-	case errors.Is(err, platform.ErrLocalAccountConflict), strings.Contains(err.Error(), "local-account-conflict"):
-		code, message, status = "local-account-conflict", "The account changed; preview again before applying", http.StatusConflict
-	case errors.Is(err, platform.ErrLocalAccountNotFound), strings.Contains(err.Error(), "local-account-not-found"):
-		code, message, status = "local-account-not-found", "The local account no longer exists", http.StatusConflict
-	case errors.Is(err, platform.ErrLocalAccountReadOnly), strings.Contains(err.Error(), "local-account-read-only"):
-		code, message, status = "local-account-read-only", "Remote NSS identities are read-only in Tako", http.StatusForbidden
-	case errors.Is(err, platform.ErrLocalAccountProtected), strings.Contains(err.Error(), "local-account-protected"):
-		code, message, status = "local-account-protected", "The current operator account cannot be locked or deleted", http.StatusForbidden
-	case errors.Is(err, platform.ErrLocalAccountVerification), strings.Contains(err.Error(), "local-account-verification-failed"):
-		code, message, status = "local-account-verification-failed", "The shadow-utils operation could not be verified", http.StatusBadGateway
-	case strings.Contains(err.Error(), "invalid-admin-token"):
-		code, message, status = "administrative-access-required", "Administrative access expired", http.StatusForbidden
-	case errors.Is(err, auth.ErrServiceUnavailable), strings.Contains(err.Error(), "local-account-unavailable"):
-		code, message, status = "local-account-unavailable", "Privileged local account service is unavailable", http.StatusServiceUnavailable
+func (server *Server) applySSHKeys(writer http.ResponseWriter, request *http.Request) {
+	server.changeSSHKeys(writer, request, false)
+}
+
+func (server *Server) loginHistory(writer http.ResponseWriter, request *http.Request) {
+	current := currentSession(request)
+	username := chi.URLParam(request, "username")
+	if username != current.Identity.Username && !requireAdmin(writer, current) {
+		return
 	}
-	problem(writer, status, code, message)
+	query, err := parseLoginHistoryQuery(request, username)
+	if err != nil {
+		reject(writer, "invalid-login-history-query")
+		return
+	}
+	credentials := sessionCredentials(current)
+	if username == current.Identity.Username && current.Identity.BridgeToken != "" {
+		credentials = userCredentials(current)
+	}
+	var page platform.LoginHistoryPage
+	if err := server.broker.Call(request.Context(), "login-history.read", credentials, query, &page); err != nil {
+		fail(writer, err, "login-history-unavailable")
+		return
+	}
+	if page.Items == nil {
+		page.Items = []platform.LoginHistoryEntry{}
+	}
+	writeJSON(writer, http.StatusOK, page)
+}
+
+func parseLoginHistoryQuery(request *http.Request, username string) (platform.LoginHistoryQuery, error) {
+	values := request.URL.Query()
+	query := platform.LoginHistoryQuery{Username: username, Limit: 50, Outcome: values.Get("outcome")}
+	if raw := values.Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil {
+			return query, err
+		}
+		query.Limit = limit
+	}
+	if raw := values.Get("cursor"); raw != "" {
+		cursor, err := platform.DecodeJournalCursor(raw)
+		if err != nil {
+			return query, err
+		}
+		query.Cursor = cursor
+	}
+	for key, destination := range map[string]*time.Time{"since": &query.Since, "until": &query.Until} {
+		if raw := values.Get(key); raw != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, raw)
+			if err != nil {
+				return query, err
+			}
+			*destination = parsed
+		}
+	}
+	return query, query.Validate()
 }

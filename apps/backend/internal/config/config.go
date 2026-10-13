@@ -46,7 +46,6 @@ func Load(path string, development bool) (Config, error) {
 	if development {
 		cfg.Address = "127.0.0.1:9090"
 		cfg.DataDir = filepath.Join(os.TempDir(), "tako-dev")
-		cfg.AllowedOrigins = []string{"http://127.0.0.1:9090", "http://localhost:9090"}
 	}
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -60,9 +59,12 @@ func Load(path string, development bool) (Config, error) {
 	section := ""
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
-		if line == "" {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section = strings.Trim(line, "[] ")
@@ -73,10 +75,16 @@ func Load(path string, development bool) (Config, error) {
 			return cfg, errors.New("invalid or unsupported configuration line")
 		}
 		key := strings.TrimSpace(parts[0])
-		value, err := strconv.Unquote(strings.TrimSpace(parts[1]))
+		raw := strings.TrimSpace(parts[1])
+		quoted, err := strconv.QuotedPrefix(raw)
 		if err != nil {
-			return cfg, err
+			return cfg, errors.New("configuration value must be a quoted string: " + key)
 		}
+		// Anything after the closing quote may only be a comment.
+		if rest := strings.TrimSpace(raw[len(quoted):]); rest != "" && !strings.HasPrefix(rest, "#") {
+			return cfg, errors.New("unexpected text after value: " + key)
+		}
+		value, _ := strconv.Unquote(quoted)
 		switch section + "." + key {
 		case "server.address":
 			cfg.Address = value

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -161,8 +160,4 @@ func SignalTargets(targets []SignalTarget) []ProcessTarget {
 
 func SignalName(value string) string {
 	return strings.ToUpper(strings.TrimSpace(value))
-}
-
-func ProcessTargetString(target ProcessTarget) string {
-	return strconv.Itoa(target.PID) + ":" + strconv.FormatUint(target.Started, 10)
 }

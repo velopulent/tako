@@ -422,21 +422,6 @@ func contains(values []string, value string) bool {
 	return false
 }
 
-func networkErrorCode(err error) string {
-	switch {
-	case errors.Is(err, ErrInvalidNetworkOperation):
-		return "invalid-network-operation"
-	case errors.Is(err, ErrNetworkConflict):
-		return "network-conflict"
-	case errors.Is(err, ErrNetworkOwnership):
-		return "network-ownership-conflict"
-	case errors.Is(err, ErrNetworkUnavailable):
-		return "network-unavailable"
-	default:
-		return "network-operation-failed"
-	}
-}
-
 func fingerprintBytes(payload []byte) string {
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])

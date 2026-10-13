@@ -1,7 +1,6 @@
 package platform
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -167,8 +166,3 @@ func (r *fileRoot) Readlink(name string) (string, error) {
 	}
 	return string(buffer[:n]), nil
 }
-
-type rootedFiles struct{ root *fileRoot }
-
-func (f rootedFiles) Open(name string) (fs.File, error) { return f.root.Open(name) }
-func (r *fileRoot) FS() fs.FS                           { return rootedFiles{r} }

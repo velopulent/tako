@@ -53,7 +53,7 @@ func run() int {
 		updates.UseWorker(executable)
 		err = sessiond.Run(os.Args[2:], updates)
 	case "bridge":
-		err = bridge.Run(os.Stdin, os.Stdout, os.Stderr, updates)
+		err = bridge.Run(os.Stdin, os.Stdout, os.Stderr)
 	case "update-worker":
 		err = runUpdateWorker(os.Args[2:], updates)
 	case "help", "--help", "-h":

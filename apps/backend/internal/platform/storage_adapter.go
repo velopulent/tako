@@ -714,20 +714,3 @@ func runStorageCommand(ctx context.Context, name string, arguments ...string) (s
 	}
 	return string(payload), waitErr
 }
-
-func storageErrorCode(err error) string {
-	switch {
-	case errors.Is(err, ErrInvalidStorageOperation):
-		return "invalid-storage-operation"
-	case errors.Is(err, ErrStorageConflict):
-		return "storage-conflict"
-	case errors.Is(err, ErrStorageUnsafe):
-		return "storage-unsafe"
-	case errors.Is(err, ErrStorageBusy):
-		return "storage-busy"
-	case errors.Is(err, ErrStorageUnavailable):
-		return "storage-unavailable"
-	default:
-		return "storage-operation-failed"
-	}
-}

@@ -6,155 +6,193 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/velopulent/tako/internal/auth"
-	"github.com/velopulent/tako/internal/host"
 	"github.com/velopulent/tako/internal/platform"
-	"github.com/velopulent/tako/internal/session"
-	"go.uber.org/zap"
 )
 
-const hostInventoryJob = "host-inventory"
-const softwareUpdateJob = "software-update"
-
 const (
-	JobPending     = "pending"
-	JobRunning     = "running"
-	JobSucceeded   = "succeeded"
-	JobFailed      = "failed"
-	JobCanceled    = "canceled"
-	JobInterrupted = "interrupted"
+	JobPending   = "pending"
+	JobRunning   = "running"
+	JobSucceeded = "succeeded"
+	JobFailed    = "failed"
+	JobCanceled  = "canceled"
+
+	softwareUpdateJob = "software-update"
+	// maxFinishedJobs bounds the in-memory history of completed jobs.
+	maxFinishedJobs = 50
+	jobTimeout      = 30 * time.Minute
 )
 
 var (
-	ErrJobQueueFull     = errors.New("diagnostic job queue is full")
-	ErrJobManagerClosed = errors.New("diagnostic jobs are unavailable")
+	ErrJobBusy          = errors.New("a job is already queued")
+	ErrJobManagerClosed = errors.New("jobs are unavailable")
 	ErrJobNotFound      = errors.New("job not found")
 	ErrJobTerminal      = errors.New("job is already complete")
 )
 
+// Job is a long-running administrative operation. Its credentials live only
+// in the closure the job runs; they never appear in the record.
 type Job struct {
 	ID              string          `json:"id"`
 	Kind            string          `json:"kind"`
 	Actor           string          `json:"actor"`
-	Parameters      json.RawMessage `json:"-"`
 	State           string          `json:"state"`
 	Progress        int             `json:"progress"`
 	Message         string          `json:"message"`
 	Result          json.RawMessage `json:"result,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	CreatedAt       time.Time       `json:"createdAt"`
-	StartedAt       time.Time       `json:"startedAt,omitempty"`
-	CompletedAt     time.Time       `json:"completedAt,omitempty"`
+	StartedAt       time.Time       `json:"startedAt,omitzero"`
+	CompletedAt     time.Time       `json:"completedAt,omitzero"`
 	CancelRequested bool            `json:"cancelRequested"`
-	Dangerous       bool            `json:"dangerous"`
 }
 
-func jobID() string {
-	buffer := make([]byte, 18)
-	if _, err := rand.Read(buffer); err != nil {
-		return base64.RawURLEncoding.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
-	}
-	return base64.RawURLEncoding.EncodeToString(buffer)
-}
+// jobWork runs a job. progress records a step; it fails once the job was
+// canceled. The returned code is the job's public error on failure.
+type jobWork func(ctx context.Context, progress func(int, string) error) (json.RawMessage, error)
 
-type diagnosticJobManager struct {
-	queue   chan string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	execute func(context.Context, Job, func(int, string) error) (json.RawMessage, error)
+// jobManager runs one job at a time. Jobs are in memory and end with the
+// gateway; an update in flight keeps running inside sessiond.
+type jobManager struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 
 	mu       sync.Mutex
-	notifyMu sync.Mutex
 	closed   bool
 	jobs     map[string]*Job
 	inflight map[string]context.CancelFunc
-	pending  int
+	busy     bool
 	busyHook func(bool)
-	wg       sync.WaitGroup
 }
 
-func (manager *diagnosticJobManager) SetBusyHook(hook func(bool)) {
+func newJobManager(parent context.Context) *jobManager {
+	ctx, cancel := context.WithCancel(parent)
+	return &jobManager{ctx: ctx, cancel: cancel, jobs: make(map[string]*Job), inflight: make(map[string]context.CancelFunc)}
+}
+
+func (manager *jobManager) SetBusyHook(hook func(bool)) {
 	manager.mu.Lock()
 	manager.busyHook = hook
+	busy := manager.busy
 	manager.mu.Unlock()
-	manager.notifyBusy()
+	hook(busy)
 }
 
-func (manager *diagnosticJobManager) addPending(delta int) {
-	manager.mu.Lock()
-	wasBusy := manager.pending > 0
-	manager.pending += delta
-	if manager.pending < 0 {
-		manager.pending = 0
+func (manager *jobManager) setBusyLocked(busy bool) func() {
+	if manager.busy == busy || manager.busyHook == nil {
+		manager.busy = busy
+		return func() {}
 	}
-	busy := manager.pending > 0
-	manager.mu.Unlock()
-	if wasBusy != busy {
-		manager.notifyBusy()
-	}
-}
-
-func (manager *diagnosticJobManager) notifyBusy() {
-	manager.notifyMu.Lock()
-	defer manager.notifyMu.Unlock()
-	manager.mu.Lock()
+	manager.busy = busy
 	hook := manager.busyHook
-	busy := manager.pending > 0
-	manager.mu.Unlock()
-	if hook != nil {
-		hook(busy)
-	}
+	return func() { hook(busy) }
 }
 
-func newDiagnosticJobManager(parent context.Context, execute func(context.Context, Job, func(int, string) error) (json.RawMessage, error)) *diagnosticJobManager {
-	ctx, cancel := context.WithCancel(parent)
-	manager := &diagnosticJobManager{
-		queue:    make(chan string, 32),
-		ctx:      ctx,
-		cancel:   cancel,
-		execute:  execute,
-		jobs:     make(map[string]*Job),
-		inflight: make(map[string]context.CancelFunc),
-	}
-	for range 2 {
-		manager.wg.Add(1)
-		go manager.worker()
-	}
-	return manager
+func newJobID() string {
+	buffer := make([]byte, 18)
+	_, _ = rand.Read(buffer)
+	return base64.RawURLEncoding.EncodeToString(buffer)
 }
 
-func (manager *diagnosticJobManager) createJob(kind, actor string, dangerous bool, parameters json.RawMessage) (Job, error) {
-	if kind == "" || len(kind) > 64 || actor == "" || len(actor) > 256 {
-		return Job{}, errors.New("invalid job")
-	}
-	if len(parameters) > 64<<10 || (len(parameters) > 0 && !json.Valid(parameters)) {
-		return Job{}, errors.New("invalid job parameters")
-	}
-	job := Job{
-		ID:         jobID(),
-		Kind:       kind,
-		Actor:      actor,
-		Parameters: append(json.RawMessage(nil), parameters...),
-		State:      JobPending,
-		Message:    "Queued",
-		CreatedAt:  time.Now().UTC(),
-		Dangerous:  dangerous,
-	}
+// Submit starts work unless another job is pending or running.
+func (manager *jobManager) Submit(kind, actor string, work jobWork) (Job, error) {
 	manager.mu.Lock()
-	manager.jobs[job.ID] = &job
+	if manager.closed {
+		manager.mu.Unlock()
+		return Job{}, ErrJobManagerClosed
+	}
+	if manager.busy {
+		manager.mu.Unlock()
+		return Job{}, ErrJobBusy
+	}
+	job := &Job{ID: newJobID(), Kind: kind, Actor: actor, State: JobPending, Message: "Queued", CreatedAt: time.Now().UTC()}
+	manager.jobs[job.ID] = job
+	ctx, cancel := context.WithTimeout(manager.ctx, jobTimeout)
+	manager.inflight[job.ID] = cancel
+	notify := manager.setBusyLocked(true)
+	snapshot := *job
+	manager.wg.Add(1)
 	manager.mu.Unlock()
-	return job, nil
+	notify()
+	go manager.run(ctx, job.ID, work)
+	return snapshot, nil
 }
 
-func (manager *diagnosticJobManager) GetJob(id string) (Job, error) {
+func (manager *jobManager) run(ctx context.Context, id string, work jobWork) {
+	defer manager.wg.Done()
+	manager.update(id, func(job *Job) {
+		job.State, job.StartedAt, job.Message, job.Progress = JobRunning, time.Now().UTC(), "Running", 1
+	})
+	result, err := work(ctx, func(progress int, message string) error {
+		var canceled bool
+		manager.update(id, func(job *Job) {
+			if job.State != JobRunning {
+				canceled = true
+				return
+			}
+			job.Progress, job.Message = progress, message
+		})
+		if canceled {
+			return context.Canceled
+		}
+		return nil
+	})
+	manager.update(id, func(job *Job) {
+		job.CompletedAt = time.Now().UTC()
+		switch {
+		case job.State == JobCanceled:
+		case err != nil && ctx.Err() != nil:
+			job.State, job.Message, job.Error = JobCanceled, "Canceled", "canceled"
+		case err != nil:
+			job.State, job.Message, job.Error = JobFailed, "Failed", err.Error()
+		default:
+			job.State, job.Message, job.Progress, job.Result = JobSucceeded, "Completed", 100, result
+		}
+	})
+	manager.mu.Lock()
+	if cancel, ok := manager.inflight[id]; ok {
+		cancel()
+		delete(manager.inflight, id)
+	}
+	manager.pruneLocked()
+	notify := manager.setBusyLocked(false)
+	manager.mu.Unlock()
+	notify()
+}
+
+func (manager *jobManager) update(id string, change func(*Job)) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if job, ok := manager.jobs[id]; ok {
+		change(job)
+	}
+}
+
+// pruneLocked keeps the newest finished jobs.
+func (manager *jobManager) pruneLocked() {
+	finished := make([]*Job, 0, len(manager.jobs))
+	for _, job := range manager.jobs {
+		if !job.CompletedAt.IsZero() {
+			finished = append(finished, job)
+		}
+	}
+	if len(finished) <= maxFinishedJobs {
+		return
+	}
+	sort.Slice(finished, func(i, j int) bool { return finished[i].CompletedAt.After(finished[j].CompletedAt) })
+	for _, job := range finished[maxFinishedJobs:] {
+		delete(manager.jobs, job.ID)
+	}
+}
+
+func (manager *jobManager) Get(id string) (Job, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	job, ok := manager.jobs[id]
@@ -164,259 +202,40 @@ func (manager *diagnosticJobManager) GetJob(id string) (Job, error) {
 	return *job, nil
 }
 
-func (manager *diagnosticJobManager) Jobs(limit int) []Job {
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > 100 {
-		limit = 100
-	}
+func (manager *jobManager) List(limit int) []Job {
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
 	items := make([]Job, 0, len(manager.jobs))
 	for _, job := range manager.jobs {
 		items = append(items, *job)
 	}
-	// Newest first, bounded.
-	for i := 0; i < len(items); i++ {
-		for j := i + 1; j < len(items); j++ {
-			if items[j].CreatedAt.After(items[i].CreatedAt) {
-				items[i], items[j] = items[j], items[i]
-			}
-		}
-	}
-	if len(items) > limit {
-		items = items[:limit]
-	}
-	return items
-}
-
-func (manager *diagnosticJobManager) Submit(ctx context.Context, kind, actor string) (Job, error) {
-	return manager.SubmitWithSetup(ctx, kind, actor, nil)
-}
-
-// SubmitWithSetup lets a caller attach short-lived in-memory authority to a
-// job ID before a worker can observe it.
-func (manager *diagnosticJobManager) SubmitWithSetup(ctx context.Context, kind, actor string, setup func(string)) (Job, error) {
-	manager.mu.Lock()
-	if manager.closed {
-		manager.mu.Unlock()
-		return Job{}, ErrJobManagerClosed
-	}
 	manager.mu.Unlock()
-	if kind != hostInventoryJob {
-		return Job{}, fmt.Errorf("unsupported diagnostic job %q", kind)
-	}
-	job, err := manager.createJob(kind, actor, false, nil)
-	if err != nil {
-		return Job{}, err
-	}
-	if setup != nil {
-		setup(job.ID)
-	}
-	manager.addPending(1)
-	select {
-	case manager.queue <- job.ID:
-		return job, nil
-	default:
-		manager.addPending(-1)
-		_ = manager.failJob(job.ID, "Not queued", ErrJobQueueFull)
-		return Job{}, ErrJobQueueFull
-	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	return items[:min(len(items), limit)]
 }
 
-func (manager *diagnosticJobManager) SubmitParameterized(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage) (Job, error) {
-	return manager.SubmitParameterizedWithSetup(ctx, kind, actor, dangerous, parameters, nil)
-}
-
-// SubmitParameterizedWithSetup keeps credentials out of the job record;
-// setup runs after the ID exists but before workers observe it.
-func (manager *diagnosticJobManager) SubmitParameterizedWithSetup(ctx context.Context, kind, actor string, dangerous bool, parameters json.RawMessage, setup func(string)) (Job, error) {
+// Cancel stops a pending or running job.
+func (manager *jobManager) Cancel(id string) (Job, error) {
 	manager.mu.Lock()
-	if manager.closed {
-		manager.mu.Unlock()
-		return Job{}, ErrJobManagerClosed
-	}
-	manager.mu.Unlock()
-	if kind != softwareUpdateJob {
-		return Job{}, fmt.Errorf("unsupported parameterized job %q", kind)
-	}
-	job, err := manager.createJob(kind, actor, dangerous, parameters)
-	if err != nil {
-		return Job{}, err
-	}
-	if setup != nil {
-		setup(job.ID)
-	}
-	manager.addPending(1)
-	select {
-	case manager.queue <- job.ID:
-		return job, nil
-	default:
-		manager.addPending(-1)
-		_ = manager.failJob(job.ID, "Not queued", ErrJobQueueFull)
-		return Job{}, ErrJobQueueFull
-	}
-}
-
-func (manager *diagnosticJobManager) Cancel(ctx context.Context, id string) (Job, error) {
-	manager.mu.Lock()
+	defer manager.mu.Unlock()
 	job, ok := manager.jobs[id]
 	if !ok {
-		manager.mu.Unlock()
 		return Job{}, ErrJobNotFound
 	}
 	if job.State != JobPending && job.State != JobRunning {
-		snapshot := *job
-		manager.mu.Unlock()
-		return snapshot, ErrJobTerminal
+		return *job, ErrJobTerminal
 	}
-	job.State = JobCanceled
-	job.CancelRequested = true
-	job.Message = "Canceled by operator"
-	job.CompletedAt = time.Now().UTC()
-	snapshot := *job
-	cancel, ok := manager.inflight[id]
-	manager.mu.Unlock()
-	if ok {
+	job.State, job.CancelRequested, job.Message = JobCanceled, true, "Canceled by operator"
+	if cancel, ok := manager.inflight[id]; ok {
 		cancel()
 	}
-	return snapshot, nil
+	return *job, nil
 }
 
-func (manager *diagnosticJobManager) startJob(id string) bool {
+func (manager *jobManager) Close(ctx context.Context) error {
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	job, ok := manager.jobs[id]
-	if !ok || job.State != JobPending || job.CancelRequested {
-		return false
-	}
-	job.State = JobRunning
-	job.StartedAt = time.Now().UTC()
-	job.Message = "Running"
-	job.Progress = 1
-	return true
-}
-
-func (manager *diagnosticJobManager) updateProgress(id string, progress int, message string) error {
-	if progress < 0 || progress > 100 || len(message) > 256 {
-		return errors.New("invalid job progress")
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	job, ok := manager.jobs[id]
-	if !ok || job.State != JobRunning {
-		return ErrJobTerminal
-	}
-	job.Progress = progress
-	job.Message = message
-	return nil
-}
-
-func (manager *diagnosticJobManager) completeJob(id string, result json.RawMessage) error {
-	if len(result) > 1<<20 || (len(result) > 0 && !json.Valid(result)) {
-		return errors.New("invalid job result")
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	job, ok := manager.jobs[id]
-	if !ok || job.State != JobRunning || job.CancelRequested {
-		return ErrJobTerminal
-	}
-	job.State = JobSucceeded
-	job.Progress = 100
-	job.Message = "Completed"
-	job.Result = result
-	job.CompletedAt = time.Now().UTC()
-	return nil
-}
-
-func (manager *diagnosticJobManager) failJob(id, message string, jobErr error) error {
-	if message == "" || len(message) > 256 {
-		return errors.New("invalid job failure")
-	}
-	if jobErr == nil {
-		jobErr = errors.New("job failed")
-	}
-	publicError := jobErr.Error()
-	if len(publicError) > 1024 {
-		publicError = publicError[:1024]
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	job, ok := manager.jobs[id]
-	if !ok {
-		return ErrJobNotFound
-	}
-	if job.State != JobPending && job.State != JobRunning {
-		return ErrJobTerminal
-	}
-	job.State = JobFailed
-	job.Message = message
-	job.Error = publicError
-	job.CompletedAt = time.Now().UTC()
-	return nil
-}
-
-func (manager *diagnosticJobManager) worker() {
-	defer manager.wg.Done()
-	for {
-		select {
-		case <-manager.ctx.Done():
-			return
-		case id := <-manager.queue:
-			manager.run(id)
-		}
-	}
-}
-
-func (manager *diagnosticJobManager) run(id string) {
-	defer manager.addPending(-1)
-	if manager.ctx.Err() != nil {
-		return
-	}
-	if !manager.startJob(id) {
-		return
-	}
-	job, err := manager.GetJob(id)
-	if err != nil || job.State != JobRunning || job.CancelRequested {
-		return
-	}
-	timeout := 45 * time.Second
-	if job.Kind == softwareUpdateJob {
-		timeout = 30 * time.Minute
-	}
-	jobCtx, jobCancel := context.WithTimeout(manager.ctx, timeout)
-	manager.mu.Lock()
-	manager.inflight[id] = jobCancel
+	manager.closed = true
 	manager.mu.Unlock()
-	defer func() {
-		jobCancel()
-		manager.mu.Lock()
-		delete(manager.inflight, id)
-		manager.mu.Unlock()
-	}()
-
-	result, runErr := manager.execute(jobCtx, job, func(progress int, message string) error {
-		return manager.updateProgress(id, progress, message)
-	})
-	if jobCtx.Err() != nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
-		return
-	}
-	if runErr != nil {
-		_ = manager.failJob(id, "Diagnostic collection failed", errors.New("diagnostic collection failed"))
-		return
-	}
-	_ = manager.completeJob(id, result)
-}
-
-func (manager *diagnosticJobManager) Close(ctx context.Context) error {
-	manager.mu.Lock()
-	if !manager.closed {
-		manager.closed = true
-		manager.cancel()
-	}
-	manager.mu.Unlock()
+	manager.cancel()
 	done := make(chan struct{})
 	go func() {
 		manager.wg.Wait()
@@ -430,177 +249,62 @@ func (manager *diagnosticJobManager) Close(ctx context.Context) error {
 	}
 }
 
+// Jobs are administrative records: listing and inspecting them needs the same
+// authority that starts them.
 func (server *Server) jobsList(writer http.ResponseWriter, request *http.Request) {
+	if !requireAdmin(writer, currentSession(request)) {
+		return
+	}
 	limit := 50
 	if raw := request.URL.Query().Get("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			problem(writer, http.StatusBadRequest, "invalid-limit", "Limit must be a positive integer")
+		if err != nil || parsed < 1 || parsed > 100 {
+			problem(writer, http.StatusBadRequest, "invalid-limit", "Limit must be between 1 and 100")
 			return
 		}
 		limit = parsed
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"items": server.jobs.Jobs(limit)})
-}
-
-func (server *Server) startHostInventoryJob(writer http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(writer, request.Body, 4<<10)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	var body struct{}
-	if err := decoder.Decode(&body); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		problem(writer, http.StatusBadRequest, "invalid-job-request", "Job request must be an empty JSON object")
-		return
-	}
-	if server.jobs == nil {
-		problem(writer, http.StatusServiceUnavailable, "jobs-unavailable", "Diagnostic jobs are unavailable")
-		return
-	}
-	current := request.Context().Value(sessionKey{}).(session.Session)
-	credentials := credentialsFromContext(request.Context())
-	var submittedID string
-	job, err := server.jobs.SubmitWithSetup(request.Context(), hostInventoryJob, current.Identity.Username, func(id string) {
-		submittedID = id
-		server.inventoryCredentialsMu.Lock()
-		if server.inventoryCredentials == nil {
-			server.inventoryCredentials = make(map[string]auth.HostReadCredentials)
-		}
-		server.inventoryCredentials[id] = credentials
-		server.inventoryCredentialsMu.Unlock()
-	})
-	if errors.Is(err, ErrJobQueueFull) {
-		server.deleteInventoryCredentials(submittedID)
-		problem(writer, http.StatusTooManyRequests, "jobs-busy", "Diagnostic job queue is full")
-		return
-	}
-	if err != nil {
-		server.deleteInventoryCredentials(submittedID)
-		server.logger.Error("diagnostic job submission failed", zap.Error(err))
-		problem(writer, http.StatusInternalServerError, "jobs-unavailable", "Could not start diagnostic job")
-		return
-	}
-	writeJSON(writer, http.StatusAccepted, map[string]any{"job": job})
+	writeJSON(writer, http.StatusOK, map[string]any{"items": server.jobs.List(limit)})
 }
 
 func (server *Server) jobDetail(writer http.ResponseWriter, request *http.Request) {
-	id := chi.URLParam(request, "id")
-	if id == "" || len(id) > 64 {
-		problem(writer, http.StatusBadRequest, "invalid-job-id", "Job id is invalid")
+	current := currentSession(request)
+	if !requireAdmin(writer, current) {
 		return
 	}
-	job, err := server.jobs.GetJob(id)
-	if errors.Is(err, ErrJobNotFound) {
-		problem(writer, http.StatusNotFound, "job-not-found", "Diagnostic job was not found")
+	job, err := server.jobs.Get(chi.URLParam(request, "id"))
+	if err != nil {
+		problem(writer, http.StatusNotFound, "job-not-found", "The job was not found")
 		return
 	}
 	payload := map[string]any{"job": job}
-	// Software-update jobs include current normalized manager progress.
 	if job.Kind == softwareUpdateJob {
-		observation := auth.UpdateObservation{Progress: platform.UpdateProgress{Phase: "idle", Percent: -1, Message: "No update is running."}, Output: []platform.UpdateOutput{}}
-		if server.readUpdateLiveFn != nil {
-			if current, readErr := server.readUpdateLiveFn(request.Context()); readErr == nil {
-				observation = current
-			}
+		var observation platform.UpdateObservation
+		if server.broker.Call(request.Context(), "updates.live", sessionCredentials(current), nil, &observation) == nil {
+			payload["update"] = observation
 		}
-		payload["update"] = observation
 	}
 	writeJSON(writer, http.StatusOK, payload)
 }
 
 func (server *Server) cancelJob(writer http.ResponseWriter, request *http.Request) {
+	if !requireAdmin(writer, currentSession(request)) {
+		return
+	}
 	id := chi.URLParam(request, "id")
-	if id == "" || len(id) > 64 {
-		problem(writer, http.StatusBadRequest, "invalid-job-id", "Job id is invalid")
+	current, err := server.jobs.Get(id)
+	if err != nil {
+		problem(writer, http.StatusNotFound, "job-not-found", "The job was not found")
 		return
 	}
-	if server.jobs == nil {
-		problem(writer, http.StatusServiceUnavailable, "jobs-unavailable", "Diagnostic jobs are unavailable")
+	if current.Kind == softwareUpdateJob && current.State == JobRunning && current.Progress >= 20 {
+		problem(writer, http.StatusConflict, "update-not-cancelable", "The package transaction has started and cannot be canceled safely")
 		return
 	}
-	current, lookupErr := server.jobs.GetJob(id)
-	if lookupErr == nil && current.Kind == softwareUpdateJob && current.State == JobRunning && current.Progress >= 20 {
-		problem(writer, http.StatusConflict, "update-not-cancelable", "Package commit has started and cannot be canceled safely")
-		return
-	}
-	job, err := server.jobs.Cancel(request.Context(), id)
-	server.deleteInventoryCredentials(id)
-	if errors.Is(err, ErrJobNotFound) {
-		problem(writer, http.StatusNotFound, "job-not-found", "Diagnostic job was not found")
-		return
-	}
+	job, err := server.jobs.Cancel(id)
 	if errors.Is(err, ErrJobTerminal) {
-		problem(writer, http.StatusConflict, "job-not-running", "Diagnostic job is no longer running")
+		problem(writer, http.StatusConflict, "job-not-running", "The job is no longer running")
 		return
 	}
-	if err != nil {
-		server.logger.Error("diagnostic job cancellation failed", zap.Error(err))
-		problem(writer, http.StatusInternalServerError, "jobs-unavailable", "Could not cancel diagnostic job")
-		return
-	}
-	server.deleteUpdateToken(id)
 	writeJSON(writer, http.StatusOK, map[string]any{"job": job})
-}
-
-func (server *Server) runDiagnosticJob(ctx context.Context, job Job, update func(int, string) error) (json.RawMessage, error) {
-	if job.Kind == softwareUpdateJob {
-		return server.runSoftwareUpdateJob(ctx, job, update)
-	}
-	if job.Kind != hostInventoryJob {
-		return nil, fmt.Errorf("unsupported diagnostic job %q", job.Kind)
-	}
-	if err := update(10, "Reading host identity"); err != nil {
-		return nil, err
-	}
-	credentials := server.takeInventoryCredentials(job.ID)
-	if !server.config.Development && credentials.Token == "" && credentials.AdminToken == "" {
-		// Jobs are in-memory only. Missing authority means the request
-		// context is gone; never fall back to gateway-local reads.
-		return nil, auth.ErrServiceUnavailable
-	}
-	jobContext := context.WithValue(ctx, hostCredentialsKey{}, credentials)
-	info := server.hostInfo(jobContext)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := update(55, "Inspecting runtime capabilities"); err != nil {
-		return nil, err
-	}
-	capabilities := server.detectCapabilities(jobContext)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := update(85, "Preparing inventory report"); err != nil {
-		return nil, err
-	}
-	report, err := json.Marshal(struct {
-		Host         host.Info             `json:"host"`
-		Capabilities []platform.Capability `json:"capabilities"`
-	}{Host: info, Capabilities: capabilities})
-	if err != nil {
-		return nil, err
-	}
-	return report, update(100, "Inventory ready")
-}
-
-func (server *Server) takeInventoryCredentials(id string) auth.HostReadCredentials {
-	server.inventoryCredentialsMu.Lock()
-	defer server.inventoryCredentialsMu.Unlock()
-	credentials := server.inventoryCredentials[id]
-	delete(server.inventoryCredentials, id)
-	return credentials
-}
-
-func (server *Server) deleteInventoryCredentials(id string) {
-	if id == "" {
-		return
-	}
-	server.inventoryCredentialsMu.Lock()
-	delete(server.inventoryCredentials, id)
-	server.inventoryCredentialsMu.Unlock()
-}
-
-func (server *Server) clearInventoryCredentials() {
-	server.inventoryCredentialsMu.Lock()
-	server.inventoryCredentials = make(map[string]auth.HostReadCredentials)
-	server.inventoryCredentialsMu.Unlock()
 }

@@ -149,13 +149,6 @@ func (sampler *Sampler) Current() (Sample, bool) {
 	return sampler.samples[len(sampler.samples)-1], true
 }
 
-func (sampler *Sampler) Subscribe() (<-chan Sample, func()) {
-	sampler.mu.RLock()
-	interval := sampler.defaultInterval
-	sampler.mu.RUnlock()
-	return sampler.SubscribeEvery(interval)
-}
-
 func (sampler *Sampler) SubscribeEvery(interval time.Duration) (<-chan Sample, func()) {
 	interval = max(interval, time.Second)
 	channel := make(chan Sample, 4)

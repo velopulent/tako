@@ -96,15 +96,6 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func ListUsers(ctx context.Context) ([]User, error) {
-	inventory, err := ListIdentityInventory(ctx)
-	return inventory.Users, err
-}
-
-func Users() ([]User, error) {
-	return ListUsers(context.Background())
-}
-
 func nssCommand(ctx context.Context, database string) (string, error) {
 	command := exec.CommandContext(ctx, "getent", database)
 	stdout, err := command.StdoutPipe()
@@ -164,7 +155,7 @@ func parseNSSUsers(output string, local map[string]bool) ([]User, error) {
 			continue
 		}
 		isLocal := local[fields[0]]
-		users = append(users, User{Username: fields[0], UID: uid, GID: gid, Name: strings.Split(fields[4], ",")[0], Home: fields[5], Shell: fields[6], System: uid < 1000, Source: sourceName(isLocal), Local: isLocal, Mutable: isLocal, Reason: remoteReason(isLocal)})
+		users = append(users, User{Username: fields[0], UID: uid, GID: gid, Name: strings.Split(fields[4], ",")[0], Home: fields[5], Shell: fields[6], System: systemUID(uid), Source: sourceName(isLocal), Local: isLocal, Mutable: isLocal, Reason: remoteReason(isLocal)})
 		if len(users) >= maxNSSUsers {
 			return nil, errors.New("NSS user inventory exceeded bound")
 		}
@@ -229,4 +220,10 @@ func remoteReason(local bool) string {
 		return ""
 	}
 	return "Remote/NSS identity is read-only in Tako."
+}
+
+// systemUID reports IDs outside the regular login range: system accounts
+// below 1000 and the 60000+ block that holds nobody and systemd dynamic users.
+func systemUID(uid int) bool {
+	return uid < 1000 || uid >= 60000
 }

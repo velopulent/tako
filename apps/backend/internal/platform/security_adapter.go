@@ -2,12 +2,13 @@ package platform
 
 import (
 	"context"
-	"golang.org/x/sys/unix"
 	"io"
 	"os/exec"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // SecurityCommandRunner is the command seam for SELinux and AppArmor. Tests
@@ -201,10 +202,6 @@ func (adapter *securityAdapter) mutationCommand(current SecurityStatus, operatio
 }
 
 func safeRestoreconFilesystemPath(path string) bool { return safeRestoreconPath(path) }
-
-func securityCommand(ctx context.Context, name string, arguments ...string) (string, error) {
-	return runSecurityCommand(ctx, nil, name, arguments...)
-}
 
 func runSecurityCommand(ctx context.Context, input io.Reader, name string, arguments ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)

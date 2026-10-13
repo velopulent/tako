@@ -26,11 +26,11 @@ func TestStructuredTimerPairLoadsInDisposableVM(t *testing.T) {
 	root := filepath.Join(configRoot, "systemd", "user")
 	name := "tako-integration-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	operation := TimerOperation{
-		Action:     "create",
-		Scope:      "user",
-		Name:       name,
-		OnBootSec:  "10m",
-		Command:    "/bin/true",
+		Action:    "create",
+		Scope:     "user",
+		Name:      name,
+		OnBootSec: "10m",
+		Command:   "/bin/true",
 	}
 	state, err := ApplyTimerFiles(root, operation)
 	if err != nil {

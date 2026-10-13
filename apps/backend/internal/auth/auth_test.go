@@ -135,48 +135,16 @@ func TestSocketConversationStopsReadingWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
-func TestServiceActionStopsReadingWhenContextIsCanceled(t *testing.T) {
+// serveOnce answers one request on a temporary socket and reports it.
+func serveOnce(t *testing.T, response Response) (string, <-chan Request) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "session.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
 	}
-	defer listener.Close()
-	accepted := make(chan struct{})
-	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
-		}
-		close(accepted)
-		defer conn.Close()
-		_, _ = io.Copy(io.Discard, conn)
-	}()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- ServiceAction(ctx, path, "bridge", "user", "shell.service", "restart")
-	}()
-	<-accepted
-	cancel()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("canceled service action unexpectedly succeeded")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("canceled service action did not interrupt socket read")
-	}
-}
-
-func TestApplyHostConfigurationUsesAdminGrantAndStrictPayload(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.sock")
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
-	}
-	defer listener.Close()
-	requestSeen := make(chan Request, 1)
+	t.Cleanup(func() { listener.Close() })
+	seen := make(chan Request, 1)
 	go func() {
 		connection, acceptErr := listener.Accept()
 		if acceptErr != nil {
@@ -184,112 +152,48 @@ func TestApplyHostConfigurationUsesAdminGrantAndStrictPayload(t *testing.T) {
 		}
 		defer connection.Close()
 		var request Request
-		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr == nil {
-			requestSeen <- request
-			_ = json.NewEncoder(connection).Encode(Response{})
+		if json.NewDecoder(connection).Decode(&request) == nil {
+			seen <- request
+			_ = json.NewEncoder(connection).Encode(response)
 		}
 	}()
-	err = ApplyHostConfiguration(context.Background(), path, HostConfigurationRequest{
-		AdminToken:          "admin-token",
-		Hostname:            "tako",
-		Timezone:            "UTC",
-		NTPEnabled:          false,
-		ExpectedFingerprint: strings.Repeat("a", 64),
-	})
-	if err != nil {
-		t.Fatal(err)
+	return path, seen
+}
+
+func TestCallSendsEnvelopeAndDecodesResult(t *testing.T) {
+	path, seen := serveOnce(t, Response{Result: json.RawMessage(`{"scope":"user","name":"nightly"}`)})
+	var state platform.TimerState
+	operation := platform.TimerOperation{Action: "preview", Scope: "user", Name: "nightly"}
+	if err := Call(context.Background(), path, "timers.apply", Credentials{Token: "bridge-token"}, operation, &state, CallOptions{}); err != nil || state.Name != "nightly" {
+		t.Fatalf("call failed: %#v %v", state, err)
 	}
-	select {
-	case request := <-requestSeen:
-		if request.Operation != "host-config" || request.AdminToken != "admin-token" || request.Hostname != "tako" || request.ExpectedFingerprint != strings.Repeat("a", 64) {
-			t.Fatalf("unexpected host configuration request: %#v", request)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("host configuration request was not received")
+	request := <-seen
+	var payload platform.TimerOperation
+	if request.Operation != "timers.apply" || request.Token != "bridge-token" || request.AdminToken != "" || json.Unmarshal(request.Payload, &payload) != nil || payload.Name != "nightly" {
+		t.Fatalf("unexpected request: %#v", request)
 	}
 }
 
-func TestApplyTimerUsesScopedStructuredRequest(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.sock")
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
+func TestCallMapsRemoteCodesToSentinels(t *testing.T) {
+	path, _ := serveOnce(t, Response{Error: "timer-conflict"})
+	err := Call(context.Background(), path, "timers.apply", Credentials{AdminToken: "admin"}, nil, nil, CallOptions{})
+	if !errors.Is(err, platform.ErrTimerConflict) || err.Error() != "timer-conflict" {
+		t.Fatalf("remote error = %v", err)
 	}
-	defer listener.Close()
-	requestSeen := make(chan Request, 1)
-	go func() {
-		connection, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
-		}
-		defer connection.Close()
-		var request Request
-		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr == nil {
-			requestSeen <- request
-			_ = json.NewEncoder(connection).Encode(Response{TimerState: &platform.TimerState{Scope: "user", Name: "nightly"}})
-		}
-	}()
-	state, err := ApplyTimer(context.Background(), path, TimerRequest{
-		Token: "bridge-token",
-		Operation: platform.TimerOperation{
-			Action: "preview",
-			Scope:  "user",
-			Name:   "nightly",
-		},
-	})
-	if err != nil || state.Name != "nightly" {
-		t.Fatalf("timer request failed: %#v %v", state, err)
+	if code := ErrorCode(err, "fallback"); code != "timer-conflict" {
+		t.Fatalf("ErrorCode(remote) = %q", code)
 	}
-	select {
-	case request := <-requestSeen:
-		if request.Operation != "timer" || request.Token != "bridge-token" || request.Timer == nil || request.Timer.Name != "nightly" {
-			t.Fatalf("unexpected timer request: %#v", request)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timer request was not received")
+	if code := ErrorCode(platform.ErrFileConflict, "fallback"); code != "file-conflict" {
+		t.Fatalf("ErrorCode(sentinel) = %q", code)
 	}
-}
-
-func TestApplyOverrideUsesAdminGrantAndTypedPayload(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.sock")
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Skipf("Unix listeners unavailable in this sandbox: %v", err)
-	}
-	defer listener.Close()
-	requestSeen := make(chan Request, 1)
-	go func() {
-		connection, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
-		}
-		defer connection.Close()
-		var request Request
-		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr == nil {
-			requestSeen <- request
-			_ = json.NewEncoder(connection).Encode(Response{OverrideState: &platform.OverrideState{Scope: "system", Unit: "worker.service"}})
-		}
-	}()
-	state, err := ApplyOverride(context.Background(), path, OverrideRequest{
-		AdminToken: "admin-token",
-		Operation:  platform.OverrideOperation{Action: "preview", Scope: "system", Unit: "worker.service"},
-	})
-	if err != nil || state.Unit != "worker.service" {
-		t.Fatalf("override request failed: %#v %v", state, err)
-	}
-	select {
-	case request := <-requestSeen:
-		if request.Operation != "service-override" || request.AdminToken != "admin-token" || request.Override == nil || request.Override.Scope != "system" {
-			t.Fatalf("unexpected override request: %#v", request)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("override request was not received")
+	if code := ErrorCode(errors.New("private detail"), "fallback"); code != "fallback" {
+		t.Fatalf("ErrorCode(unknown) = %q", code)
 	}
 }
 
 func TestSocketAuthenticatorReportsUnavailableService(t *testing.T) {
 	authenticator := SocketAuthenticator{Path: filepath.Join(t.TempDir(), "missing.sock")}
-	_, err := authenticator.Authenticate(context.Background(), "octopus", "secret")
+	_, err := authenticator.AdvanceConversation(context.Background(), &ConversationRequest{Username: "octopus", Password: "secret"})
 	if !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("expected unavailable service, got %v", err)
 	}
@@ -314,5 +218,37 @@ func TestConversationRequestShapesAreExclusive(t *testing.T) {
 				t.Fatalf("Valid() = %v, want %v", test.value.Valid(), test.valid)
 			}
 		})
+	}
+}
+
+func TestDevelopmentAuthenticatorRequiresPasswordAndOwnAccount(t *testing.T) {
+	authenticator := DevelopmentAuthenticator{Password: "dev-secret"}
+	if _, err := authenticator.AdvanceConversation(context.Background(), &ConversationRequest{Password: "wrong"}); !errors.Is(err, ErrAuthenticationFailed) {
+		t.Fatalf("wrong password = %v", err)
+	}
+	if _, err := authenticator.AdvanceConversation(context.Background(), &ConversationRequest{Username: "someone-else-entirely", Password: "dev-secret"}); !errors.Is(err, ErrAuthenticationFailed) {
+		t.Fatalf("other account = %v", err)
+	}
+	request := &ConversationRequest{Password: "dev-secret"}
+	response, err := authenticator.AdvanceConversation(context.Background(), request)
+	if err != nil || response.Identity == nil || request.Password != "" {
+		t.Fatalf("own account = %#v, %v; password cleared=%v", response, err, request.Password == "")
+	}
+	if _, err := (DevelopmentAuthenticator{}).AdvanceConversation(context.Background(), &ConversationRequest{}); err == nil {
+		t.Fatal("empty development password accepted")
+	}
+}
+
+func TestDevelopmentAdministrativeAccessRequiresThePassword(t *testing.T) {
+	authenticator := DevelopmentAuthenticator{Password: "development"}
+	if _, err := authenticator.AuthorizeAdministrative(context.Background(), "", "wrong", time.Minute); !errors.Is(err, ErrAuthenticationFailed) {
+		t.Fatalf("wrong password err = %v", err)
+	}
+	access, err := authenticator.AuthorizeAdministrative(context.Background(), "", "development\n123456", time.Minute)
+	if err != nil || access.Token == "" || time.Until(access.Until) <= 0 {
+		t.Fatalf("access = %+v, %v", access, err)
+	}
+	if _, err := (DevelopmentAuthenticator{}).AuthorizeAdministrative(context.Background(), "", "", time.Minute); !errors.Is(err, ErrAuthenticationFailed) {
+		t.Fatalf("empty configured password err = %v", err)
 	}
 }

@@ -54,15 +54,15 @@ type LocalGroupState struct {
 }
 
 type LocalGroupPreview struct {
-	Action               string           `json:"action"`
-	Group                string           `json:"group"`
-	Current              LocalGroupState  `json:"current"`
-	Changes              []string         `json:"changes"`
-	Warnings             []string         `json:"warnings"`
-	Stale                bool             `json:"stale"`
-	Allowed              bool             `json:"allowed"`
-	Reason               string           `json:"reason,omitempty"`
-	RequiresConfirmation bool             `json:"requiresConfirmation"`
+	Action               string          `json:"action"`
+	Group                string          `json:"group"`
+	Current              LocalGroupState `json:"current"`
+	Changes              []string        `json:"changes"`
+	Warnings             []string        `json:"warnings"`
+	Stale                bool            `json:"stale"`
+	Allowed              bool            `json:"allowed"`
+	Reason               string          `json:"reason,omitempty"`
+	RequiresConfirmation bool            `json:"requiresConfirmation"`
 }
 
 func ValidateLocalGroupOperation(operation LocalGroupOperation) error {

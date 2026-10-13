@@ -4,10 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/xml"
-	"github.com/velopulent/tako/internal/platform"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/velopulent/tako/internal/platform"
 )
 
 type Provider struct{ tumbleweed bool }

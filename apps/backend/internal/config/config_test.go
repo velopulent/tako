@@ -80,8 +80,8 @@ func TestDevelopmentDefaultsUseLoopback(t *testing.T) {
 	if cfg.Address != "127.0.0.1:9090" || !cfg.Development {
 		t.Fatalf("unsafe development defaults: %#v", cfg)
 	}
-	if len(cfg.AllowedOrigins) != 2 || cfg.AllowedOrigins[0] != "http://127.0.0.1:9090" || cfg.AllowedOrigins[1] != "http://localhost:9090" {
-		t.Fatalf("unsafe development origins: %q", cfg.AllowedOrigins)
+	if cfg.AllowedOrigins != nil {
+		t.Fatalf("development should derive the same origin: %q", cfg.AllowedOrigins)
 	}
 }
 
@@ -120,5 +120,22 @@ func TestRejectsUnsafeMonitoringInterval(t *testing.T) {
 	}
 	if _, err := Load(path, false); err == nil {
 		t.Fatal("unsafe interval accepted")
+	}
+}
+
+func TestLoadKeepsHashInsideQuotedValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[server]\n# comment\ndata_dir = \"/srv/tako#1\" # trailing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, false)
+	if err != nil || cfg.DataDir != "/srv/tako#1" {
+		t.Fatalf("data_dir = %q, %v", cfg.DataDir, err)
+	}
+	if err := os.WriteFile(path, []byte("[server]\ndata_dir = \"/srv\" junk\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, false); err == nil {
+		t.Fatal("trailing junk accepted")
 	}
 }

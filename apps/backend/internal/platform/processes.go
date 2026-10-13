@@ -120,11 +120,15 @@ func (tracker *ProcessTracker) Snapshot() ([]Process, error) {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
+	for index := range items {
+		item := &items[index]
 		key := processIdentity(item.PID, item.Started)
 		seen[key] = struct{}{}
 		tracker.lastSeen[key] = now
-		tracker.record(key, resourceSample(item, now))
+		if history := tracker.history[key]; len(history) > 0 {
+			applyRates(item, history[len(history)-1], now)
+		}
+		tracker.record(key, resourceSample(*item, now))
 	}
 	for key, last := range tracker.lastSeen {
 		if _, ok := seen[key]; !ok && now.Sub(last) > 10*time.Minute {
@@ -157,6 +161,20 @@ func (tracker *ProcessTracker) record(key string, sample ProcessResourceSample) 
 		samples = samples[len(samples)-tracker.maxSample:]
 	}
 	tracker.history[key] = samples
+}
+
+// applyRates derives CPU use (percent of one core, as top reports it) and disk
+// throughput from the previous snapshot of the same process.
+func applyRates(item *Process, previous ProcessResourceSample, now time.Time) {
+	elapsed := now.Sub(previous.Timestamp).Seconds()
+	if elapsed < 0.5 {
+		return
+	}
+	item.CPUPercent = max(0, item.CPUTime-previous.CPUTime) / elapsed * 100
+	if !item.IODenied && !previous.IODenied {
+		item.DiskReadRate = float64(item.DiskRead-min(item.DiskRead, previous.DiskRead)) / elapsed
+		item.DiskWriteRate = float64(item.DiskWrite-min(item.DiskWrite, previous.DiskWrite)) / elapsed
+	}
 }
 
 func resourceSample(item Process, now time.Time) ProcessResourceSample {

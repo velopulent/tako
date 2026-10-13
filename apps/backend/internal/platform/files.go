@@ -2,7 +2,6 @@ package platform
 
 import (
 	"archive/tar"
-	"bufio"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -124,8 +123,6 @@ type FileOperation struct {
 	Offset              int64   `json:"offset,omitempty"`
 	Limit               int64   `json:"limit,omitempty"`
 	TotalSize           int64   `json:"totalSize,omitempty"`
-	LineOffset          int     `json:"lineOffset,omitempty"`
-	LineLimit           int     `json:"lineLimit,omitempty"`
 	ExpectedFingerprint string  `json:"expectedFingerprint,omitempty"`
 	ShowHidden          bool    `json:"showHidden,omitempty"`
 	Recursive           bool    `json:"recursive,omitempty"`
@@ -141,7 +138,7 @@ type FileOperation struct {
 }
 
 func ValidateFileOperation(operation FileOperation) error {
-	validActions := map[string]bool{"list": true, "stat": true, "read": true, "read-window": true, "write": true, "write-text": true, "write-chunk": true, "upload-status": true, "create": true, "rename": true, "move": true, "copy": true, "trash": true, "delete": true, "search": true, "archive": true, "extract": true, "metadata": true, "cancel-upload": true, "restore": true}
+	validActions := map[string]bool{"list": true, "stat": true, "read": true, "write": true, "write-text": true, "write-chunk": true, "upload-status": true, "create": true, "rename": true, "move": true, "copy": true, "trash": true, "delete": true, "search": true, "archive": true, "extract": true, "metadata": true, "cancel-upload": true, "restore": true}
 	if !validActions[operation.Action] || len(operation.Path) > MaxFilePath || len(operation.Destination) > MaxFilePath || len(operation.ArchivePath) > MaxFilePath || len(operation.Owner) > 256 || len(operation.Group) > 256 || strings.ContainsAny(operation.Path+operation.Destination+operation.ArchivePath+operation.Owner+operation.Group, "\x00\r\n") {
 		return ErrInvalidFileOperation
 	}
@@ -168,9 +165,6 @@ func ValidateFileOperation(operation FileOperation) error {
 		return ErrInvalidFileOperation
 	}
 	if operation.TotalSize < 0 || operation.TotalSize > 1<<40 {
-		return ErrInvalidFileOperation
-	}
-	if operation.Action == "read-window" && (operation.LineOffset < 0 || operation.LineLimit < 1 || operation.LineLimit > 1000) {
 		return ErrInvalidFileOperation
 	}
 	if operation.MaxEntries < 0 || operation.MaxEntries > MaxSearchEntries {
@@ -286,7 +280,7 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 		return FileResult{}, ErrFilePermission
 	}
 
-	if operation.ExpectedFingerprint != "" && (operation.Action == "read" || operation.Action == "read-window" || operation.Action == "stat") {
+	if operation.ExpectedFingerprint != "" && (operation.Action == "read" || operation.Action == "stat") {
 		info, statErr := f.root.Stat(path)
 		if errors.Is(statErr, os.ErrNotExist) {
 			return FileResult{}, ErrFileNotFound
@@ -306,8 +300,6 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 		return FileResult{Entry: &entry}, err
 	case "read":
 		return f.readFile(path, operation.Offset, operation.Limit, operation.ExpectedFingerprint)
-	case "read-window":
-		return f.readTextWindow(path, operation.LineOffset, operation.LineLimit)
 	case "write":
 		return f.writeFile(path, operation)
 	case "write-text":
@@ -358,42 +350,6 @@ func applyFileOperation(ctx context.Context, operation FileOperation, root strin
 	default:
 		return FileResult{}, ErrInvalidFileOperation
 	}
-}
-
-func resolveFilePath(root, value string, privileged bool) (string, error) {
-	if value == "" {
-		value = "."
-	}
-	if !privileged && filepath.IsAbs(value) {
-		return "", ErrFilePermission
-	}
-	path := value
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(root, path)
-	}
-	path = filepath.Clean(path)
-	if !privileged {
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return "", ErrFilePermission
-		}
-		check := path
-		if _, statErr := os.Lstat(check); errors.Is(statErr, os.ErrNotExist) {
-			check = filepath.Dir(check)
-		}
-		realPath, evalErr := filepath.EvalSymlinks(check)
-		if evalErr != nil {
-			if !errors.Is(evalErr, os.ErrNotExist) {
-				return "", ErrFilePermission
-			}
-		} else {
-			realRoot, rootErr := filepath.EvalSymlinks(root)
-			if rootErr != nil || !pathWithin(realRoot, realPath) {
-				return "", ErrFilePermission
-			}
-		}
-	}
-	return path, nil
 }
 
 func (f fileTree) listDirectory(path string, operation FileOperation) (FileResult, error) {
@@ -461,32 +417,6 @@ func (f fileTree) listDirectory(path string, operation FileOperation) (FileResul
 		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 	})
 	return FileResult{Directory: &result}, nil
-}
-
-func fileEntry(path, displayPath string) (FileEntry, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return FileEntry{}, err
-	}
-	kind := "file"
-	if info.IsDir() {
-		kind = "directory"
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		kind = "symlink"
-	}
-	entry := FileEntry{Name: filepath.Base(path), Path: displayPath, Kind: kind, Size: info.Size(), Mode: uint32(info.Mode().Perm()), ModifiedAt: info.ModTime().UTC(), Fingerprint: statFingerprint(info), Hidden: strings.HasPrefix(filepath.Base(path), "."), Readable: info.Mode().Perm()&0o444 != 0, Writable: info.Mode().Perm()&0o222 != 0}
-	if kind == "file" {
-		entry.Mime = mime.TypeByExtension(filepath.Ext(path))
-		if entry.Mime == "" {
-			entry.Mime = "application/octet-stream"
-		}
-	}
-	if kind == "symlink" {
-		if target, readErr := os.Readlink(path); readErr == nil && len(target) <= MaxFilePath {
-			entry.SymlinkTarget = target
-		}
-	}
-	return entry, nil
 }
 
 func (f fileTree) entry(path, displayPath string) (FileEntry, error) {
@@ -564,21 +494,6 @@ func (f fileTree) readFile(path string, offset, limit int64, expected string) (F
 		return FileResult{}, err
 	}
 	return FileResult{Content: content, Offset: offset, Total: info.Size(), EOF: offset+int64(len(content)) >= info.Size(), Mime: mime.TypeByExtension(filepath.Ext(path)), Fingerprint: statFingerprint(info)}, nil
-}
-
-func (f fileTree) readText(path string, offset, limit int64) (FileResult, error) {
-	info, err := f.root.Stat(path)
-	if err != nil {
-		return FileResult{}, err
-	}
-	if info.Size() > MaxTextFile {
-		return FileResult{}, ErrFileTooLarge
-	}
-	result, err := f.readFile(path, offset, limit, "")
-	if err == nil {
-		result.Mime = "text/plain"
-	}
-	return result, err
 }
 
 func (f fileTree) writeFile(path string, operation FileOperation) (FileResult, error) {
@@ -1324,39 +1239,6 @@ func (f fileTree) updateMetadata(path string, operation FileOperation, privilege
 	}
 	entry, err := f.entry(path, path)
 	return FileResult{Entry: &entry, Message: "File metadata updated."}, err
-}
-
-// ReadTextWindow exposes bounded line windows without loading a large file in
-// the browser or gateway. Offset is a zero-based line number for text clients.
-func (f fileTree) readTextWindow(path string, lineOffset, lineLimit int) (FileResult, error) {
-	if lineOffset < 0 || lineLimit < 1 || lineLimit > 1000 {
-		return FileResult{}, ErrInvalidFileOperation
-	}
-	file, err := f.root.Open(path)
-	if err != nil {
-		return FileResult{}, err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(io.LimitReader(file, MaxTextFile+1))
-	buffer := make([]byte, 64*1024)
-	scanner.Buffer(buffer, 1<<20)
-	line := 0
-	lines := make([]string, 0, lineLimit)
-	for scanner.Scan() {
-		if line >= lineOffset && len(lines) < lineLimit {
-			lines = append(lines, scanner.Text())
-		}
-		line++
-		if len(lines) == lineLimit {
-			break
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return FileResult{}, err
-	}
-	payload, _ := json.Marshal(lines)
-	info, _ := f.root.Stat(path)
-	return FileResult{Content: payload, Offset: int64(lineOffset), Total: int64(line), EOF: line < lineOffset+lineLimit, Mime: "application/json", Fingerprint: statFingerprint(info)}, nil
 }
 
 // fileTree anchors every operation to an open directory rather than a checked pathname.

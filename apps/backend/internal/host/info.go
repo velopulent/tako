@@ -51,12 +51,6 @@ type Info struct {
 	Restart         RestartStatus  `json:"restart"`
 }
 
-func Read() Info {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	return ReadContext(ctx)
-}
-
 func ReadContext(ctx context.Context) Info {
 	hostname, _ := os.Hostname()
 	uptime := readUptime()

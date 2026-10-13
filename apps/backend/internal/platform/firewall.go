@@ -338,20 +338,3 @@ func firewallRuntimeRulePresent(rules []string, zone string, operation FirewallO
 	}
 	return false
 }
-
-func firewallErrorCode(err error) string {
-	switch {
-	case errors.Is(err, ErrInvalidFirewallOperation):
-		return "invalid-firewall-operation"
-	case errors.Is(err, ErrFirewallConflict):
-		return "firewall-conflict"
-	case errors.Is(err, ErrFirewallOwnership):
-		return "firewall-ownership-conflict"
-	case errors.Is(err, ErrFirewallAccessRisk):
-		return "firewall-access-risk"
-	case errors.Is(err, ErrFirewallUnavailable):
-		return "firewall-unavailable"
-	default:
-		return "firewall-operation-failed"
-	}
-}

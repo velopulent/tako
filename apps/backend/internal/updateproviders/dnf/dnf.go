@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"github.com/velopulent/tako/internal/platform"
 	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/velopulent/tako/internal/platform"
 )
 
 type Provider struct{}

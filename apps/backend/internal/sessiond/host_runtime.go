@@ -14,12 +14,11 @@ const (
 )
 
 type hostRuntime struct {
-	sampler         *metrics.Sampler
-	processTracker  *platform.ProcessTracker
-	network         *networkCoordinator
-	firewall        *firewallCoordinator
-	certificatePath string
-	updates         *platform.UpdateService
+	sampler        *metrics.Sampler
+	processTracker *platform.ProcessTracker
+	network        *networkCoordinator
+	firewall       *firewallCoordinator
+	updates        *platform.UpdateService
 }
 
 func newHostRuntime(settings ...time.Duration) *hostRuntime {
@@ -53,7 +52,7 @@ func (runtime *hostRuntime) close() {
 		runtime.firewall.Close()
 	}
 }
-func (runtime *hostRuntime) updateObservation(_ context.Context) platform.UpdateObservation {
+func (runtime *hostRuntime) updateObservation() platform.UpdateObservation {
 	if runtime == nil || runtime.updates == nil {
 		return platform.UpdateObservation{Progress: platform.UpdateProgress{Phase: "idle", Percent: -1, Message: "No update is running."}, Output: []platform.UpdateOutput{}}
 	}

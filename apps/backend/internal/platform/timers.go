@@ -293,6 +293,23 @@ func ApplyTimerFiles(root string, operation TimerOperation) (TimerState, error) 
 	return ReadTimerState(root, operation)
 }
 
+// TimerActivation returns the systemctl verb that makes the running timer
+// match the unit files after a change, or "" when none is needed. state is
+// the timer state after the change.
+func TimerActivation(action string, state TimerState) string {
+	switch action {
+	case "enable":
+		return "start"
+	case "disable", "delete":
+		return "stop"
+	case "update":
+		if state.Enabled {
+			return "restart"
+		}
+	}
+	return ""
+}
+
 func timerPaths(root, name string) (string, string, error) {
 	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root || !validTimerName(name) {
 		return "", "", ErrInvalidTimerOperation

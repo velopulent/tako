@@ -51,6 +51,12 @@ paths:
       responses:
         '200':
           description: Current session
+  /auth/logout:
+    post:
+      operationId: logout
+      description: Ends the session, revokes administrative access, and closes the user bridge.
+      responses:
+        '204': { description: Signed out }
   /capabilities:
     get:
       operationId: listCapabilities
@@ -124,7 +130,10 @@ paths:
           schema: { type: string, pattern: '^[0-7](\.\.[0-7])?$' }
         - in: query
           name: unit
-          schema: { type: string }
+          description: Repeat to match any of up to 16 units.
+          style: form
+          explode: true
+          schema: { type: array, maxItems: 16, items: { type: string } }
         - in: query
           name: executable
           schema: { type: string, maxLength: 4096 }
@@ -652,7 +661,9 @@ paths:
     get:
       operationId: getServiceConfiguration
       responses:
-        '200': { description: Bounded raw unit configuration derived from systemd metadata }
+        '200':
+          description: Bounded raw unit configuration derived from systemd metadata
+          content: { application/json: { schema: { $ref: '#/components/schemas/UnitConfiguration' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /services/{scope}/{unit}/actions:
@@ -693,7 +704,9 @@ paths:
               properties:
                 action: { type: string, enum: [start, stop, restart, reload, enable, disable, mask, unmask] }
       responses:
-        '200': { description: Current service state and bounded affected relationships }
+        '200':
+          description: Current service state and bounded affected relationships
+          content: { application/json: { schema: { $ref: '#/components/schemas/ServiceImpact' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
@@ -779,11 +792,6 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
-  /admin:
-    get:
-      operationId: getAdministrativeAccess
-      responses:
-        '200': { description: Current elevation state and expiry }
   /admin/elevate:
     post:
       operationId: gainAdministrativeAccess
@@ -810,14 +818,14 @@ paths:
         '204': { description: Administrative access dropped }
   /jobs:
     get:
-      operationId: listDiagnosticJobs
+      operationId: listUpdateJobs
       parameters:
         - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
       responses:
         '200':
-          description: In-memory diagnostic jobs, lost on restart
+          description: Recent software-update jobs (at most 50 finished), kept in memory and lost on restart. Requires administrative access.
           content:
             application/json:
               schema:
@@ -829,29 +837,6 @@ paths:
                     items: { $ref: '#/components/schemas/DiagnosticJob' }
         '400': { $ref: '#/components/responses/Problem' }
         '500': { $ref: '#/components/responses/Problem' }
-  /jobs/host-inventory:
-    post:
-      operationId: startHostInventoryJob
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-      responses:
-        '202':
-          description: Host inventory job accepted
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [job]
-                properties:
-                  job: { $ref: '#/components/schemas/DiagnosticJob' }
-        '400': { $ref: '#/components/responses/Problem' }
-        '403': { $ref: '#/components/responses/Problem' }
-        '429': { $ref: '#/components/responses/Problem' }
   /jobs/{id}:
     parameters:
       - in: path
@@ -859,10 +844,10 @@ paths:
         required: true
         schema: { type: string, minLength: 1, maxLength: 64 }
     get:
-      operationId: getDiagnosticJob
+      operationId: getUpdateJob
       responses:
         '200':
-          description: In-memory diagnostic job state; software-update jobs also carry normalized live progress
+          description: State of a software-update job, with normalized live progress. Requires administrative access.
           content:
             application/json:
               schema:
@@ -879,7 +864,7 @@ paths:
         required: true
         schema: { type: string, minLength: 1, maxLength: 64 }
     post:
-      operationId: cancelDiagnosticJob
+      operationId: cancelUpdateJob
       summary: Cancel a pending or running diagnostic job
       responses:
         '200':
@@ -922,31 +907,6 @@ paths:
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
-  /host/config/preview:
-    post:
-      operationId: previewHostConfiguration
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/HostConfigurationUpdate' }
-      responses:
-        '200':
-          description: Current and proposed host configuration with stale-state indication
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [current, proposed, changes, stale]
-                properties:
-                  current: { $ref: '#/components/schemas/HostConfiguration' }
-                  proposed: { $ref: '#/components/schemas/HostConfiguration' }
-                  changes:
-                    type: array
-                    items: { type: string, enum: [hostname, timezone, ntp] }
-                  stale: { type: boolean }
-        '400': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
   /host/power:
     get:
       operationId: getPowerStatus
@@ -970,24 +930,6 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
-  /host/power/preview:
-    post:
-      operationId: previewPowerAction
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [action, expectedFingerprint]
-              additionalProperties: false
-              properties:
-                action: { type: string, enum: [reboot, shutdown] }
-                expectedFingerprint: { type: string, minLength: 64, maxLength: 64 }
-      responses:
-        '200': { description: "Current capability, inhibitor, and confirmation requirements" }
-        '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /storage:
     get:
@@ -1098,7 +1040,9 @@ paths:
     get:
       operationId: getSecurityStatus
       responses:
-        '200': { description: Structured SELinux and AppArmor status and findings }
+        '200':
+          description: Structured SELinux and AppArmor status and findings
+          content: { application/json: { schema: { $ref: '#/components/schemas/SecurityStatus' } } }
         '403': { $ref: '#/components/responses/Problem' }
     post:
       operationId: applySecurityOperation
@@ -1134,60 +1078,21 @@ paths:
           schema: { type: string, format: date-time }
       responses:
         '200':
-          description: Bounded correlated incident timeline; journal data remains in the journal browser
+          description: Error-priority journal entries in the window (default 24 hours, at most 7 days), grouped by source and message shape
           content: { application/json: { schema: { $ref: '#/components/schemas/IncidentTimeline' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
-  /notifications:
-    get:
-      operationId: listNotifications
-      parameters:
-        - in: query
-          name: state
-          schema: { type: string, enum: [open, acknowledged, muted, resolved] }
-      responses:
-        '200': { description: Built-in bounded notification list }
-  /notifications/{id}/{state}:
+  /incidents/{id}/{state}:
     post:
-      operationId: transitionNotification
+      operationId: transitionIncident
+      description: Acknowledges or reopens an incident for every operator of this gateway. An acknowledged incident opens again when it recurs. Requires administrative access.
       parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string, maxLength: 512 }
-        - in: path
-          name: state
-          required: true
-          schema: { type: string, enum: [acknowledged, muted, resolved] }
+        - { in: path, name: id, required: true, schema: { type: string, maxLength: 128 } }
+        - { in: path, name: state, required: true, schema: { type: string, enum: [open, acknowledged] } }
       responses:
-        '200': { description: Notification state transition }
-        '400': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/Problem' }
-  /certificates:
-    get:
-      operationId: getCertificateStatus
-      responses:
-        '200':
-          description: Configured HTTPS certificate validity and expiry warning
-          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateStatus' } } }
-  /incidents/report:
-    post:
-      operationId: collectSupportReport
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [confirmation]
-              additionalProperties: false
-              properties:
-                confirmation: { type: string, enum: [CONFIRM SUPPORT REPORT] }
-      responses:
-        '202': { description: Bounded report metadata; report contents are not persisted server-side }
+        '200': { description: Incident state recorded }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
-        '502': { $ref: '#/components/responses/Problem' }
   /files:
     get:
       operationId: listFiles
@@ -1273,24 +1178,6 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 10000, default: 1000 }
       responses:
         '200': { description: Bounded filename search, content: { application/json: { schema: { $ref: '#/components/schemas/FileResult' } } } }
-        '400': { $ref: '#/components/responses/Problem' }
-        '403': { $ref: '#/components/responses/Problem' }
-  /files/text-window:
-    get:
-      operationId: readTextWindow
-      parameters:
-        - in: query
-          name: path
-          required: true
-          schema: { type: string, maxLength: 4096 }
-        - in: query
-          name: offset
-          schema: { type: integer, minimum: 0, default: 0 }
-        - in: query
-          name: limit
-          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
-      responses:
-        '200': { description: Windowed JSON text lines }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
   /files/upload:
@@ -1655,53 +1542,30 @@ components:
         allowed: { type: boolean }
         requiresConfirmation: { type: boolean }
         fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
-    IncidentEvent:
+    Incident:
       type: object
-      required: [id, timestamp, severity, kind, summary]
+      required: [id, severity, kind, summary, count, firstSeen, lastSeen, state]
       properties:
-        id: { type: string, maxLength: 512 }
-        timestamp: { type: string, format: date-time }
-        severity: { type: string, enum: [critical, error, warning] }
-        kind: { type: string }
+        id: { type: string, maxLength: 128 }
+        severity: { type: string, enum: [critical, error] }
+        kind: { type: string, enum: [memory, crash, storage, security, network, service, other] }
         source: { type: string }
         summary: { type: string, maxLength: 512 }
-        cursor: { type: string, maxLength: 4096 }
+        count: { type: integer, minimum: 1 }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        state: { type: string, enum: [open, acknowledged] }
     IncidentTimeline:
       type: object
       required: [items, since, until, partial]
       properties:
         items:
           type: array
-          maxItems: 500
-          items: { $ref: '#/components/schemas/IncidentEvent' }
+          maxItems: 200
+          items: { $ref: '#/components/schemas/Incident' }
         since: { type: string, format: date-time }
         until: { type: string, format: date-time }
-        partial: { type: boolean }
-        warnings:
-          type: array
-          maxItems: 8
-          items: { type: string, maxLength: 512 }
-    CertificateStatus:
-      type: object
-      required: [configured, valid]
-      properties:
-        configured: { type: boolean }
-        path: { type: string }
-        subject: { type: string }
-        issuer: { type: string }
-        notBefore: { type: string, format: date-time }
-        notAfter: { type: string, format: date-time }
-        daysRemaining: { type: integer }
-        valid: { type: boolean }
-        warning: { type: string }
-    SupportReport:
-      type: object
-      required: [path, bytes, createdAt, warning]
-      properties:
-        path: { type: string, maxLength: 4096 }
-        bytes: { type: integer, minimum: 0, maximum: 268435456 }
-        createdAt: { type: string, format: date-time }
-        warning: { type: string, maxLength: 512 }
+        partial: { type: boolean, description: More entries existed than one bounded journal page }
     FileEntry:
       type: object
       required: [name, path, kind, size, mode, modifiedAt, fingerprint, hidden, readable, writable]
@@ -1942,12 +1806,12 @@ components:
       required: [id, kind, actor, state, progress, message, createdAt, cancelRequested, dangerous]
       properties:
         id: { type: string, maxLength: 64 }
-        kind: { type: string, enum: [host-inventory, software-update] }
+        kind: { type: string, enum: [software-update] }
         actor: { type: string, maxLength: 256 }
         state: { type: string, enum: [pending, running, succeeded, failed, canceled, interrupted] }
         progress: { type: integer, minimum: 0, maximum: 100 }
         message: { type: string, maxLength: 256 }
-        result: { type: object, additionalProperties: true }
+        result: { $ref: '#/components/schemas/UpdateResult' }
         error: { type: string, maxLength: 1024 }
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, format: date-time }
@@ -2178,10 +2042,6 @@ components:
           type: string
           description: Module-specific code or one of the stable HostAuthorityErrorCode values.
         detail: { type: string }
-    HostAuthorityErrorCode:
-      type: string
-      description: Stable error codes returned when a host execution lane cannot complete an operation.
-      enum: [permission-denied, user-manager-unavailable, system-backend-unavailable, timeout, bounded-output, conflict]
     JournalPage:
       type: object
       required: [items]

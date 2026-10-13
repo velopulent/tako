@@ -340,10 +340,6 @@ func authorizedKeysPath(account sshKeyAccount) (string, error) {
 	return path, nil
 }
 
-func readSSHKeyState(ctx context.Context, operation SSHKeyOperation, actor string, administrative bool) (SSHKeyState, error) {
-	return readSSHKeyStateWithDependencies(ctx, operation, actor, administrative, systemSSHKeyDependencies())
-}
-
 func readSSHKeyStateWithDependencies(ctx context.Context, operation SSHKeyOperation, actor string, administrative bool, dependencies sshKeyDependencies) (SSHKeyState, error) {
 	if err := ctx.Err(); err != nil {
 		return SSHKeyState{}, err

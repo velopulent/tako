@@ -29,11 +29,7 @@ type frame struct {
 }
 
 // Run serves framed bridge RPC until input closes or an I/O error occurs.
-func Run(input io.Reader, output io.Writer, errorOutput io.Writer, services ...*platform.UpdateService) error {
-	var updates *platform.UpdateService
-	if len(services) > 0 {
-		updates = services[0]
-	}
+func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
 	logger, err := logging.NewWithOutput("bridge", errorOutput)
 	if err != nil {
 		return err
@@ -52,51 +48,45 @@ func Run(input io.Reader, output io.Writer, errorOutput io.Writer, services ...*
 			logger.Error("bridge frame read failed", zap.Error(err))
 			return err
 		}
-		response := frame{ID: message.ID, Error: "unsupported-method"}
-		if payload, handled, err := handleHostRead(message.Method, message.Payload, updates); handled {
-			if err == nil {
-				response.Error = ""
-				response.Payload, _ = json.Marshal(payload)
-			} else {
-				response.Error = hostReadErrorCode(err)
-			}
-		}
-		if message.Method == "ping" {
-			response.Error = ""
-			response.Payload = json.RawMessage(`{"ok":true}`)
-		}
-		if message.Method == "timer.apply" {
-			state, err := applyTimer(message.Payload)
-			if err != nil {
-				response.Error = timerErrorCode(err)
-			} else {
-				response.Error = ""
-				response.Payload, _ = json.Marshal(state)
-			}
-		}
-		if message.Method == "override.apply" {
-			state, err := applyOverride(message.Payload)
-			if err != nil {
-				response.Error = overrideErrorCode(err)
-			} else {
-				response.Error = ""
-				response.Payload, _ = json.Marshal(state)
-			}
-		}
-		if message.Method == "file.apply" {
-			result, err := applyFile(message.Payload)
-			if err != nil {
-				response.Error = fileErrorCode(err)
-			} else {
-				response.Error = ""
-				response.Payload, _ = json.Marshal(result)
-			}
-		}
-		if err := writeFrame(writer, response); err != nil {
+		if err := writeFrame(writer, dispatch(message)); err != nil {
 			logger.Error("bridge frame write failed", zap.Error(err))
 			return err
 		}
 	}
+}
+
+func dispatch(message frame) frame {
+	var result any
+	var err error
+	var code func(error) string
+	switch message.Method {
+	case "ping":
+		return frame{ID: message.ID, Payload: json.RawMessage(`{"ok":true}`)}
+	case "timer.apply":
+		result, err = applyTimer(message.Payload)
+		code = timerErrorCode
+	case "override.apply":
+		result, err = applyOverride(message.Payload)
+		code = overrideErrorCode
+	case "file.apply":
+		result, err = applyFile(message.Payload)
+		code = fileErrorCode
+	default:
+		var handled bool
+		result, handled, err = handleHostRead(message.Method, message.Payload)
+		if !handled {
+			return frame{ID: message.ID, Error: "unsupported-method"}
+		}
+		code = hostReadErrorCode
+	}
+	if err != nil {
+		return frame{ID: message.ID, Error: code(err)}
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return frame{ID: message.ID, Error: "encode-failed"}
+	}
+	return frame{ID: message.ID, Payload: payload}
 }
 
 func applyFile(payload json.RawMessage) (platform.FileResult, error) {
@@ -161,10 +151,12 @@ func applyTimer(payload json.RawMessage) (platform.TimerState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := runUserSystemctl(ctx, "daemon-reload"); err != nil {
-		if ctx.Err() != nil {
-			return platform.TimerState{}, context.DeadlineExceeded
-		}
 		return platform.TimerState{}, err
+	}
+	if verb := platform.TimerActivation(operation.Action, state); verb != "" {
+		if err := runUserSystemctl(ctx, verb, "--", operation.Name+".timer"); err != nil && verb != "stop" {
+			return platform.TimerState{}, err
+		}
 	}
 	return state, nil
 }

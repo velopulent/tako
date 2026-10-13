@@ -10,14 +10,14 @@ import (
 )
 
 func TestJournalQueryValidationAndOpaqueCursor(t *testing.T) {
-	query := JournalQuery{Limit: 50, Boot: strings.Repeat("a", 32), Priority: "3..5", Unit: "worker.service", Executable: "/usr/bin/worker", Text: "failed"}
+	query := JournalQuery{Limit: 50, Boot: strings.Repeat("a", 32), Priority: "3..5", Units: []string{"worker.service"}, Executable: "/usr/bin/worker", Text: "failed"}
 	if err := query.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := (JournalQuery{Limit: 0, Since: time.Now(), Until: time.Now().Add(-time.Minute)}).Validate(); err == nil {
 		t.Fatal("invalid time range accepted")
 	}
-	if err := (JournalQuery{Limit: 1, Unit: "../worker.service"}).Validate(); err == nil {
+	if err := (JournalQuery{Limit: 1, Units: []string{"../worker.service"}}).Validate(); err == nil {
 		t.Fatal("unsafe unit accepted")
 	}
 	raw := "s=cursor;seq=123"
@@ -63,5 +63,12 @@ func TestQueryLogsUsesBoundedOpaquePagination(t *testing.T) {
 	}
 	if page.Items[0].Cursor != "" {
 		t.Fatal("cursor leaked in public journal item")
+	}
+}
+
+func TestJournalctlArgsNameTheCurrentBootByOffset(t *testing.T) {
+	arguments := strings.Join(journalctlArgs(JournalQuery{Boot: "current", Limit: 10}, false, 11), " ")
+	if !strings.Contains(arguments, "--boot=0") || strings.Contains(arguments, "--boot=current") {
+		t.Fatalf("arguments = %s", arguments)
 	}
 }

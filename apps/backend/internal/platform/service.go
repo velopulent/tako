@@ -37,6 +37,15 @@ type ServiceImpact struct {
 	Warnings        []string                `json:"warnings"`
 }
 
+// ValidUnitType reports whether Tako lists units of this systemd type.
+func ValidUnitType(kind string) bool {
+	switch kind {
+	case "service", "target", "socket", "timer", "path":
+		return true
+	}
+	return false
+}
+
 func ValidateServiceTarget(scope, unit string) error {
 	if scope != "system" && scope != "user" {
 		return ErrInvalidServiceScope

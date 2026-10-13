@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
-	"github.com/velopulent/tako/internal/platform"
 )
 
 type userBridgeProcess struct {
@@ -30,11 +29,6 @@ type userBridgeProcess struct {
 	done    chan error
 	exited  chan struct{}
 	once    sync.Once
-}
-
-func parseID(value string) (int, error) {
-	parsed, err := strconv.ParseUint(value, 10, 32)
-	return int(parsed), err
 }
 
 func startUserBridge(session auth.UserSession) (*userBridgeProcess, error) {
@@ -100,38 +94,24 @@ func (process *userBridgeProcess) ready() error {
 	return nil
 }
 
-func (process *userBridgeProcess) applyTimer(ctx context.Context, operation platform.TimerOperation) (platform.TimerState, error) {
-	payload, err := process.call(ctx, "timer", "timer.apply", operation)
-	if err != nil {
-		return platform.TimerState{}, err
-	}
-	var state platform.TimerState
-	if err := json.Unmarshal(payload, &state); err != nil {
-		return platform.TimerState{}, err
-	}
-	return state, nil
+// bridgeCaller is the user-lane RPC surface. The per-login bridge implements
+// it; tests substitute recorders.
+type bridgeCaller interface {
+	call(ctx context.Context, id, method string, payload any) (json.RawMessage, error)
 }
 
-func (process *userBridgeProcess) applyOverride(ctx context.Context, operation platform.OverrideOperation) (platform.OverrideState, error) {
-	payload, err := process.call(ctx, "override", "override.apply", operation)
+// callBridge runs one bridge method and decodes its result.
+func callBridge[T any](ctx context.Context, bridge bridgeCaller, method string, payload any) (T, error) {
+	var result T
+	if bridge == nil {
+		return result, auth.Code("user-bridge-unavailable")
+	}
+	raw, err := bridge.call(ctx, method, method, payload)
 	if err != nil {
-		return platform.OverrideState{}, err
+		return result, err
 	}
-	var state platform.OverrideState
-	if err := json.Unmarshal(payload, &state); err != nil {
-		return platform.OverrideState{}, err
-	}
-	return state, nil
-}
-
-func (process *userBridgeProcess) applyFile(ctx context.Context, operation platform.FileOperation) (platform.FileResult, error) {
-	payload, err := process.call(ctx, "file", "file.apply", operation)
-	if err != nil {
-		return platform.FileResult{}, err
-	}
-	var result platform.FileResult
-	if err := json.Unmarshal(payload, &result); err != nil {
-		return platform.FileResult{}, err
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return result, errors.New("invalid user bridge result")
 	}
 	return result, nil
 }
@@ -191,7 +171,7 @@ func (process *userBridgeProcess) call(ctx context.Context, id, method string, p
 			err = errors.New("user bridge response id mismatch")
 		}
 		if err == nil && response.Error != "" {
-			err = errors.New(response.Error)
+			err = auth.Code(response.Error)
 		}
 		result <- struct {
 			payload json.RawMessage

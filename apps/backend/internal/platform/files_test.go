@@ -22,11 +22,10 @@ func TestUserFileOperationsRejectTraversalAndSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveFilePath(root, "../secret", false); !errors.Is(err, ErrFilePermission) {
-		t.Fatalf("traversal error = %v", err)
-	}
-	if _, err := resolveFilePath(root, "escape/secret", false); !errors.Is(err, ErrFilePermission) {
-		t.Fatalf("symlink escape error = %v", err)
+	for _, path := range []string{"../secret", "escape/secret", filepath.Join(outside, "secret")} {
+		if _, err := applyFileOperation(context.Background(), FileOperation{Action: "read", Path: path}, root, false); err == nil {
+			t.Fatalf("read %q escaped the user root", path)
+		}
 	}
 }
 
@@ -36,10 +35,11 @@ func TestFileWriteConflictAndChunkChecksum(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := fileEntry(path, path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entry := FileEntry{Fingerprint: statFingerprint(info)}
 	if _, err := applyFileOperation(context.Background(), FileOperation{Action: "write-text", Path: "note.txt", Content: []byte("new"), ExpectedFingerprint: "bad"}, root, true); !errors.Is(err, ErrInvalidFileOperation) {
 		t.Fatalf("invalid fingerprint error = %v", err)
 	}
@@ -57,10 +57,11 @@ func TestFileReadRejectsStalePreviewFingerprint(t *testing.T) {
 	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := fileEntry(path, path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	entry := FileEntry{Fingerprint: statFingerprint(info)}
 	stale := "0" + entry.Fingerprint[1:]
 	if stale == entry.Fingerprint {
 		stale = "1" + entry.Fingerprint[1:]

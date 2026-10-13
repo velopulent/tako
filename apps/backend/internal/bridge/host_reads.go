@@ -59,24 +59,20 @@ func runUserSystemctl(ctx context.Context, arguments ...string) error {
 	return nil
 }
 
-func handleHostRead(method string, payload json.RawMessage, services ...*platform.UpdateService) (any, bool, error) {
+func handleHostRead(method string, payload json.RawMessage) (any, bool, error) {
 	if !isHostReadMethod(method) {
 		return nil, false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	var updates *platform.UpdateService
-	if len(services) > 0 {
-		updates = services[0]
-	}
 
 	switch method {
-	case "services.read", "services.list":
+	case "services.read":
 		var operation auth.ServiceReadOperation
 		if err := decodeHostPayload(payload, &operation); err != nil || (operation.Scope != "system" && operation.Scope != "user") {
 			return nil, true, platform.ErrInvalidServiceScope
 		}
-		if operation.Type != "" && !map[string]bool{"service": true, "target": true, "socket": true, "timer": true, "path": true}[operation.Type] {
+		if operation.Type != "" && !platform.ValidUnitType(operation.Type) {
 			return nil, true, platform.ErrInvalidServiceUnit
 		}
 		items, err := platform.Units(ctx, operation.Scope, operation.Type)
@@ -150,26 +146,14 @@ func handleHostRead(method string, payload json.RawMessage, services ...*platfor
 	case "network.read":
 		item, err := platform.NetworkSnapshotRead(ctx)
 		return item, true, err
-	case "updates.read", "updates.status":
-		return updates.Status(ctx), true, nil
-	case "updates.history":
-		items, err := updates.History(ctx)
-		return items, true, err
-	case "updates.live":
-		if updates == nil {
-			return auth.UpdateObservation{Progress: platform.UpdateProgress{Phase: "idle", Percent: -1, Message: "No update is running."}, Output: []platform.UpdateOutput{}}, true, nil
-		}
-		return updates.Snapshot(), true, nil
-	case "updates.kpatch.read":
-		return map[string]any{"status": platform.InspectKpatchStatus(ctx), "settings": platform.InspectKpatchSettings(ctx)}, true, nil
-	case "capabilities.read":
-		return platform.Detect(ctx, updates), true, nil
+	case "kpatch.read":
+		return auth.KpatchReadResult{Status: platform.InspectKpatchStatus(ctx), Settings: platform.InspectKpatchSettings(ctx)}, true, nil
 	case "login-history.read":
-		var operation auth.LoginHistoryReadOperation
-		if err := decodeHostPayload(payload, &operation); err != nil {
+		var query platform.LoginHistoryQuery
+		if err := decodeHostPayload(payload, &query); err != nil {
 			return nil, true, platform.ErrInvalidLoginHistoryQuery
 		}
-		item, err := platform.QueryLoginHistory(ctx, operation.Query)
+		item, err := platform.QueryLoginHistory(ctx, query)
 		return item, true, err
 	default:
 		return nil, true, errors.New("unsupported host read")
@@ -178,7 +162,7 @@ func handleHostRead(method string, payload json.RawMessage, services ...*platfor
 
 func isHostReadMethod(method string) bool {
 	switch method {
-	case "services.read", "services.list", "services.detail", "services.configuration", "services.action", "host.info", "host.configuration.read", "host.power.read", "processes.signal-preview", "processes.signal", "identities.read", "storage.read", "network.read", "updates.read", "updates.status", "updates.history", "updates.live", "updates.kpatch.read", "capabilities.read", "login-history.read":
+	case "services.read", "services.detail", "services.configuration", "services.action", "host.info", "host.configuration.read", "host.power.read", "processes.signal-preview", "processes.signal", "identities.read", "storage.read", "network.read", "kpatch.read", "login-history.read":
 		return true
 	default:
 		return false

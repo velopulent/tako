@@ -433,8 +433,3 @@ func (adapter *firewallAdapter) applyUFW(ctx context.Context, operation Firewall
 		return "", ErrFirewallUnavailable
 	}
 }
-
-func firewallCommand(ctx context.Context, name string, arguments ...string) (string, error) {
-	payload, err := networkCommand(ctx, name, arguments...)
-	return string(payload), err
-}

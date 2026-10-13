@@ -34,8 +34,6 @@ func TestProtectedRouteSurfaceRequiresSession(t *testing.T) {
 		{name: "firewall", method: http.MethodGet, path: "/api/v1/firewall"},
 		{name: "security", method: http.MethodGet, path: "/api/v1/security"},
 		{name: "incidents", method: http.MethodGet, path: "/api/v1/incidents"},
-		{name: "notifications", method: http.MethodGet, path: "/api/v1/notifications"},
-		{name: "certificates", method: http.MethodGet, path: "/api/v1/certificates"},
 		{name: "files", method: http.MethodGet, path: "/api/v1/files?path=."},
 		{name: "file search", method: http.MethodGet, path: "/api/v1/files/search?path=.&query=x"},
 		{name: "file content", method: http.MethodGet, path: "/api/v1/files/content?path=x"},
@@ -48,7 +46,7 @@ func TestProtectedRouteSurfaceRequiresSession(t *testing.T) {
 		{name: "firewall mutation", method: http.MethodPost, path: "/api/v1/firewall", body: `{}`},
 		{name: "security mutation", method: http.MethodPost, path: "/api/v1/security", body: `{}`},
 		{name: "file mutation", method: http.MethodPost, path: "/api/v1/files", body: `{}`},
-		{name: "notification mutation", method: http.MethodPost, path: "/api/v1/notifications/1/read", body: `{}`},
+		{name: "incident mutation", method: http.MethodPost, path: "/api/v1/incidents/1/acknowledged", body: `{}`},
 	}
 
 	for _, test := range cases {
