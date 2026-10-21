@@ -32,10 +32,14 @@ func newAdministrativePolicy() administrativePolicy {
 		policyFound := false
 		if sudoPath, err := exec.LookPath("sudo"); err == nil {
 			policyFound = true
-			if runAsIdentity(ctx, sudoPath, identity, "", "-n", "-u", "root", "--", "/usr/bin/true") == nil {
+			// -k ignores and never updates sudo's credential cache. Without a
+			// tty sudo keys that cache on the parent PID, which is sessiond for
+			// every user, so one elevation would let any later session of the
+			// same user pass the -n probe without a password.
+			if runAsIdentity(ctx, sudoPath, identity, "", "-k", "-n", "-u", "root", "--", "/usr/bin/true") == nil {
 				return nil // NOPASSWD policy.
 			}
-			if password != "" && runAsIdentity(ctx, sudoPath, identity, password, "-S", "-p", "", "-u", "root", "--", "/usr/bin/true") == nil {
+			if password != "" && runAsIdentity(ctx, sudoPath, identity, password, "-k", "-S", "-p", "", "-u", "root", "--", "/usr/bin/true") == nil {
 				return nil // Password-backed sudo, including the host PAM stack.
 			}
 		}
