@@ -59,11 +59,11 @@ func runUserSystemctl(ctx context.Context, arguments ...string) error {
 	return nil
 }
 
-func handleHostRead(method string, payload json.RawMessage) (any, bool, error) {
+func handleHostRead(ctx context.Context, method string, payload json.RawMessage) (any, bool, error) {
 	if !isHostReadMethod(method) {
 		return nil, false, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	switch method {

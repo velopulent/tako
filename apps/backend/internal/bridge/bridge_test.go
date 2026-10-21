@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/velopulent/tako/internal/platform"
 )
@@ -158,4 +159,66 @@ func mustJSON(value any) json.RawMessage {
 		panic(err)
 	}
 	return payload
+}
+
+func TestRequestSetCancelsOneRequestAndRejectsDuplicates(t *testing.T) {
+	set := newRequestSet()
+	first, finishFirst, ok := set.start("1")
+	if !ok {
+		t.Fatal("first request rejected")
+	}
+	if _, _, ok := set.start("1"); ok {
+		t.Fatal("duplicate in-flight ID accepted")
+	}
+	second, finishSecond, _ := set.start("2")
+	set.cancel("1")
+	if first.Err() == nil || second.Err() != nil {
+		t.Fatalf("cancel hit the wrong request: first=%v second=%v", first.Err(), second.Err())
+	}
+	finishFirst()
+	finishSecond()
+	if _, finish, ok := set.start("1"); !ok {
+		t.Fatal("finished ID could not be reused")
+	} else {
+		finish()
+	}
+}
+
+func TestRequestSetDrainCancelsWhatOutlivesTheTimeout(t *testing.T) {
+	set := newRequestSet()
+	ctx, finish, _ := set.start("slow")
+	go func() {
+		<-ctx.Done()
+		finish()
+	}()
+	started := time.Now()
+	set.drain(20 * time.Millisecond)
+	if ctx.Err() == nil || time.Since(started) > time.Second {
+		t.Fatalf("drain did not cancel the slow request: %v", ctx.Err())
+	}
+}
+
+func TestRunAnswersEveryRequestByID(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	writer := bufio.NewWriter(input)
+	for _, message := range []frame{{ID: "a", Method: "ping"}, {ID: "missing", Method: cancelMethod}, {ID: "b", Method: "ping"}, {ID: "c", Method: "unknown"}} {
+		if err := writeFrame(writer, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := bytes.NewBuffer(nil)
+	if err := Run(input, output, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	answers := map[string]frame{}
+	for {
+		response, err := readFrame(output)
+		if err != nil {
+			break
+		}
+		answers[response.ID] = response
+	}
+	if len(answers) != 3 || answers["a"].Error != "" || answers["b"].Error != "" || answers["c"].Error != "unsupported-method" {
+		t.Fatalf("unexpected answers: %#v", answers)
+	}
 }

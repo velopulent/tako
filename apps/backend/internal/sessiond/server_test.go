@@ -37,7 +37,7 @@ type recordingBridge struct {
 	results map[string]string
 }
 
-func (bridge *recordingBridge) call(_ context.Context, _, method string, _ any) (json.RawMessage, error) {
+func (bridge *recordingBridge) call(_ context.Context, method string, _ any) (json.RawMessage, error) {
 	bridge.mu.Lock()
 	defer bridge.mu.Unlock()
 	bridge.methods = append(bridge.methods, method)

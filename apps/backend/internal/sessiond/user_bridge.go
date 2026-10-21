@@ -14,21 +14,46 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
 )
 
+const (
+	maxBridgeFrame = 8 << 20
+	// bridgeCancelMethod asks the bridge to cancel the in-flight request with
+	// the same ID. It has no response.
+	bridgeCancelMethod = "$cancel"
+)
+
+// userBridgeProcess multiplexes concurrent requests over the bridge's pipes.
+// A request that times out is canceled on its own; the pipes, and with them
+// the user's login, stay up.
 type userBridgeProcess struct {
 	command *exec.Cmd
 	input   io.WriteCloser
 	output  io.ReadCloser
-	reader  *bufio.Reader
-	rpcMu   sync.Mutex
+	writeMu sync.Mutex
+	mu      sync.Mutex
+	pending map[string]chan bridgeResponse
+	broken  error
+	next    atomic.Uint64
 	done    chan error
 	exited  chan struct{}
 	once    sync.Once
+}
+
+type bridgeRequest struct {
+	ID      string `json:"id"`
+	Method  string `json:"method"`
+	Payload any    `json:"payload,omitempty"`
+}
+
+type bridgeResponse struct {
+	payload json.RawMessage
+	err     error
 }
 
 func startUserBridge(session auth.UserSession) (*userBridgeProcess, error) {
@@ -69,7 +94,8 @@ func startUserBridgeExecutable(session auth.UserSession, executable string) (*us
 		_ = output.Close()
 		return nil, fmt.Errorf("start user bridge executable %s uid=%d gid=%d: %w", executable, session.Identity.UID, session.Identity.GID, err)
 	}
-	process := &userBridgeProcess{command: command, input: input, output: output, reader: bufio.NewReader(output), done: make(chan error, 1), exited: make(chan struct{})}
+	process := newUserBridgeProcess(input, output)
+	process.command = command
 	go func() {
 		process.done <- command.Wait()
 		close(process.exited)
@@ -81,10 +107,18 @@ func startUserBridgeExecutable(session auth.UserSession, executable string) (*us
 	return process, nil
 }
 
+// newUserBridgeProcess starts the response reader for an already running
+// bridge connected through input and output.
+func newUserBridgeProcess(input io.WriteCloser, output io.ReadCloser) *userBridgeProcess {
+	process := &userBridgeProcess{input: input, output: output, pending: make(map[string]chan bridgeResponse), done: make(chan error, 1), exited: make(chan struct{})}
+	go process.readResponses(bufio.NewReader(output))
+	return process
+}
+
 func (process *userBridgeProcess) ready() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := process.call(ctx, "ready", "ping", nil)
+	_, err := process.call(ctx, "ping", nil)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.New("user bridge readiness check timed out")
 	}
@@ -97,7 +131,7 @@ func (process *userBridgeProcess) ready() error {
 // bridgeCaller is the user-lane RPC surface. The per-login bridge implements
 // it; tests substitute recorders.
 type bridgeCaller interface {
-	call(ctx context.Context, id, method string, payload any) (json.RawMessage, error)
+	call(ctx context.Context, method string, payload any) (json.RawMessage, error)
 }
 
 // callBridge runs one bridge method and decodes its result.
@@ -106,7 +140,7 @@ func callBridge[T any](ctx context.Context, bridge bridgeCaller, method string, 
 	if bridge == nil {
 		return result, auth.Code("user-bridge-unavailable")
 	}
-	raw, err := bridge.call(ctx, method, method, payload)
+	raw, err := bridge.call(ctx, method, payload)
 	if err != nil {
 		return result, err
 	}
@@ -116,75 +150,110 @@ func callBridge[T any](ctx context.Context, bridge bridgeCaller, method string, 
 	return result, nil
 }
 
-func (process *userBridgeProcess) call(ctx context.Context, id, method string, payload any) (json.RawMessage, error) {
-	result := make(chan struct {
-		payload json.RawMessage
-		err     error
-	}, 1)
-	go func() {
-		process.rpcMu.Lock()
-		defer process.rpcMu.Unlock()
-		request := struct {
-			ID      string `json:"id"`
-			Method  string `json:"method"`
-			Payload any    `json:"payload,omitempty"`
-		}{ID: id, Method: method, Payload: payload}
-		encoded, err := json.Marshal(request)
-		if err == nil {
-			err = binary.Write(process.input, binary.BigEndian, uint32(len(encoded)))
-		}
-		if err == nil {
-			_, err = process.input.Write(encoded)
-		}
-		if err != nil {
-			result <- struct {
-				payload json.RawMessage
-				err     error
-			}{err: err}
-			return
-		}
+func (process *userBridgeProcess) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
+	id := strconv.FormatUint(process.next.Add(1), 36)
+	encoded, err := json.Marshal(bridgeRequest{ID: id, Method: method, Payload: payload})
+	if err != nil {
+		return nil, err
+	}
+	waiter := make(chan bridgeResponse, 1)
+	process.mu.Lock()
+	if process.broken != nil {
+		err := process.broken
+		process.mu.Unlock()
+		return nil, err
+	}
+	process.pending[id] = waiter
+	process.mu.Unlock()
+	if err := process.writeFrame(encoded); err != nil {
+		process.forget(id)
+		return nil, err
+	}
+	select {
+	case response := <-waiter:
+		return response.payload, response.err
+	case <-ctx.Done():
+		process.forget(id)
+		go func() {
+			if cancel, err := json.Marshal(bridgeRequest{ID: id, Method: bridgeCancelMethod}); err == nil {
+				_ = process.writeFrame(cancel)
+			}
+		}()
+		return nil, ctx.Err()
+	}
+}
+
+func (process *userBridgeProcess) forget(id string) {
+	process.mu.Lock()
+	delete(process.pending, id)
+	process.mu.Unlock()
+}
+
+func (process *userBridgeProcess) writeFrame(encoded []byte) error {
+	if len(encoded) > maxBridgeFrame {
+		return fmt.Errorf("user bridge request exceeds %d bytes", maxBridgeFrame)
+	}
+	process.writeMu.Lock()
+	defer process.writeMu.Unlock()
+	if err := binary.Write(process.input, binary.BigEndian, uint32(len(encoded))); err != nil {
+		return err
+	}
+	_, err := process.input.Write(encoded)
+	return err
+}
+
+// readResponses routes each response to its waiting call. Responses for
+// canceled requests are dropped. When the bridge stops, every waiting call
+// fails and later calls fail immediately.
+func (process *userBridgeProcess) readResponses(reader *bufio.Reader) {
+	for {
 		var size uint32
-		if err = binary.Read(process.reader, binary.BigEndian, &size); err == nil && (size == 0 || size > 8<<20) {
+		err := binary.Read(reader, binary.BigEndian, &size)
+		if err == nil && (size == 0 || size > maxBridgeFrame) {
 			err = fmt.Errorf("invalid user bridge response frame: %d", size)
 		}
-		if err != nil {
-			result <- struct {
-				payload json.RawMessage
-				err     error
-			}{err: err}
-			return
-		}
-		encoded = make([]byte, size)
-		if _, err = io.ReadFull(process.reader, encoded); err != nil {
-			result <- struct {
-				payload json.RawMessage
-				err     error
-			}{err: err}
-			return
+		var encoded []byte
+		if err == nil {
+			encoded = make([]byte, size)
+			_, err = io.ReadFull(reader, encoded)
 		}
 		var response struct {
 			ID      string          `json:"id"`
 			Error   string          `json:"error"`
 			Payload json.RawMessage `json:"payload"`
 		}
-		if err = json.Unmarshal(encoded, &response); err == nil && response.ID != id {
-			err = errors.New("user bridge response id mismatch")
+		if err == nil {
+			err = json.Unmarshal(encoded, &response)
 		}
-		if err == nil && response.Error != "" {
-			err = auth.Code(response.Error)
+		if err != nil {
+			process.fail(fmt.Errorf("user bridge stopped: %w", err))
+			return
 		}
-		result <- struct {
-			payload json.RawMessage
-			err     error
-		}{payload: response.Payload, err: err}
-	}()
-	select {
-	case response := <-result:
-		return response.payload, response.err
-	case <-ctx.Done():
-		_ = process.input.Close()
-		_ = process.output.Close()
-		return nil, ctx.Err()
+		process.mu.Lock()
+		waiter, ok := process.pending[response.ID]
+		delete(process.pending, response.ID)
+		process.mu.Unlock()
+		if !ok {
+			continue
+		}
+		result := bridgeResponse{payload: response.Payload}
+		if response.Error != "" {
+			result.err = auth.Code(response.Error)
+		}
+		waiter <- result
+	}
+}
+
+func (process *userBridgeProcess) fail(err error) {
+	process.mu.Lock()
+	if process.broken == nil {
+		process.broken = err
+	}
+	pending := process.pending
+	process.pending = make(map[string]chan bridgeResponse)
+	process.mu.Unlock()
+	for _, waiter := range pending {
+		waiter <- bridgeResponse{err: err}
 	}
 }
 
@@ -193,6 +262,9 @@ func (process *userBridgeProcess) Close() error {
 	process.once.Do(func() {
 		_ = process.input.Close()
 		_ = process.output.Close()
+		if process.command == nil {
+			return
+		}
 		select {
 		case err := <-process.done:
 			if err != nil && !errors.Is(err, os.ErrProcessDone) {

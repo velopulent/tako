@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/velopulent/tako/internal/logging"
@@ -28,19 +29,46 @@ type frame struct {
 	Error   string          `json:"error,omitempty"`
 }
 
-// Run serves framed bridge RPC until input closes or an I/O error occurs.
+const (
+	// cancelMethod cancels the in-flight request with the same ID. It is a
+	// control frame and gets no response.
+	cancelMethod = "$cancel"
+	// maxConcurrentRequests bounds how much work one login runs at once.
+	maxConcurrentRequests = 16
+	// drainTimeout lets in-flight requests finish after input closes before
+	// they are canceled.
+	drainTimeout = time.Second
+)
+
+// handler answers one request frame.
+type handler func(context.Context, frame) frame
+
+// Run serves a user's framed bridge RPC until input closes or an I/O error
+// occurs.
 func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
-	logger, err := logging.NewWithOutput("bridge", errorOutput)
+	logger, err := newLogger(errorOutput)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = logger.Sync() }()
+	return serve(logger, input, output, dispatch)
+}
+
+func newLogger(output io.Writer) (*zap.Logger, error) {
+	return logging.NewWithOutput("bridge", output)
+}
+
+// serve runs requests concurrently, so a slow call never blocks the others,
+// and a caller that gives up cancels only its own request.
+func serve(logger *zap.Logger, input io.Reader, output io.Writer, handle handler) error {
 	logger.Info("bridge started")
 	reader := bufio.NewReader(input)
-	writer := bufio.NewWriter(output)
+	responses := &frameWriter{writer: bufio.NewWriter(output)}
+	requests := newRequestSet()
 	for {
 		message, err := readFrame(reader)
 		if err != nil {
+			requests.drain(drainTimeout)
 			if err == io.EOF {
 				logger.Info("bridge stopped")
 				return nil
@@ -48,14 +76,114 @@ func Run(input io.Reader, output io.Writer, errorOutput io.Writer) error {
 			logger.Error("bridge frame read failed", zap.Error(err))
 			return err
 		}
-		if err := writeFrame(writer, dispatch(message)); err != nil {
-			logger.Error("bridge frame write failed", zap.Error(err))
-			return err
+		if message.Method == cancelMethod {
+			requests.cancel(message.ID)
+			continue
 		}
+		ctx, finish, ok := requests.start(message.ID)
+		if !ok {
+			if err := responses.write(frame{ID: message.ID, Error: "invalid-request"}); err != nil {
+				logger.Error("bridge frame write failed", zap.Error(err))
+			}
+			continue
+		}
+		go func() {
+			defer finish()
+			if !requests.acquire(ctx) {
+				return
+			}
+			defer requests.release()
+			if err := responses.write(handle(ctx, message)); err != nil {
+				logger.Error("bridge frame write failed", zap.Error(err))
+			}
+		}()
 	}
 }
 
-func dispatch(message frame) frame {
+// frameWriter serializes response frames from concurrent requests.
+type frameWriter struct {
+	mu     sync.Mutex
+	writer *bufio.Writer
+}
+
+func (writer *frameWriter) write(message frame) error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writeFrame(writer.writer, message)
+}
+
+// requestSet tracks in-flight requests by ID so they can be canceled.
+type requestSet struct {
+	mu       sync.Mutex
+	inFlight map[string]context.CancelFunc
+	slots    chan struct{}
+	group    sync.WaitGroup
+}
+
+func newRequestSet() *requestSet {
+	return &requestSet{inFlight: make(map[string]context.CancelFunc), slots: make(chan struct{}, maxConcurrentRequests)}
+}
+
+func (set *requestSet) start(id string) (context.Context, func(), bool) {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if id == "" || set.inFlight[id] != nil {
+		return nil, nil, false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	set.inFlight[id] = cancel
+	set.group.Add(1)
+	return ctx, func() {
+		set.mu.Lock()
+		delete(set.inFlight, id)
+		set.mu.Unlock()
+		cancel()
+		set.group.Done()
+	}, true
+}
+
+func (set *requestSet) cancel(id string) {
+	set.mu.Lock()
+	cancel := set.inFlight[id]
+	set.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (set *requestSet) acquire(ctx context.Context) bool {
+	select {
+	case set.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (set *requestSet) release() { <-set.slots }
+
+// drain waits for in-flight requests, canceling whatever is still running
+// after timeout.
+func (set *requestSet) drain(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		set.group.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(timeout):
+	}
+	set.mu.Lock()
+	for _, cancel := range set.inFlight {
+		cancel()
+	}
+	set.mu.Unlock()
+	<-done
+}
+
+func dispatch(ctx context.Context, message frame) frame {
 	var result any
 	var err error
 	var code func(error) string
@@ -63,17 +191,17 @@ func dispatch(message frame) frame {
 	case "ping":
 		return frame{ID: message.ID, Payload: json.RawMessage(`{"ok":true}`)}
 	case "timer.apply":
-		result, err = applyTimer(message.Payload)
+		result, err = applyTimer(ctx, message.Payload)
 		code = timerErrorCode
 	case "override.apply":
-		result, err = applyOverride(message.Payload)
+		result, err = applyOverride(ctx, message.Payload)
 		code = overrideErrorCode
 	case "file.apply":
-		result, err = applyFile(message.Payload)
+		result, err = applyFile(ctx, message.Payload)
 		code = fileErrorCode
 	default:
 		var handled bool
-		result, handled, err = handleHostRead(message.Method, message.Payload)
+		result, handled, err = handleHostRead(ctx, message.Method, message.Payload)
 		if !handled {
 			return frame{ID: message.ID, Error: "unsupported-method"}
 		}
@@ -89,7 +217,7 @@ func dispatch(message frame) frame {
 	return frame{ID: message.ID, Payload: payload}
 }
 
-func applyFile(payload json.RawMessage) (platform.FileResult, error) {
+func applyFile(ctx context.Context, payload json.RawMessage) (platform.FileResult, error) {
 	var operation platform.FileOperation
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
@@ -99,11 +227,13 @@ func applyFile(payload json.RawMessage) (platform.FileResult, error) {
 	if err := platform.ValidateFileOperation(operation); err != nil {
 		return platform.FileResult{}, err
 	}
-	return platform.ApplyUserFileOperation(context.Background(), operation)
+	return platform.ApplyUserFileOperation(ctx, operation)
 }
 
 func fileErrorCode(err error) string {
 	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "timeout"
 	case errors.Is(err, platform.ErrInvalidFileOperation):
 		return "invalid-file-operation"
 	case errors.Is(err, platform.ErrFileNotFound):
@@ -123,7 +253,7 @@ func fileErrorCode(err error) string {
 	}
 }
 
-func applyTimer(payload json.RawMessage) (platform.TimerState, error) {
+func applyTimer(ctx context.Context, payload json.RawMessage) (platform.TimerState, error) {
 	var operation platform.TimerOperation
 	if err := json.Unmarshal(payload, &operation); err != nil {
 		return platform.TimerState{}, platform.ErrInvalidTimerOperation
@@ -148,7 +278,7 @@ func applyTimer(payload json.RawMessage) (platform.TimerState, error) {
 	if err != nil || operation.Action == "preview" {
 		return state, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := runUserSystemctl(ctx, "daemon-reload"); err != nil {
 		return platform.TimerState{}, err
@@ -176,7 +306,7 @@ func timerErrorCode(err error) string {
 	}
 }
 
-func applyOverride(payload json.RawMessage) (platform.OverrideState, error) {
+func applyOverride(ctx context.Context, payload json.RawMessage) (platform.OverrideState, error) {
 	var operation platform.OverrideOperation
 	if err := json.Unmarshal(payload, &operation); err != nil || operation.Scope != "user" {
 		return platform.OverrideState{}, platform.ErrInvalidOverrideOperation
@@ -193,7 +323,7 @@ func applyOverride(payload json.RawMessage) (platform.OverrideState, error) {
 	if err != nil || operation.Action == "preview" {
 		return state, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := runUserSystemctl(ctx, "daemon-reload"); err != nil {
 		if ctx.Err() != nil {

@@ -240,7 +240,7 @@ func (c *call) viaBridge(ctx context.Context, method string, payload any) (any, 
 	if err != nil {
 		return nil, err
 	}
-	return caller.call(ctx, method, method, payload)
+	return caller.call(ctx, method, payload)
 }
 
 // bridgeInto runs a user-lane call and decodes its result.
