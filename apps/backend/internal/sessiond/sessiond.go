@@ -14,15 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/idle"
@@ -36,18 +33,24 @@ type bridgeGrant struct {
 	expires      time.Time
 	adminToken   string
 	adminExpires time.Time
-	terminal     *os.File
 	bridge       io.Closer
-	active       bool
-	closePAM     func()
-	timer        *time.Timer
+	// adminBridge serves this grant's administrative work that needs the
+	// real host; it starts on first use and stops with the grant.
+	adminBridge privilegedBridge
+	adminTimer  *time.Timer
+	active      bool
+	closePAM    func()
+	timer       *time.Timer
 }
 
 type grantStore struct {
 	mu       sync.Mutex
 	notifyMu sync.Mutex
-	values   map[string]bridgeGrant
-	activity *idle.Tracker
+	// adminStartMu serializes administrative bridge starts so concurrent
+	// requests share one bridge.
+	adminStartMu sync.Mutex
+	values       map[string]bridgeGrant
+	activity     *idle.Tracker
 	// lifetime bounds a confirmed login; it matches the gateway's
 	// session.lifetime. Zero uses defaultGrantLifetime.
 	lifetime time.Duration
@@ -135,6 +138,10 @@ func Run(args []string, updates *platform.UpdateService) error {
 		_ = listener.Close()
 	}()
 
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
 	service := auth.PAMAuthenticator{Service: "tako"}
 	grants := &grantStore{values: make(map[string]bridgeGrant), activity: activity, lifetime: runtimeConfig.SessionLifetime}
 	hostRuntime := newHostRuntime(runtimeConfig.MonitoringInterval, runtimeConfig.HistoryRetention)
@@ -142,13 +149,15 @@ func Run(args []string, updates *platform.UpdateService) error {
 	go hostRuntime.run(ctx)
 	defer hostRuntime.close()
 	policy := newAdministrativePolicy()
-	conversations := newConversationStore(service, func(session auth.UserSession) (string, error) {
+	opener := helperOpener{executable: executable, start: startTransientService}
+	conversations := newConversationStore(opener, func(session auth.UserSession) (string, error) {
 		return grants.addUserSession(session)
 	})
 	conversations.activity = activity
 	defer conversations.closeAll()
 	requests := newHandler(service, conversations, grants, policy, logger, hostRuntime)
 	requests.certificate, requests.certificateKey = runtimeConfig.Certificate, runtimeConfig.CertificateKey
+	requests.privileged = newPrivilegedBridgeStarter(startTransientService, executable)
 	defer grants.closeAll()
 	for {
 		conn, err := listener.Accept()
@@ -186,46 +195,6 @@ func activatedListener() (net.Listener, bool, error) {
 	defer file.Close()
 	listener, err := net.FileListener(file)
 	return listener, true, err
-}
-
-func (store *grantStore) resize(token string, columns, rows uint16) string {
-	store.mu.Lock()
-	grant, ok := store.values[token]
-	if !ok || time.Now().After(grant.expires) {
-		if ok {
-			delete(store.values, token)
-		}
-		store.mu.Unlock()
-		if ok {
-			cleanupGrant(grant)
-		}
-		return "invalid-bridge-token"
-	}
-	if grant.terminal == nil {
-		store.mu.Unlock()
-		return "terminal-not-ready"
-	}
-	if columns == 0 || rows == 0 {
-		store.mu.Unlock()
-		return "invalid-terminal-size"
-	}
-	err := pty.Setsize(grant.terminal, &pty.Winsize{Cols: columns, Rows: rows})
-	store.mu.Unlock()
-	if err != nil {
-		return "terminal-resize-failed"
-	}
-	return ""
-}
-
-func (store *grantStore) setTerminal(token string, terminal *os.File) bool {
-	store.mu.Lock()
-	grant, ok := store.values[token]
-	if ok {
-		grant.terminal = terminal
-		store.values[token] = grant
-	}
-	store.mu.Unlock()
-	return ok
 }
 
 func (store *grantStore) addGrant(identity auth.Identity, environment map[string]string, bridge io.Closer, closeSession func()) (string, error) {
@@ -347,10 +316,17 @@ func (store *grantStore) authorize(ctx context.Context, token, password string, 
 		store.mu.Unlock()
 		return "", time.Time{}, errors.New("invalid-bridge-token")
 	}
+	previous := grant.adminBridge
+	if grant.adminTimer != nil {
+		grant.adminTimer.Stop()
+	}
 	grant.adminToken = adminToken
 	grant.adminExpires = until
+	grant.adminBridge = nil
+	grant.adminTimer = time.AfterFunc(duration, func() { store.endAdministrative(adminToken) })
 	store.values[token] = grant
 	store.mu.Unlock()
+	closePrivilegedBridge(previous)
 	return adminToken, until, nil
 }
 
@@ -370,34 +346,92 @@ func (store *grantStore) adminIdentity(token string) (auth.Identity, bool) {
 }
 
 func (store *grantStore) revokeAdmin(token string) bool {
+	return store.endAdministrative(token)
+}
+
+// endAdministrative drops an administrative grant, on revocation or expiry,
+// and stops its administrative bridge.
+func (store *grantStore) endAdministrative(token string) bool {
 	if token == "" {
 		return false
 	}
 	store.mu.Lock()
-	defer store.mu.Unlock()
 	for key, grant := range store.values {
 		if grant.adminToken == token {
-			grant.adminToken = ""
-			grant.adminExpires = time.Time{}
+			bridge := grant.adminBridge
+			if grant.adminTimer != nil {
+				grant.adminTimer.Stop()
+			}
+			grant.adminToken, grant.adminExpires, grant.adminBridge, grant.adminTimer = "", time.Time{}, nil, nil
 			store.values[key] = grant
+			store.mu.Unlock()
+			closePrivilegedBridge(bridge)
 			return true
 		}
 	}
+	store.mu.Unlock()
 	return false
 }
 
+// administrativeBridge returns the administrative bridge for adminToken,
+// starting it on first use.
+func (store *grantStore) administrativeBridge(ctx context.Context, adminToken string, start privilegedBridgeStarter) (bridgeCaller, error) {
+	if start == nil {
+		return nil, auth.Code("system-backend-unavailable")
+	}
+	store.adminStartMu.Lock()
+	defer store.adminStartMu.Unlock()
+	lookup := func() (string, bridgeGrant, bool) {
+		now := time.Now()
+		for key, grant := range store.values {
+			if adminToken != "" && grant.adminToken == adminToken && now.Before(grant.adminExpires) && now.Before(grant.expires) {
+				return key, grant, true
+			}
+		}
+		return "", bridgeGrant{}, false
+	}
+	store.mu.Lock()
+	_, grant, ok := lookup()
+	if !ok {
+		store.mu.Unlock()
+		return nil, auth.Code("invalid-admin-token")
+	}
+	if grant.adminBridge != nil && grant.adminBridge.alive() {
+		store.mu.Unlock()
+		return grant.adminBridge, nil
+	}
+	stale := grant.adminBridge
+	store.mu.Unlock()
+	closePrivilegedBridge(stale)
+	bridge, err := start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	store.mu.Lock()
+	key, grant, ok := lookup()
+	if !ok {
+		store.mu.Unlock()
+		closePrivilegedBridge(bridge)
+		return nil, auth.Code("invalid-admin-token")
+	}
+	grant.adminBridge = bridge
+	store.values[key] = grant
+	store.mu.Unlock()
+	return bridge, nil
+}
+
 // claim reserves the session's single terminal.
-func (store *grantStore) claim(token string) (auth.Identity, map[string]string, bool) {
+func (store *grantStore) claim(token string) (auth.Identity, bool) {
 	store.mu.Lock()
 	grant, ok := store.values[token]
 	if !ok || grant.active || time.Now().After(grant.expires) {
 		store.mu.Unlock()
-		return auth.Identity{}, nil, false
+		return auth.Identity{}, false
 	}
 	grant.active = true
 	store.values[token] = grant
 	store.mu.Unlock()
-	return grant.identity, grant.environment, true
+	return grant.identity, true
 }
 
 func (store *grantStore) closeAll() {
@@ -442,9 +476,10 @@ func cleanupGrant(grant bridgeGrant) {
 	if grant.timer != nil {
 		grant.timer.Stop()
 	}
-	if grant.terminal != nil {
-		_ = grant.terminal.Close()
+	if grant.adminTimer != nil {
+		grant.adminTimer.Stop()
 	}
+	closePrivilegedBridge(grant.adminBridge)
 	if grant.closePAM != nil {
 		grant.closePAM()
 	}
@@ -470,19 +505,25 @@ func (store *grantStore) confirm(token string) bool {
 	return true
 }
 
+// addUserSession registers a session the sign-in helper opened. The grant
+// closes when the helper ends the session on its own.
 func (store *grantStore) addUserSession(session auth.UserSession) (string, error) {
-	userBridge, err := startUserBridge(session)
+	if session.Bridge == nil {
+		if session.Close != nil {
+			session.Close()
+		}
+		return "", errors.New("the session has no user bridge")
+	}
+	token, err := store.addGrant(session.Identity, session.Environment, session.Bridge, session.Close)
 	if err != nil {
 		return "", err
 	}
-	token, err := store.addGrant(session.Identity, session.Environment, userBridge, session.Close)
-	if err != nil {
-		return "", err
+	if session.Done != nil {
+		go func() {
+			<-session.Done
+			store.close(token)
+		}()
 	}
-	go func() {
-		<-userBridge.exited
-		store.close(token)
-	}()
 	return token, nil
 }
 
@@ -491,66 +532,7 @@ func (store *grantStore) release(token string) {
 	grant, ok := store.values[token]
 	if ok {
 		grant.active = false
-		grant.terminal = nil
 		store.values[token] = grant
 	}
 	store.mu.Unlock()
-}
-
-func runTerminal(conn net.Conn, reader io.Reader, identity auth.Identity, environment map[string]string, size auth.TerminalSize, grants *grantStore, token string, logger *zap.Logger) {
-	defer grants.release(token)
-	account, err := user.LookupId(strconv.Itoa(identity.UID))
-	if err != nil {
-		logger.Error("terminal user lookup failed", zap.Int("uid", identity.UID), zap.Error(err))
-		return
-	}
-	shell := loginShell(account)
-	credential, err := userCredential(account, identity)
-	if err != nil {
-		logger.Error("terminal credential lookup failed", zap.Int("uid", identity.UID), zap.Error(err))
-		return
-	}
-	command := exec.Command(shell, "-l")
-	command.Dir = account.HomeDir
-	// The shell inherits the PAM session environment (XDG_RUNTIME_DIR, locale,
-	// D-Bus address) so user tools such as `systemctl --user` work.
-	command.Env = append(bridgeEnvironment(environment, account), "SHELL="+shell, "TERM=xterm-256color", "COLORTERM=truecolor")
-	command.SysProcAttr = &syscall.SysProcAttr{Credential: credential, Setsid: true, Setctty: true}
-	if size.Columns == 0 || size.Rows == 0 {
-		size = auth.TerminalSize{Columns: 120, Rows: 30}
-	}
-	terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: size.Columns, Rows: size.Rows})
-	if err != nil {
-		logger.Error("terminal launch failed", zap.String("username", identity.Username), zap.Error(err))
-		return
-	}
-	if !grants.setTerminal(token, terminal) {
-		_ = terminal.Close()
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		return
-	}
-	defer terminal.Close()
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(terminal, reader); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(conn, terminal); done <- struct{}{} }()
-	<-done
-	_ = terminal.Close()
-	_ = syscall.Kill(-command.Process.Pid, syscall.SIGHUP)
-	_ = command.Process.Kill()
-	_ = command.Wait()
-	logger.Info("terminal stopped", zap.String("username", identity.Username))
-}
-
-// loginShell returns the account's shell from the passwd database, falling
-// back to /bin/sh when the entry is missing or not an absolute path.
-func loginShell(account *user.User) string {
-	output, err := exec.Command("getent", "passwd", account.Uid).Output()
-	if err == nil {
-		fields := strings.Split(strings.TrimSpace(string(output)), ":")
-		if len(fields) == 7 && strings.HasPrefix(fields[6], "/") {
-			return fields[6]
-		}
-	}
-	return "/bin/sh"
 }

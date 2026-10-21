@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os/user"
 	"strconv"
 	"strings"
@@ -65,19 +66,22 @@ type ConversationRequest struct {
 	Password       string           `json:"password,omitempty"`
 	Responses      []PromptResponse `json:"responses,omitempty"`
 	Cancel         bool             `json:"cancel,omitempty"`
+	// RemoteAddress is the client IP the gateway attributes the sign-in to.
+	// It becomes PAM_RHOST, so wtmp, lastlog, and audit name the source.
+	RemoteAddress string `json:"remoteAddress,omitempty"`
 }
 
 func (request ConversationRequest) Valid() bool {
-	if len(request.ConversationID) > 64 || len(request.Username) > 256 || len(request.Password) > 4096 {
+	if len(request.ConversationID) > 64 || len(request.Username) > 256 || len(request.Password) > 4096 || !validRemoteAddress(request.RemoteAddress) {
 		return false
 	}
 	if request.Cancel {
-		return request.ConversationID != "" && request.Username == "" && request.Password == "" && len(request.Responses) == 0
+		return request.ConversationID != "" && request.Username == "" && request.Password == "" && request.RemoteAddress == "" && len(request.Responses) == 0
 	}
 	if request.ConversationID == "" {
 		return request.Username != "" && len(request.Responses) == 0
 	}
-	if request.Username != "" || request.Password != "" || len(request.Responses) != 1 {
+	if request.Username != "" || request.Password != "" || request.RemoteAddress != "" || len(request.Responses) != 1 {
 		return false
 	}
 	response := request.Responses[0]
@@ -92,10 +96,27 @@ type ConversationResponse struct {
 	Error          string    `json:"error,omitempty"`
 }
 
+// validRemoteAddress accepts an empty value or an IP literal.
+func validRemoteAddress(value string) bool {
+	if len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') && (character < 'A' || character > 'F') && character != '.' && character != ':' {
+			return false
+		}
+	}
+	return true
+}
+
 type UserSession struct {
 	Identity    Identity
 	Environment map[string]string
 	Close       func()
+	// Bridge is the session's running user bridge when the opener started
+	// one; Done closes when the session ends on its own.
+	Bridge io.Closer
+	Done   <-chan struct{}
 }
 
 type Conversation func(PromptStyle, string) (string, error)
@@ -321,14 +342,27 @@ func (auth PAMAuthenticator) ResetPassword(ctx context.Context, username, replac
 	return passwordError(transaction.ChangeAuthTok(pam.ChangeExpiredAuthtok))
 }
 
-func (auth PAMAuthenticator) OpenSessionWithConversation(username string, conversation Conversation) (UserSession, error) {
-	transaction, err := auth.authenticate(username, conversation)
+// OpenSessionWithConversation authenticates username and opens a PAM session
+// in the calling process. PAM modules such as pam_loginuid, pam_selinux, and
+// pam_keyinit change the calling thread, so callers run this in a dedicated
+// process on a locked OS thread and start the user's processes from it.
+func (auth PAMAuthenticator) OpenSessionWithConversation(username, remoteHost string, conversation Conversation) (UserSession, error) {
+	transaction, err := auth.authenticate(username, remoteHost, conversation)
 	if err != nil {
 		return UserSession{}, err
 	}
 	if err := transaction.SetCred(pam.EstablishCred); err != nil {
 		_ = transaction.End()
 		return UserSession{}, err
+	}
+	// pam_systemd registers a web session: logind lists it, and the class
+	// starts the user's service manager like any other login.
+	for _, variable := range []string{"XDG_SESSION_TYPE=web", "XDG_SESSION_CLASS=user"} {
+		if err := transaction.PutEnv(variable); err != nil {
+			_ = transaction.SetCred(pam.DeleteCred)
+			_ = transaction.End()
+			return UserSession{}, err
+		}
 	}
 	if err := transaction.OpenSession(0); err != nil {
 		_ = transaction.SetCred(pam.DeleteCred)
@@ -364,7 +398,7 @@ func (auth PAMAuthenticator) OpenSessionWithConversation(username string, conver
 	return UserSession{Identity: identity, Environment: environment, Close: closeSession}, nil
 }
 
-func (auth PAMAuthenticator) authenticate(username string, conversation Conversation) (*pam.Transaction, error) {
+func (auth PAMAuthenticator) authenticate(username, remoteHost string, conversation Conversation) (*pam.Transaction, error) {
 	if username == "" || conversation == nil {
 		return nil, errors.New("missing credentials")
 	}
@@ -383,6 +417,12 @@ func (auth PAMAuthenticator) authenticate(username string, conversation Conversa
 	})
 	if err != nil {
 		return nil, err
+	}
+	if remoteHost != "" {
+		if err := transaction.SetItem(pam.Rhost, remoteHost); err != nil {
+			_ = transaction.End()
+			return nil, err
+		}
 	}
 	if err := transaction.Authenticate(0); err != nil {
 		_ = transaction.End()

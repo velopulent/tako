@@ -2,6 +2,7 @@ package sessiond
 
 import (
 	"context"
+	"sync"
 
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/platform"
@@ -52,11 +53,21 @@ func (systemSSHKeysBackend) Apply(ctx context.Context, operation platform.SSHKey
 	return platform.ApplySSHKeys(ctx, operation, identity.Username, administrative)
 }
 
+// passwordPAM serializes the password transactions that still run inside
+// sessiond. PAM modules are not safe to run concurrently in one process, and
+// these transactions never wait on a person, so one at a time is cheap.
+// Sign-ins do not take it: each runs PAM in its own helper process.
+var passwordPAM sync.Mutex
+
 func (backend systemPasswordBackend) Change(ctx context.Context, username, current, replacement string) error {
+	passwordPAM.Lock()
+	defer passwordPAM.Unlock()
 	return backend.service.ChangePassword(ctx, username, current, replacement)
 }
 
 func (backend systemPasswordBackend) Reset(ctx context.Context, username, replacement string) error {
+	passwordPAM.Lock()
+	defer passwordPAM.Unlock()
 	return backend.service.ResetPassword(ctx, username, replacement)
 }
 

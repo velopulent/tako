@@ -1,5 +1,14 @@
-# openSUSE Leap package variant. Install as /etc/pam.d/tako.
-# Leap's generated default stacks are exposed as common-* files.
-auth    include common-auth
-account include common-account
-session include common-session
+# openSUSE package variant. Install as /etc/pam.d/tako.
+# Modeled on sshd; the generated defaults are exposed as common-* files. The
+# sign-in helper runs this whole stack in its own process, so the session
+# modules below shape the user's bridge and terminals.
+auth    requisite pam_nologin.so
+auth    include   common-auth
+account requisite pam_nologin.so
+account include   common-account
+# SELinux is the default on current releases but optional on older ones.
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so close
+session required  pam_loginuid.so
+session optional  pam_keyinit.so force revoke
+session include   common-session
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so open

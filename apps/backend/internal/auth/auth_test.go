@@ -252,3 +252,21 @@ func TestDevelopmentAdministrativeAccessRequiresThePassword(t *testing.T) {
 		t.Fatalf("empty configured password err = %v", err)
 	}
 }
+
+func TestConversationRemoteAddressIsAnIPOnTheFirstRequest(t *testing.T) {
+	for _, test := range []struct {
+		request ConversationRequest
+		valid   bool
+	}{
+		{ConversationRequest{Username: "alice", RemoteAddress: "192.0.2.4"}, true},
+		{ConversationRequest{Username: "alice", RemoteAddress: "2001:db8::1"}, true},
+		{ConversationRequest{Username: "alice", RemoteAddress: "evil.example\nX"}, false},
+		{ConversationRequest{Username: "alice", RemoteAddress: "host.example"}, false},
+		{ConversationRequest{ConversationID: "c1", Responses: []PromptResponse{{ID: "p", Value: "x"}}, RemoteAddress: "192.0.2.4"}, false},
+		{ConversationRequest{ConversationID: "c1", Cancel: true, RemoteAddress: "192.0.2.4"}, false},
+	} {
+		if test.request.Valid() != test.valid {
+			t.Fatalf("%+v valid = %v, want %v", test.request, !test.valid, test.valid)
+		}
+	}
+}

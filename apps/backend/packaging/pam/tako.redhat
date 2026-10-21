@@ -1,5 +1,17 @@
 # Fedora/RHEL-compatible package variant. Install as /etc/pam.d/tako.
-auth    substack system-auth
-account include system-auth
-session include system-auth
-session include postlogin
+# Modeled on sshd: password-auth is the authselect stack for network logins.
+# The sign-in helper runs this whole stack in its own process, so the
+# session modules below shape the user's bridge and terminals.
+auth       substack     password-auth
+auth       include      postlogin
+account    required     pam_nologin.so
+account    include      password-auth
+password   include      password-auth
+# pam_selinux close/open bracket the session so the user's processes run in
+# the user's SELinux context instead of the service's.
+session    required     pam_selinux.so close
+session    required     pam_loginuid.so
+session    required     pam_selinux.so open env_params
+session    optional     pam_keyinit.so force revoke
+session    include      password-auth
+session    include      postlogin

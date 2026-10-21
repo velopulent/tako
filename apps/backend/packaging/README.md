@@ -6,8 +6,11 @@ The package installs one `/usr/bin/tako` multicall executable and keeps the trus
 - `sysusers.d/tako.conf` creates the persistent `tako-session` group used for session-socket ACLs. There is no static `tako` login or system user.
 - `tako-sessiond.socket` listens on `/run/tako/session.sock` as `root:tako-session` mode `0660` and starts the root-owned `tako-sessiond.service` on demand. Sessiond exits when no connections, PAM conversations, or grants remain for the configured idle interval.
 - `tmpfiles.d/tako.conf` creates `/run/tako` as `root:tako-session` with mode `0750` before socket activation.
-- `tako bridge` is launched by the session service for an authenticated UNIX user and is never reachable from the network gateway.
-- `tako-sessiond.service` is a login and host-authority helper: it PAM-authenticates, resolves typed operations, then setuid-execs `tako bridge` as that user. The child inherits the unit sandbox, so sessiond is not locked down like `tako.service`. `tako serve --dev` signs in only the current OS user with a development password, runs reads in-process as that user, skips PAM and the user bridge, and is not a production auth test.
+- `tako bridge` runs as an authenticated UNIX user and is never reachable from the network gateway.
+- `tako-sessiond.service` is the host-authority boundary: it resolves typed operations inside its own systemd sandbox, and nothing a user runs inherits that sandbox. Sessiond starts these transient services through systemd, passing each a socket as stdin and stdout:
+  - `tako-login-*.service` runs `tako session-helper` for one sign-in. It runs the whole `/etc/pam.d/tako` stack (auth, account, and session, including `pam_loginuid`, `pam_selinux`, and `pam_systemd`) in its own process, then starts `tako bridge` as the user. The bridge hosts that session's terminals.
+  - `tako-admin-*.service` runs `tako bridge --privileged` as root for one administrative grant. It serves only administrative file operations and SELinux or AppArmor remediation, which need the real `/usr`, `/boot`, `/tmp`, and `/sys`, and stops when the grant ends.
+  - `tako-update-*.service` runs `tako update-worker` for one software update transaction. `tako serve --dev` signs in only the current OS user with a development password, runs reads in-process as that user, skips PAM and the user bridge, and is not a production auth test.
 
 Sessiond reads the same `/etc/tako/config.toml` as the gateway (`--config` is
 included in the packaged unit). The gateway never opens a host D-Bus bus or

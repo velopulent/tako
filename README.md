@@ -101,15 +101,21 @@ journalctl MESSAGE_ID=6f2a9c4e1b7d4f0a8e3c5b2d9a1f7e60 TAKO_AUDIT_ACTOR=alice -o
 
 ## How it works
 
-One binary, three modes:
+One binary, three long-running modes:
 
 ```
 browser --HTTPS--> tako serve --unix socket--> tako sessiond --framed RPC--> tako bridge (as you)
 ```
 
 * `tako serve` is the gateway. It runs as a systemd `DynamicUser` (`tako-gateway`), serves the embedded dashboard, terminates TLS, holds sessions in memory, and enforces CSRF and origin checks. It never touches host D-Bus or the filesystem as root.
-* `tako sessiond` is the host-authority boundary. It owns the session socket at `/run/tako/session.sock` (`root:tako-session`, mode `0660`), does PAM authentication, and resolves typed operations.
-* `tako bridge` runs once per login as the authenticated UID and GID. User-scoped reads and writes happen here. Administrative system changes go back through root sessiond adapters.
+* `tako sessiond` is the host-authority boundary. It owns the session socket at `/run/tako/session.sock` (`root:tako-session`, mode `0660`) and resolves typed operations. It runs in a systemd sandbox, and nothing a user runs inherits that sandbox.
+* `tako bridge` runs once per login as the authenticated UID and GID. User-scoped reads and writes happen here, and so do your terminals.
+
+Work that has to act on the real host runs in its own transient systemd service, started by sessiond:
+
+* Each sign-in runs `tako session-helper` in a `tako-login-*.service`. It does the PAM conversation, opens the PAM session, and starts your bridge, so the bridge and your shells run in your own PAM session, outside sessiond's sandbox, with your audit identity (`loginuid`) and SELinux context. pam_systemd registers the session with logind as type `web`.
+* Administrative file changes and SELinux or AppArmor remediation run in a root `tako bridge --privileged` in a `tako-admin-*.service`, started on first use and stopped when administrative access ends.
+* Software updates run in a `tako-update-*.service`.
 
 Both services are socket-activated and exit after the configured idle interval when there is nothing left to do. Sockets stay listening so the next connection starts them again.
 

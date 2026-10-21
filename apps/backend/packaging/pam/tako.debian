@@ -1,4 +1,15 @@
 # Debian/Ubuntu package variant. Install as /etc/pam.d/tako.
+# Modeled on sshd. The sign-in helper runs this whole stack in its own
+# process, so the session modules below shape the user's bridge and terminals.
 auth    include common-auth
+account required pam_nologin.so
 account include common-account
+# SELinux is optional here; module_unknown=ignore keeps the stack valid where
+# pam_selinux is not installed.
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so close
+session required pam_loginuid.so
+session optional pam_keyinit.so force revoke
 session include common-session
+session required pam_env.so readenv=1
+session required pam_env.so readenv=1 envfile=/etc/default/locale
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so open

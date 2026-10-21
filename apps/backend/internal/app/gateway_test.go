@@ -298,9 +298,11 @@ func TestSecurityPreviewIsReadOnly(t *testing.T) {
 type stubAuthenticator struct {
 	responses []auth.ConversationResponse
 	err       error
+	requests  []auth.ConversationRequest
 }
 
-func (authenticator *stubAuthenticator) AdvanceConversation(context.Context, *auth.ConversationRequest) (auth.ConversationResponse, error) {
+func (authenticator *stubAuthenticator) AdvanceConversation(_ context.Context, request *auth.ConversationRequest) (auth.ConversationResponse, error) {
+	authenticator.requests = append(authenticator.requests, *request)
 	if authenticator.err != nil {
 		return auth.ConversationResponse{}, authenticator.err
 	}
@@ -447,5 +449,19 @@ func TestGeneratedCertificateIsUsable(t *testing.T) {
 	again, _, err := server.ensureCertificate()
 	if err != nil || again != certificate {
 		t.Fatalf("certificate was not reused: %q %v", again, err)
+	}
+}
+
+func TestLoginSourceAddressComesFromTheConnection(t *testing.T) {
+	server, _ := newTestServer(t)
+	identity := auth.Identity{Username: "operator", UID: 1000}
+	stub := &stubAuthenticator{responses: []auth.ConversationResponse{{Identity: &identity}}}
+	server.authenticator = stub
+	response := send(server, session.Session{}, http.MethodPost, "/api/v1/auth/login", `{"username":"operator","password":"secret","remoteAddress":"10.9.9.9"}`)
+	if response.Code != http.StatusOK || len(stub.requests) != 1 {
+		t.Fatalf("login = %d %s", response.Code, response.Body.String())
+	}
+	if got := stub.requests[0].RemoteAddress; got != "192.0.2.1" {
+		t.Fatalf("PAM_RHOST would be %q, want the connection address", got)
 	}
 }

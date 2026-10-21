@@ -68,6 +68,9 @@ type handler struct {
 	// tls.certificate serves to the gateway.
 	certificate    string
 	certificateKey string
+	// privileged starts the administrative bridge; nil disables
+	// administrative work that needs the real host.
+	privileged privilegedBridgeStarter
 
 	hostConfig hostConfigBackend
 	power      powerBackend

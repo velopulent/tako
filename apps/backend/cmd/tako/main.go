@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,11 +17,22 @@ import (
 	"github.com/velopulent/tako/internal/bridge"
 	"github.com/velopulent/tako/internal/config"
 	"github.com/velopulent/tako/internal/distro"
+	"github.com/velopulent/tako/internal/fdpass"
 	"github.com/velopulent/tako/internal/logging"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/sessiond"
 	"go.uber.org/zap"
 )
+
+func init() {
+	// The sign-in helper runs PAM session modules that only work on the main
+	// thread: pam_loginuid writes /proc/self/loginuid, which the kernel
+	// allows only for the thread group leader. Locking in init is the only
+	// way to keep main.main on the main thread.
+	if len(os.Args) > 1 && os.Args[1] == "session-helper" {
+		runtime.LockOSThread()
+	}
+}
 
 func main() {
 	os.Exit(run())
@@ -53,7 +66,9 @@ func run() int {
 		updates.UseWorker(executable)
 		err = sessiond.Run(os.Args[2:], updates)
 	case "bridge":
-		err = bridge.Run(os.Stdin, os.Stdout, os.Stderr)
+		err = runBridge(os.Args[2:])
+	case "session-helper":
+		err = sessiond.RunLoginHelper()
 	case "update-worker":
 		err = runUpdateWorker(os.Args[2:], updates)
 	case "help", "--help", "-h":
@@ -137,7 +152,39 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   tako serve [--config path] [--dev]  unprivileged HTTPS gateway
   tako sessiond [--socket path] [--config path] privileged PAM/session boundary
-  tako bridge                          per-user framed RPC bridge`)
+
+internal modes, started by sessiond:
+  tako session-helper                  one sign-in's PAM session
+  tako bridge [--privileged]           per-user (or administrative) framed RPC bridge
+  tako update-worker --job-file path   one software update transaction`)
+}
+
+// runBridge serves the bridge on stdin and stdout. Sessiond's sign-in helper
+// sets TAKO_TERMINAL_FD for a user's bridge so it can host terminals.
+func runBridge(args []string) error {
+	flags := flag.NewFlagSet("bridge", flag.ContinueOnError)
+	privileged := flags.Bool("privileged", false, "serve administrative work as root")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *privileged {
+		return bridge.RunPrivileged(os.Stdin, os.Stdout, os.Stderr)
+	}
+	value := os.Getenv("TAKO_TERMINAL_FD")
+	if value == "" {
+		return bridge.Run(os.Stdin, os.Stdout, os.Stderr)
+	}
+	descriptor, err := strconv.Atoi(value)
+	if err != nil || descriptor < 3 {
+		return fmt.Errorf("invalid TAKO_TERMINAL_FD %q", value)
+	}
+	terminals, err := fdpass.Conn(os.NewFile(uintptr(descriptor), "terminals"))
+	if err != nil {
+		return fmt.Errorf("terminal socket: %w", err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	defer stop()
+	return bridge.RunSession(ctx, os.Stdin, os.Stdout, os.Stderr, terminals)
 }
 
 func runUpdateWorker(args []string, updates *platform.UpdateService) error {

@@ -1,0 +1,8 @@
+# Arch Linux package variant. Install as /etc/pam.d/tako.
+# system-remote-login is Arch's stack for network logins, as used by sshd. It
+# brings pam_faillock, pam_nologin, pam_loginuid, pam_keyinit, pam_env, and
+# pam_systemd.
+auth     include system-remote-login
+account  include system-remote-login
+password include system-remote-login
+session  include system-remote-login

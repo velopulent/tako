@@ -4,7 +4,7 @@
 
 Tako is a linux administration application
 
-This codebase is an Nx monorepo managed with Bun. Applications live under `apps/`. `apps/backend/cmd/tako/` contains the single Go executable entry point and its `serve`, `sessiond`, and `bridge` modes. Backend packages live under `apps/backend/internal/`; keep platform-specific logic in small module-owned adapters rather than generic repository layers. The API contract is in `apps/backend/api/openapi.yaml`.
+This codebase is an Nx monorepo managed with Bun. Applications live under `apps/`. `apps/backend/cmd/tako/` contains the single Go executable entry point and its `serve`, `sessiond`, and `bridge` modes, plus the internal `session-helper` and `update-worker` modes that sessiond starts as transient systemd services. Backend packages live under `apps/backend/internal/`; keep platform-specific logic in small module-owned adapters rather than generic repository layers. The API contract is in `apps/backend/api/openapi.yaml`.
 
 Frontend source lives in `apps/dashboard/src/`. Reusable shadcn components belong in `apps/dashboard/src/components/ui/`, application components in `apps/dashboard/src/components/`, and route views in `apps/dashboard/src/routes/`. Vite writes production assets to `apps/backend/internal/dashboard/dist/` for `go:embed`. Deployment files are in `apps/backend/packaging/`.
 

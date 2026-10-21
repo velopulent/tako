@@ -107,7 +107,11 @@ detect_pam_source() {
         return
         ;;
       arch:*|*arch*)
-        echo "$PACKAGING/pam/tako"
+        echo "$PACKAGING/pam/tako.arch"
+        return
+        ;;
+      opensuse*:*|sles:*|*suse*)
+        echo "$PACKAGING/pam/tako.opensuse"
         return
         ;;
     esac

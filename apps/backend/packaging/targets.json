@@ -249,7 +249,7 @@
       "package_id": "arch-package",
       "package_format": "archlinux",
       "package_name": "archlinux_amd64",
-      "pam_source": "tako",
+      "pam_source": "tako.arch",
       "branding": "archlinux"
     }
   ]

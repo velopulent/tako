@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -385,6 +386,9 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 			credentials.Responses[index].Value = ""
 		}
 	}()
+	// The sign-in's source address comes from the connection, never from the
+	// request body.
+	credentials.RemoteAddress = ""
 	if !credentials.Valid() {
 		reject(writer, "invalid-request")
 		return
@@ -414,6 +418,12 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 	}
 	username := credentials.Username
 	continuing := credentials.ConversationID
+	if continuing == "" {
+		// Becomes PAM_RHOST, so wtmp, lastlog, and audit name the source.
+		if address, err := netip.ParseAddr(client); err == nil {
+			credentials.RemoteAddress = address.String()
+		}
+	}
 	result, err := server.authenticator.AdvanceConversation(request.Context(), &credentials)
 	if err != nil || len(result.Prompts) == 0 {
 		server.signIns.Done(continuing)

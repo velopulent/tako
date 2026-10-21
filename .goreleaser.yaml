@@ -247,5 +247,5 @@ nfpms:
       - { src: apps/backend/packaging/tmpfiles.d/tako.conf, dst: /usr/lib/tmpfiles.d/tako.conf }
       - { src: apps/backend/packaging/polkit/org.velopulent.tako.policy, dst: /usr/share/polkit-1/actions/org.velopulent.tako.policy }
       - { src: apps/backend/config.example.toml, dst: /usr/share/doc/tako/config.example.toml }
-      - { src: apps/backend/packaging/pam/tako, dst: /etc/pam.d/tako, type: "config|noreplace" }
+      - { src: apps/backend/packaging/pam/tako.arch, dst: /etc/pam.d/tako, type: "config|noreplace" }
       - { src: apps/backend/packaging/branding/archlinux.png, dst: /usr/share/tako/branding/archlinux.png }

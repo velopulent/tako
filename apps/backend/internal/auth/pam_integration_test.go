@@ -29,7 +29,7 @@ func TestPAMUserSessionLifecycle(t *testing.T) {
 		service = "tako"
 	}
 	index := 0
-	session, err := (PAMAuthenticator{Service: service}).OpenSessionWithConversation(username, func(style PromptStyle, _ string) (string, error) {
+	session, err := (PAMAuthenticator{Service: service}).OpenSessionWithConversation(username, "", func(style PromptStyle, _ string) (string, error) {
 		if style == PromptInfo || style == PromptError {
 			return "", nil
 		}

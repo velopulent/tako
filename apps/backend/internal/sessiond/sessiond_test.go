@@ -45,10 +45,10 @@ func TestGrantStore(t *testing.T) {
 	if !ok || got.Username != identity.Username {
 		t.Fatalf("get grant: got=%+v ok=%v", got, ok)
 	}
-	if _, _, ok := store.claim(token); !ok {
+	if _, ok := store.claim(token); !ok {
 		t.Fatal("first terminal claim rejected")
 	}
-	if _, _, ok := store.claim(token); ok {
+	if _, ok := store.claim(token); ok {
 		t.Fatal("concurrent terminal claim accepted")
 	}
 	store.release(token)
@@ -58,19 +58,13 @@ func TestGrantStore(t *testing.T) {
 	}
 }
 
-func TestExpiredGrantCleansTerminalBridgeAndPAM(t *testing.T) {
+func TestExpiredGrantCleansBridgeAndPAM(t *testing.T) {
 	store := &grantStore{values: make(map[string]bridgeGrant)}
-	reader, terminal, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
 	bridge := &trackingCloser{}
 	var pamClosed atomic.Bool
 	store.values["expired"] = bridgeGrant{
 		identity: auth.Identity{Username: "octopus"},
 		expires:  time.Now().Add(-time.Second),
-		terminal: terminal,
 		bridge:   bridge,
 		closePAM: func() {
 			_ = bridge.Close()
@@ -80,9 +74,6 @@ func TestExpiredGrantCleansTerminalBridgeAndPAM(t *testing.T) {
 	if _, ok := store.get("expired"); ok {
 		t.Fatal("expired grant was accepted")
 	}
-	if _, err := terminal.Write([]byte("x")); err == nil {
-		t.Fatal("expired grant left terminal open")
-	}
 	if bridge.calls.Load() != 1 {
 		t.Fatalf("expired grant closed bridge %d times, want 1", bridge.calls.Load())
 	}
@@ -91,21 +82,15 @@ func TestExpiredGrantCleansTerminalBridgeAndPAM(t *testing.T) {
 	}
 }
 
-func TestTerminalRegistrationFailsAfterGrantCloses(t *testing.T) {
+func TestTerminalClaimFailsAfterGrantCloses(t *testing.T) {
 	store := &grantStore{values: make(map[string]bridgeGrant)}
 	token, err := store.add(auth.Identity{Username: "octopus"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	store.close(token)
-	reader, terminal, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	defer terminal.Close()
-	if store.setTerminal(token, terminal) {
-		t.Fatal("terminal registered after grant closure")
+	if _, ok := store.claim(token); ok {
+		t.Fatal("terminal claimed after grant closure")
 	}
 }
 
@@ -116,7 +101,7 @@ type multiRoundOpener struct {
 
 type endlessOpener struct{}
 
-func (*endlessOpener) OpenSessionWithConversation(_ string, conversation auth.Conversation) (auth.UserSession, error) {
+func (*endlessOpener) OpenSessionWithConversation(_ context.Context, _, _ string, conversation auth.Conversation) (auth.UserSession, error) {
 	for index := 0; index <= maxConversationRounds; index++ {
 		if _, err := conversation(auth.PromptInfo, "Continue"); err != nil {
 			return auth.UserSession{}, err
@@ -127,7 +112,7 @@ func (*endlessOpener) OpenSessionWithConversation(_ string, conversation auth.Co
 
 type blockedOpener struct{ release <-chan struct{} }
 
-func (opener *blockedOpener) OpenSessionWithConversation(_ string, _ auth.Conversation) (auth.UserSession, error) {
+func (opener *blockedOpener) OpenSessionWithConversation(_ context.Context, _, _ string, _ auth.Conversation) (auth.UserSession, error) {
 	<-opener.release
 	return auth.UserSession{}, errors.New("released")
 }
@@ -139,7 +124,7 @@ func (closer *trackingCloser) Close() error {
 	return nil
 }
 
-func (opener *multiRoundOpener) OpenSessionWithConversation(username string, conversation auth.Conversation) (auth.UserSession, error) {
+func (opener *multiRoundOpener) OpenSessionWithConversation(_ context.Context, username, _ string, conversation auth.Conversation) (auth.UserSession, error) {
 	password, err := conversation(auth.PromptHidden, "Password:")
 	if err != nil {
 		opener.canceled.Store(true)
@@ -165,7 +150,7 @@ func (opener *multiRoundOpener) OpenSessionWithConversation(username string, con
 
 type immediateOpener struct{}
 
-func (*immediateOpener) OpenSessionWithConversation(username string, _ auth.Conversation) (auth.UserSession, error) {
+func (*immediateOpener) OpenSessionWithConversation(_ context.Context, username, _ string, _ auth.Conversation) (auth.UserSession, error) {
 	return auth.UserSession{
 		Identity: auth.Identity{Username: username, UID: 1000, GID: 1000},
 		Close:    func() {},

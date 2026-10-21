@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"strconv"
@@ -222,17 +223,24 @@ func readBoundedFile(path string, limit int64) ([]byte, error) {
 	return content, nil
 }
 
-func runResizeTerminal(_ context.Context, c *call) (any, error) {
+func runResizeTerminal(ctx context.Context, c *call) (any, error) {
 	var size auth.TerminalSize
 	if err := c.decode(&size); err != nil {
 		return nil, err
 	}
-	if code := c.handler.grants.resize(c.request.Token, size.Columns, size.Rows); code != "" {
-		return nil, auth.Code(code)
+	if size.Columns == 0 || size.Rows == 0 {
+		return nil, auth.Code("invalid-terminal-size")
 	}
-	return nil, nil
+	return c.viaBridge(ctx, "terminal.resize", size)
 }
 
+// terminalOpener is a bridge that can start login shells.
+type terminalOpener interface {
+	openTerminal(auth.TerminalSize) (net.Conn, error)
+}
+
+// openTerminal relays the session's single terminal. The shell runs in the
+// user's bridge, inside their own login session; sessiond only copies bytes.
 func openTerminal(c *call) {
 	var size auth.TerminalSize
 	if err := c.decode(&size); err != nil {
@@ -240,13 +248,33 @@ func openTerminal(c *call) {
 		return
 	}
 	_ = c.conn.SetDeadline(time.Time{})
-	identity, environment, ok := c.handler.grants.claim(c.request.Token)
+	identity, ok := c.handler.grants.claim(c.request.Token)
 	if !ok {
 		c.fail("terminal-busy")
 		return
 	}
+	defer c.handler.grants.release(c.request.Token)
+	closer, ok := c.handler.grants.bridgeFor(c.request.Token)
+	opener, canOpen := closer.(terminalOpener)
+	if !ok || !canOpen {
+		c.fail("user-bridge-unavailable")
+		return
+	}
+	stream, err := opener.openTerminal(size)
+	if err != nil {
+		c.handler.logger.Error("terminal launch failed", zap.String("username", identity.Username), zap.Error(err))
+		c.fail("terminal-unavailable")
+		return
+	}
+	defer stream.Close()
 	c.handler.logger.Info("terminal starting", zap.String("username", identity.Username), zap.Int("uid", identity.UID))
-	runTerminal(c.conn, c.reader, identity, environment, size, c.handler.grants, c.request.Token, c.handler.logger)
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(stream, c.reader); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(c.conn, stream); done <- struct{}{} }()
+	<-done
+	_ = stream.Close()
+	_ = c.conn.Close()
+	c.handler.logger.Info("terminal stopped", zap.String("username", identity.Username))
 }
 
 // Services and units.
@@ -825,7 +853,13 @@ func runSecurityApply(ctx context.Context, c *call) (any, error) {
 	if err := platform.ValidateSecurityOperation(operation); err != nil {
 		return nil, err
 	}
-	return platform.ApplySecurityOperation(ctx, operation)
+	// Remediation writes SELinux and AppArmor state under /sys and labels
+	// files anywhere, so it runs in the administrative bridge on the real host.
+	bridge, err := c.handler.grants.administrativeBridge(ctx, c.request.AdminToken, c.handler.privileged)
+	if err != nil {
+		return nil, err
+	}
+	return bridge.call(ctx, "security.apply", operation)
 }
 
 // Software updates and kernel live patching.
@@ -940,7 +974,14 @@ func runFiles(ctx context.Context, c *call) (any, error) {
 		return nil, err
 	}
 	if c.administrative {
-		return platform.ApplyPrivilegedFileOperation(ctx, operation)
+		// Administrative file work must see the real host (/usr, /boot, /tmp),
+		// which sessiond's sandbox hides, so it runs in the administrative
+		// bridge.
+		bridge, err := c.handler.grants.administrativeBridge(ctx, c.request.AdminToken, c.handler.privileged)
+		if err != nil {
+			return nil, err
+		}
+		return bridge.call(ctx, "file.apply", operation)
 	}
 	return c.viaBridge(ctx, "file.apply", operation)
 }

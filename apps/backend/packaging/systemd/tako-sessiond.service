@@ -8,18 +8,19 @@ Group=tako-session
 Restart=on-failure
 RestartSec=2s
 PrivateTmp=true
-# Sessiond setuid-execs `tako bridge` as the authenticated user. That child
-# inherits this unit's sandbox, so the unit must look like a login helper,
-# not like the network gateway. It deliberately keeps
-# /home visible and does not use NoNewPrivileges: PAM and the user bridge need
-# the root helper to retain the authority to establish the authenticated UID.
+# Nothing a user runs inherits this sandbox. Each sign-in opens its PAM
+# session in its own transient tako-login-*.service, which starts the user's
+# bridge and terminals inside their logind session. Administrative work that
+# must see the real host (files under /usr or /tmp, SELinux and AppArmor
+# changes) runs in a transient tako-admin-*.service per administrative grant,
+# and software updates in tako-update-*.service.
+#
+# /home stays visible for SSH key and account management, and
+# NoNewPrivileges stays off because the administrative policy probe runs sudo
+# as the signing-in user.
 ProtectSystem=true
 ProtectHome=false
 ProtectKernelTunables=true
 ProtectKernelModules=true
 UMask=0077
-# Host PAM session stacks may record login events through wtmpdb. SQLite needs
-# directory write access for its journal files.
-ReadWritePaths=/var/log
-ReadWritePaths=-/var/lib/wtmpdb
 SystemCallArchitectures=native

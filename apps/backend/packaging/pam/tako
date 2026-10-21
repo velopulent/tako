@@ -1,6 +1,10 @@
-# Distribution packages should include their standard login stack here.
-# Debian/Ubuntu: @include common-auth and common-account.
-# Fedora/RHEL/Arch: include system-auth equivalents through package transforms.
-auth required pam_unix.so
-account required pam_unix.so
-session required pam_unix.so
+# Minimal fallback for hosts without a distribution variant. Prefer the
+# matching tako.<distribution> file: this one has no lockout policy beyond
+# what pam_unix provides.
+auth     required pam_unix.so
+account  required pam_nologin.so
+account  required pam_unix.so
+session  required pam_loginuid.so
+session  optional pam_keyinit.so force revoke
+session  required pam_unix.so
+-session optional pam_systemd.so

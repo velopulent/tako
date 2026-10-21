@@ -26,8 +26,10 @@ var (
 	errSessionFailed       = errors.New("session-failed")
 )
 
+// sessionOpener authenticates a user and opens their login session. ctx ends
+// when the sign-in attempt is abandoned.
 type sessionOpener interface {
-	OpenSessionWithConversation(string, auth.Conversation) (auth.UserSession, error)
+	OpenSessionWithConversation(ctx context.Context, username, remoteHost string, conversation auth.Conversation) (auth.UserSession, error)
 }
 
 type conversationResult struct {
@@ -36,18 +38,19 @@ type conversationResult struct {
 }
 
 type conversationState struct {
-	id       string
-	ctx      context.Context
-	cancel   context.CancelFunc
-	prompts  chan auth.Prompt
-	answers  chan auth.PromptResponse
-	result   chan conversationResult
-	step     sync.Mutex
-	current  *auth.Prompt
-	rounds   int
-	expires  *time.Timer
-	username string
-	created  time.Time
+	id         string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	prompts    chan auth.Prompt
+	answers    chan auth.PromptResponse
+	result     chan conversationResult
+	step       sync.Mutex
+	current    *auth.Prompt
+	rounds     int
+	expires    *time.Timer
+	username   string
+	remoteHost string
+	created    time.Time
 }
 
 type conversationStore struct {
@@ -189,14 +192,15 @@ func (store *conversationStore) state(request auth.ConversationRequest) (*conver
 	}
 	conversationCtx, cancel := context.WithCancel(context.Background())
 	state := &conversationState{
-		id:       id,
-		ctx:      conversationCtx,
-		cancel:   cancel,
-		prompts:  make(chan auth.Prompt),
-		answers:  make(chan auth.PromptResponse),
-		result:   make(chan conversationResult),
-		username: request.Username,
-		created:  time.Now(),
+		id:         id,
+		ctx:        conversationCtx,
+		cancel:     cancel,
+		prompts:    make(chan auth.Prompt),
+		answers:    make(chan auth.PromptResponse),
+		result:     make(chan conversationResult),
+		username:   request.Username,
+		remoteHost: request.RemoteAddress,
+		created:    time.Now(),
 	}
 	state.expires = time.AfterFunc(conversationLifetime, func() { store.cancel(id) })
 	store.values[id] = state
@@ -230,7 +234,7 @@ func (store *conversationStore) oldestParkedLocked(username string, sameUser boo
 
 func (store *conversationStore) run(ctx context.Context, state *conversationState) {
 	defer store.workerDone(state.username)
-	session, err := store.opener.OpenSessionWithConversation(state.username, func(style auth.PromptStyle, message string) (string, error) {
+	session, err := store.opener.OpenSessionWithConversation(ctx, state.username, state.remoteHost, func(style auth.PromptStyle, message string) (string, error) {
 		if len(message) > maxPromptBytes || !utf8.ValidString(message) {
 			return "", errConversationBounds
 		}

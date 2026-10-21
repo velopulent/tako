@@ -8,8 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
+	"net"
 	"os/user"
 	"sort"
 	"strconv"
@@ -19,6 +18,8 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/fdpass"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -28,11 +29,12 @@ const (
 	bridgeCancelMethod = "$cancel"
 )
 
-// userBridgeProcess multiplexes concurrent requests over the bridge's pipes.
-// A request that times out is canceled on its own; the pipes, and with them
-// the user's login, stay up.
+// userBridgeProcess is sessiond's connection to a bridge. Requests are
+// multiplexed over one socket: a request that times out is canceled on its
+// own, and the connection, with the user's login, stays up. The process itself
+// belongs to the sign-in helper (user bridges) or to its own transient service
+// (the administrative bridge), never to sessiond.
 type userBridgeProcess struct {
-	command *exec.Cmd
 	input   io.WriteCloser
 	output  io.ReadCloser
 	writeMu sync.Mutex
@@ -40,9 +42,10 @@ type userBridgeProcess struct {
 	pending map[string]chan bridgeResponse
 	broken  error
 	next    atomic.Uint64
-	done    chan error
-	exited  chan struct{}
 	once    sync.Once
+	// terminals hands terminal sockets to a user bridge; nil for the
+	// administrative bridge.
+	terminals *net.UnixConn
 }
 
 type bridgeRequest struct {
@@ -56,63 +59,42 @@ type bridgeResponse struct {
 	err     error
 }
 
-func startUserBridge(session auth.UserSession) (*userBridgeProcess, error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	return startUserBridgeExecutable(session, executable)
-}
-
-func startUserBridgeExecutable(session auth.UserSession, executable string) (*userBridgeProcess, error) {
-	account, err := user.LookupId(strconv.Itoa(session.Identity.UID))
-	if err != nil {
-		return nil, err
-	}
-	command := exec.Command(executable, "bridge")
-	input, err := command.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	output, err := command.StdoutPipe()
-	if err != nil {
-		_ = input.Close()
-		return nil, err
-	}
-	command.Stderr = os.Stderr
-	command.Dir = account.HomeDir
-	command.Env = bridgeEnvironment(session.Environment, account)
-	credential, err := userCredential(account, session.Identity)
-	if err != nil {
-		_ = input.Close()
-		_ = output.Close()
-		return nil, err
-	}
-	command.SysProcAttr = &syscall.SysProcAttr{Credential: credential, Setsid: true}
-	if err := command.Start(); err != nil {
-		_ = input.Close()
-		_ = output.Close()
-		return nil, fmt.Errorf("start user bridge executable %s uid=%d gid=%d: %w", executable, session.Identity.UID, session.Identity.GID, err)
-	}
-	process := newUserBridgeProcess(input, output)
-	process.command = command
-	go func() {
-		process.done <- command.Wait()
-		close(process.exited)
-	}()
-	if err := process.ready(); err != nil {
-		_ = process.Close()
-		return nil, err
-	}
-	return process, nil
-}
-
-// newUserBridgeProcess starts the response reader for an already running
-// bridge connected through input and output.
+// newUserBridgeProcess starts the response reader for a bridge connected
+// through input and output.
 func newUserBridgeProcess(input io.WriteCloser, output io.ReadCloser) *userBridgeProcess {
-	process := &userBridgeProcess{input: input, output: output, pending: make(map[string]chan bridgeResponse), done: make(chan error, 1), exited: make(chan struct{})}
+	process := &userBridgeProcess{input: input, output: output, pending: make(map[string]chan bridgeResponse)}
 	go process.readResponses(bufio.NewReader(output))
 	return process
+}
+
+// alive reports whether the bridge still answers requests.
+func (process *userBridgeProcess) alive() bool {
+	process.mu.Lock()
+	defer process.mu.Unlock()
+	return process.broken == nil
+}
+
+// openTerminal asks the bridge for a new login shell and returns the socket
+// carrying its raw terminal bytes. The bridge runs the shell in the user's
+// own session; closing the socket hangs it up.
+func (process *userBridgeProcess) openTerminal(size auth.TerminalSize) (net.Conn, error) {
+	if process.terminals == nil {
+		return nil, errors.New("this bridge has no terminals")
+	}
+	local, peer, err := fdpass.Pair(unix.SOCK_STREAM)
+	if err != nil {
+		return nil, err
+	}
+	defer peer.Close()
+	header, err := json.Marshal(size)
+	if err == nil {
+		err = fdpass.Send(process.terminals, header, peer)
+	}
+	if err != nil {
+		local.Close()
+		return nil, err
+	}
+	return fdpass.Conn(local)
 }
 
 func (process *userBridgeProcess) ready() error {
@@ -257,27 +239,16 @@ func (process *userBridgeProcess) fail(err error) {
 	}
 }
 
+// Close disconnects from the bridge, which then exits on its own.
 func (process *userBridgeProcess) Close() error {
-	var closeErr error
 	process.once.Do(func() {
 		_ = process.input.Close()
 		_ = process.output.Close()
-		if process.command == nil {
-			return
-		}
-		select {
-		case err := <-process.done:
-			if err != nil && !errors.Is(err, os.ErrProcessDone) {
-				closeErr = err
-			}
-		case <-time.After(2 * time.Second):
-			if process.command.Process != nil {
-				_ = process.command.Process.Kill()
-			}
-			<-process.done
+		if process.terminals != nil {
+			_ = process.terminals.Close()
 		}
 	})
-	return closeErr
+	return nil
 }
 
 func userCredential(account *user.User, identity auth.Identity) (*syscall.Credential, error) {

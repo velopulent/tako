@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/velopulent/tako/internal/auth"
+	"github.com/velopulent/tako/internal/fdpass"
 )
 
 // TestPAMBackedUserBridge is run as root in disposable distribution VMs after
@@ -35,7 +36,7 @@ func TestPAMBackedUserBridge(t *testing.T) {
 		service = "tako"
 	}
 	index := 0
-	session, err := (auth.PAMAuthenticator{Service: service}).OpenSessionWithConversation(username, func(style auth.PromptStyle, _ string) (string, error) {
+	session, err := (auth.PAMAuthenticator{Service: service}).OpenSessionWithConversation(username, "", func(style auth.PromptStyle, _ string) (string, error) {
 		if style == auth.PromptInfo || style == auth.PromptError {
 			return "", nil
 		}
@@ -54,9 +55,19 @@ func TestPAMBackedUserBridge(t *testing.T) {
 	if session.Identity.Username != username || session.Identity.UID <= 0 || session.Identity.GID <= 0 {
 		t.Fatalf("unexpected NSS identity: %#v", session.Identity)
 	}
-	bridge, err := startUserBridgeExecutable(session, binary)
+	bridge, rpc, terminals, err := startSessionBridge(session, binary)
 	if err != nil {
 		t.Fatal(err)
+	}
+	defer terminals.Close()
+	conn, err := fdpass.Conn(rpc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newUserBridgeProcess(conn, conn)
+	defer client.Close()
+	if err := client.ready(); err != nil {
+		t.Fatalf("user bridge did not answer: %v", err)
 	}
 	status, err := os.ReadFile("/proc/" + strconv.Itoa(bridge.command.Process.Pid) + "/status")
 	if err != nil {
@@ -94,9 +105,7 @@ func TestPAMBackedUserBridge(t *testing.T) {
 		t.Fatalf("bridge lacks PAM environment marker %q", environmentKey)
 	}
 	pid := bridge.command.Process.Pid
-	if err := bridge.Close(); err != nil {
-		t.Fatal(err)
-	}
+	bridge.stop()
 	if err := syscall.Kill(pid, 0); err == nil {
 		t.Fatal("user bridge remained alive after close")
 	}
