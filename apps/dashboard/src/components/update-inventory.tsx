@@ -57,6 +57,7 @@ import {
   APIError,
   api,
   type DiagnosticJob,
+  streamURL,
   type UpdateChange,
   type UpdateObservation,
   type UpdateOperation,
@@ -247,7 +248,7 @@ export function UpdateInventory() {
   }, [jobID])
 
   React.useEffect(() => {
-    const source = new EventSource("/api/v1/updates/live")
+    const source = new EventSource(streamURL("/api/v1/updates/live"))
     const onOpen = () => {
       snapshotPendingRef.current = true
       snapshotSequenceRef.current = 0

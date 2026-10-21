@@ -139,3 +139,29 @@ func TestLoadKeepsHashInsideQuotedValues(t *testing.T) {
 		t.Fatal("trailing junk accepted")
 	}
 }
+
+func TestSessionTimeouts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[session]\nidle_timeout = \"30m\"\nlifetime = \"24h\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionIdleTimeout != 30*time.Minute || cfg.SessionLifetime != 24*time.Hour {
+		t.Fatalf("unexpected session timeouts: %s %s", cfg.SessionIdleTimeout, cfg.SessionLifetime)
+	}
+	for _, payload := range []string{
+		"[session]\nidle_timeout = \"10s\"\n",
+		"[session]\nlifetime = \"30d\"\n",
+		"[session]\nidle_timeout = \"2h\"\nlifetime = \"1h\"\n",
+	} {
+		if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path, false); err == nil {
+			t.Fatalf("accepted %q", payload)
+		}
+	}
+}

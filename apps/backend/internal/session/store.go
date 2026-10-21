@@ -106,7 +106,18 @@ func (store *Store) prune(now time.Time) []auth.Identity {
 	return removed
 }
 
+// Get returns a live session and records user activity on it.
 func (store *Store) Get(id string) (Session, bool) {
+	return store.lookup(id, true)
+}
+
+// Peek returns a live session without counting as activity. Background
+// polling uses it so an unattended tab still reaches the idle timeout.
+func (store *Store) Peek(id string) (Session, bool) {
+	return store.lookup(id, false)
+}
+
+func (store *Store) lookup(id string, active bool) (Session, bool) {
 	store.mu.Lock()
 	session, ok := store.sessions[id]
 	if !ok {
@@ -122,8 +133,10 @@ func (store *Store) Get(id string) (Session, bool) {
 		notifyDeleted(hook, []auth.Identity{session.Identity})
 		return Session{}, false
 	}
-	session.SeenAt = now
-	store.sessions[id] = session
+	if active {
+		session.SeenAt = now
+		store.sessions[id] = session
+	}
 	store.mu.Unlock()
 	return session, true
 }

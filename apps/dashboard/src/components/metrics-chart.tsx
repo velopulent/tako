@@ -25,7 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import type { MetricSample } from "@/lib/api"
+import { type MetricSample, streamURL } from "@/lib/api"
 import {
   clockFormatter,
   formatBytes,
@@ -174,7 +174,7 @@ export function useLiveSamples(
   React.useEffect(() => {
     if (interval === "off" || !visible) return
     const source = new EventSource(
-      `/api/v1/metrics/stream?interval=${interval}`
+      streamURL(`/api/v1/metrics/stream?interval=${interval}`)
     )
     source.addEventListener("metric", (event) => {
       const sample = JSON.parse(

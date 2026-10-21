@@ -12,6 +12,7 @@ import { AdminAccessProvider } from "@/components/admin-access"
 import { LoginPage } from "@/components/login-page"
 import { Toaster } from "@/components/ui/toast"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { useActivityHeartbeat } from "@/hooks/use-activity-heartbeat"
 import { APIError, api, type BrandingResponse, setCSRFToken } from "@/lib/api"
 import { loadSession, sessionKey } from "@/lib/session"
 import { routeTree } from "./routeTree.gen"
@@ -54,6 +55,7 @@ function AuthenticatedApp() {
     staleTime: 5 * 60 * 1000,
   })
   const hostname = branding.data?.hostname?.trim()
+  useActivityHeartbeat(Boolean(session.data))
 
   useEffect(() => {
     document.title = hostname ? `${hostname} · Tako` : "Tako"

@@ -1101,6 +1101,21 @@ export function csrfHeaders(method = "GET"): Record<string, string> {
   return unsafe && csrfToken ? { "X-CSRF-Token": csrfToken } : {}
 }
 
+// Reads are mostly polling, so they never count as user activity; that keeps
+// an unattended tab from staying signed in. Real interaction is reported by
+// useActivityHeartbeat, and every mutation counts on its own.
+function backgroundHeaders(method = "GET"): Record<string, string> {
+  return ["GET", "HEAD"].includes(method.toUpperCase())
+    ? { "X-Tako-Background": "1" }
+    : {}
+}
+
+// streamURL marks an EventSource URL as background, since EventSource
+// cannot send headers.
+export function streamURL(path: string) {
+  return `${path}${path.includes("?") ? "&" : "?"}background=1`
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     credentials: "same-origin",
@@ -1108,6 +1123,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers: {
       "Content-Type": "application/json",
       ...csrfHeaders(init?.method),
+      ...backgroundHeaders(init?.method),
       ...init?.headers,
     },
   })

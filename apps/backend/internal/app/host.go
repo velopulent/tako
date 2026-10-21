@@ -276,7 +276,7 @@ func (server *Server) terminalWebSocket(writer http.ResponseWriter, request *htt
 	}
 	defer connection.CloseNow()
 	connection.SetReadLimit(64 << 10)
-	ctx, cancel := context.WithDeadline(request.Context(), current.CreatedAt.Add(sessionAbsoluteTimeout))
+	ctx, cancel := context.WithDeadline(request.Context(), current.CreatedAt.Add(server.config.SessionLifetime))
 	defer cancel()
 	size := terminalSize(request)
 	terminal, err := server.broker.Open(ctx, "terminal.open", userCredentials(current), size)
@@ -301,10 +301,20 @@ func (server *Server) terminalWebSocket(writer http.ResponseWriter, request *htt
 			}
 		}
 	}()
+	// Keystrokes are user activity. Recording them keeps the session alive
+	// while someone types, and ends the terminal once the session is gone.
+	lastActivity := time.Now()
 	for {
 		kind, payload, readErr := connection.Read(ctx)
 		if readErr != nil {
 			return
+		}
+		if time.Since(lastActivity) > terminalActivityInterval {
+			lastActivity = time.Now()
+			if _, ok := server.sessions.Get(current.ID); !ok {
+				_ = connection.Close(websocket.StatusPolicyViolation, "session ended")
+				return
+			}
 		}
 		if kind == websocket.MessageBinary {
 			if _, err := terminal.Write(payload); err != nil {
@@ -318,6 +328,8 @@ func (server *Server) terminalWebSocket(writer http.ResponseWriter, request *htt
 		}
 	}
 }
+
+const terminalActivityInterval = 30 * time.Second
 
 func terminalSize(request *http.Request) auth.TerminalSize {
 	var size auth.TerminalSize

@@ -66,7 +66,7 @@ import {
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
-import { api, type JournalPage, type LogEntry } from "@/lib/api"
+import { api, type JournalPage, type LogEntry, streamURL } from "@/lib/api"
 import { formatDateTime, formatTimestamp } from "@/lib/format"
 import { QueryError } from "@/lib/page"
 import type { LogsSearch } from "@/lib/search"
@@ -205,7 +205,7 @@ export function JournalBrowser() {
       { ...filters, since: undefined, until: undefined, range: "all" },
       { details: "true" }
     )
-    const source = new EventSource(`/api/v1/logs/stream?${params}`)
+    const source = new EventSource(streamURL(`/api/v1/logs/stream?${params}`))
     let pending: LogEntry[] = []
     source.addEventListener("log", (event) => {
       try {

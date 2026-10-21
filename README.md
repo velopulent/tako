@@ -151,12 +151,17 @@ history_retention = "24h"
 
 [admin]
 idle_timeout = "5m"
+
+[session]
+idle_timeout = "15m"
+lifetime = "12h"
 ```
 
 Things worth knowing:
 
 * Omit `allowed_origin` for direct same-origin use, including access by server IP or hostname. Set it to the exact public scheme, host, and port when running behind a reverse proxy with a different browser origin.
 * For a reverse proxy, terminate public TLS at the proxy, forward only to loopback `127.0.0.1:9090`, preserve WebSocket upgrade headers for the terminal endpoint, and do not cache `/api/v1/*`.
+* `session.idle_timeout` signs a browser out after that long without user activity. Background polling and live streams never count as activity, so an unattended tab does sign out; clicks, keystrokes, and terminal input do. `session.lifetime` caps any sign-in.
 * `service_idle_timeout` accepts any Go duration. `0` disables idle exit. When the service is idle and exits, the in-memory metric sampler stops too, so history shows gaps.
 * Certificates in Tako's own state directory stay gateway-owned. External certificate paths are read by sessiond as root, so a key can stay in a root-only location such as `/etc/letsencrypt`. The gateway reloads the certificate every 6 hours and on `systemctl reload tako`, so ACME renewals take effect without signing anyone out. A generated self-signed certificate is replaced 30 days before it expires.
 * Hosts must resolve systemd dynamic users: `passwd` (and usually `group`) in `nsswitch.conf` must include `systemd`.

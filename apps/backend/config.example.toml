@@ -16,3 +16,9 @@ history_retention = "24h"
 
 [admin]
 idle_timeout = "5m"
+
+[session]
+# Sign out after this long without user activity; background polling and
+# live streams do not count. lifetime caps any sign-in.
+idle_timeout = "15m"
+lifetime = "12h"

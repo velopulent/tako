@@ -24,6 +24,11 @@ type Config struct {
 	HistoryRetention   time.Duration
 	AdminIdleTimeout   time.Duration
 	ServiceIdleTimeout time.Duration
+	// SessionIdleTimeout signs a browser out after this long without user
+	// activity; background polling does not count. SessionLifetime caps a
+	// sign-in regardless of activity.
+	SessionIdleTimeout time.Duration
+	SessionLifetime    time.Duration
 }
 
 func Default() Config {
@@ -35,6 +40,8 @@ func Default() Config {
 		HistoryRetention:   24 * time.Hour,
 		AdminIdleTimeout:   5 * time.Minute,
 		ServiceIdleTimeout: 10 * time.Minute,
+		SessionIdleTimeout: 15 * time.Minute,
+		SessionLifetime:    12 * time.Hour,
 	}
 }
 
@@ -106,6 +113,10 @@ func Load(path string, development bool) (Config, error) {
 			cfg.HistoryRetention, err = parseDuration(value, 15*time.Minute, 24*time.Hour)
 		case "admin.idle_timeout":
 			cfg.AdminIdleTimeout, err = parseDuration(value, time.Minute, time.Hour)
+		case "session.idle_timeout":
+			cfg.SessionIdleTimeout, err = parseDuration(value, time.Minute, 24*time.Hour)
+		case "session.lifetime":
+			cfg.SessionLifetime, err = parseDuration(value, 15*time.Minute, 7*24*time.Hour)
 		default:
 			return cfg, errors.New("unknown configuration key: " + section + "." + key)
 		}
@@ -113,7 +124,13 @@ func Load(path string, development bool) (Config, error) {
 			return cfg, err
 		}
 	}
-	return cfg, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return cfg, err
+	}
+	if cfg.SessionIdleTimeout > cfg.SessionLifetime {
+		return cfg, errors.New("session.idle_timeout must not exceed session.lifetime")
+	}
+	return cfg, nil
 }
 
 func splitOrigins(value string) []string {

@@ -57,6 +57,12 @@ paths:
       description: Ends the session, revokes administrative access, and closes the user bridge.
       responses:
         '204': { description: Signed out }
+  /auth/activity:
+    post:
+      operationId: recordActivity
+      description: "Records user interaction that made no other request, so the session does not reach its idle timeout. Requests sent with the X-Tako-Background: 1 header (or the background=1 query parameter on event streams) are authorized normally but never count as activity."
+      responses:
+        '204': { description: Activity recorded }
   /capabilities:
     get:
       operationId: listCapabilities

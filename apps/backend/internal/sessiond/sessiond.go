@@ -48,7 +48,12 @@ type grantStore struct {
 	notifyMu sync.Mutex
 	values   map[string]bridgeGrant
 	activity *idle.Tracker
+	// lifetime bounds a confirmed login; it matches the gateway's
+	// session.lifetime. Zero uses defaultGrantLifetime.
+	lifetime time.Duration
 }
+
+const defaultGrantLifetime = 12 * time.Hour
 
 type administrativePolicy func(context.Context, auth.Identity, string) error
 
@@ -131,7 +136,7 @@ func Run(args []string, updates *platform.UpdateService) error {
 	}()
 
 	service := auth.PAMAuthenticator{Service: "tako"}
-	grants := &grantStore{values: make(map[string]bridgeGrant), activity: activity}
+	grants := &grantStore{values: make(map[string]bridgeGrant), activity: activity, lifetime: runtimeConfig.SessionLifetime}
 	hostRuntime := newHostRuntime(runtimeConfig.MonitoringInterval, runtimeConfig.HistoryRetention)
 	hostRuntime.updates = updates
 	go hostRuntime.run(ctx)
@@ -455,7 +460,11 @@ func (store *grantStore) confirm(token string) bool {
 		}
 		return false
 	}
-	grant.expires = time.Now().Add(12 * time.Hour)
+	lifetime := store.lifetime
+	if lifetime <= 0 {
+		lifetime = defaultGrantLifetime
+	}
+	grant.expires = time.Now().Add(lifetime)
 	store.values[token] = grant
 	store.mu.Unlock()
 	return true

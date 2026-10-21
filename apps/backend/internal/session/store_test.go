@@ -125,3 +125,33 @@ func TestStorePrunesExpiredSessionsOnCreate(t *testing.T) {
 		t.Fatal("expired session was not pruned")
 	}
 }
+
+func TestBackgroundPollingDoesNotKeepASessionAlive(t *testing.T) {
+	store := NewStore(time.Minute, time.Hour)
+	now := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	created, err := store.Create(auth.Identity{Username: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		now = now.Add(25 * time.Second)
+		if _, ok := store.Peek(created.ID); !ok && now.Sub(created.SeenAt) <= time.Minute {
+			t.Fatal("background poll ended a live session")
+		}
+	}
+	if _, ok := store.Peek(created.ID); ok {
+		t.Fatal("background polling kept an idle session alive")
+	}
+
+	active, err := store.Create(auth.Identity{Username: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		now = now.Add(45 * time.Second)
+		if _, ok := store.Get(active.ID); !ok {
+			t.Fatal("activity did not extend the session")
+		}
+	}
+}

@@ -111,3 +111,42 @@ func TestMutationRoutesRejectUnknownJSONFields(t *testing.T) {
 		})
 	}
 }
+
+func TestBackgroundRequestsDoNotCountAsActivity(t *testing.T) {
+	server, _ := newTestServer(t)
+	current := signIn(t, server, false)
+	before, _ := server.sessions.Peek(current.ID)
+	time.Sleep(5 * time.Millisecond)
+
+	for _, path := range []string{"/api/v1/auth/session", "/api/v1/metrics/stream?interval=1s&background=1"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: session.CookieName, Value: current.ID})
+		if path == "/api/v1/auth/session" {
+			request.Header.Set(backgroundHeader, "1")
+		}
+		if !isBackground(request) {
+			t.Fatalf("%s was not treated as background", path)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	request.AddCookie(&http.Cookie{Name: session.CookieName, Value: current.ID})
+	request.Header.Set(backgroundHeader, "1")
+	server.routes().ServeHTTP(httptest.NewRecorder(), request)
+	if after, _ := server.sessions.Peek(current.ID); !after.SeenAt.Equal(before.SeenAt) {
+		t.Fatal("background request extended the session")
+	}
+
+	activity := httptest.NewRequest(http.MethodPost, "/api/v1/auth/activity", nil)
+	activity.Host = "tako.test"
+	activity.AddCookie(&http.Cookie{Name: session.CookieName, Value: current.ID})
+	activity.Header.Set("X-CSRF-Token", current.CSRF)
+	activity.Header.Set("Origin", "http://tako.test")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, activity)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("activity returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if after, _ := server.sessions.Peek(current.ID); !after.SeenAt.After(before.SeenAt) {
+		t.Fatal("activity did not extend the session")
+	}
+}

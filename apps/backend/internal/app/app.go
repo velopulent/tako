@@ -37,9 +37,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// backgroundHeader marks a request as automatic polling. Such requests are
+// authorized like any other but never count as user activity, so an
+// unattended tab still reaches the session idle timeout. EventSource cannot
+// set headers and uses the backgroundQuery parameter instead.
 const (
-	sessionIdleTimeout     = 15 * time.Minute
-	sessionAbsoluteTimeout = 12 * time.Hour
+	backgroundHeader = "X-Tako-Background"
+	backgroundQuery  = "background"
 )
 
 type Server struct {
@@ -82,7 +86,7 @@ func New(cfg config.Config) (*Server, error) {
 		authenticator = auth.DevelopmentAuthenticator{Password: password}
 		broker = newLocalHostBroker(ctx)
 	}
-	sessions := session.NewStore(sessionIdleTimeout, sessionAbsoluteTimeout)
+	sessions := session.NewStore(cfg.SessionIdleTimeout, cfg.SessionLifetime)
 	server := &Server{
 		config:        cfg,
 		branding:      branding.New(strings.TrimSpace(os.Getenv("TAKO_BRANDING_DIR")), version.Value, cfg.Development),
@@ -271,6 +275,7 @@ func (server *Server) routes() http.Handler {
 			router.Use(server.requireSession, server.requireCSRF)
 			router.Get("/auth/session", server.currentSession)
 			router.Post("/auth/logout", server.logout)
+			router.Post("/auth/activity", server.activity)
 			router.Post("/admin/elevate", server.adminElevate)
 			router.Post("/admin/drop", server.adminDrop)
 
@@ -446,7 +451,7 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 	}
-	http.SetCookie(writer, server.sessionCookie(created.ID, int(sessionAbsoluteTimeout.Seconds())))
+	http.SetCookie(writer, server.sessionCookie(created.ID, int(server.config.SessionLifetime.Seconds())))
 	server.logger.Info("login succeeded", zap.String("username", identity.Username), zap.Int("uid", identity.UID), zap.String("remote_ip", request.RemoteAddr))
 	writeJSON(writer, http.StatusOK, server.sessionPayload(created))
 }
@@ -583,13 +588,27 @@ func (server *Server) requireSession(next http.Handler) http.Handler {
 			problem(writer, http.StatusUnauthorized, "no-session", "Sign in to continue")
 			return
 		}
-		current, ok := server.sessions.Get(cookie.Value)
+		lookup := server.sessions.Get
+		if isBackground(request) {
+			lookup = server.sessions.Peek
+		}
+		current, ok := lookup(cookie.Value)
 		if !ok {
 			reject(writer, "session-expired")
 			return
 		}
 		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), sessionKey{}, current)))
 	})
+}
+
+func isBackground(request *http.Request) bool {
+	return request.Header.Get(backgroundHeader) == "1" || request.URL.Query().Get(backgroundQuery) == "1"
+}
+
+// activity records user interaction that made no other request, such as
+// reading a page or scrolling a log, so the session stays signed in.
+func (server *Server) activity(writer http.ResponseWriter, _ *http.Request) {
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 // requireCSRF verifies every state-changing request. Safe methods pass
