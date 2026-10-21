@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/velopulent/tako/internal/platform"
 	"github.com/velopulent/tako/internal/session"
+	"go.uber.org/zap"
 )
 
 const maxJournalExportBytes = 8 << 20
@@ -171,16 +174,69 @@ func (server *Server) logStream(writer http.ResponseWriter, request *http.Reques
 	})
 }
 
+const (
+	// incidentAckRetention outlasts the longest incident window (seven days),
+	// so older acknowledgements can never match a listed incident.
+	incidentAckRetention = 8 * 24 * time.Hour
+	maxIncidentAcks      = 4096
+)
+
 // incidentAcks remembers when operators acknowledged each incident. It is
-// shared by all operators of this gateway and resets when it restarts. An
-// incident that recurs after its acknowledgement opens again.
+// shared by all operators and saved in the data directory, so it survives
+// gateway restarts. An incident that recurs after its acknowledgement opens
+// again.
 type incidentAcks struct {
 	mu    sync.Mutex
+	path  string
 	times map[string]time.Time
 }
 
-func newIncidentAcks() *incidentAcks {
-	return &incidentAcks{times: make(map[string]time.Time)}
+// newIncidentAcks loads saved acknowledgements from path. An empty path keeps
+// them in memory only.
+func newIncidentAcks(path string) *incidentAcks {
+	store := &incidentAcks{path: path, times: make(map[string]time.Time)}
+	if path == "" {
+		return store
+	}
+	if content, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(content, &store.times); err != nil {
+			zap.L().Warn("ignoring unreadable incident acknowledgements", zap.String("path", path), zap.Error(err))
+			store.times = make(map[string]time.Time)
+		}
+	}
+	store.pruneLocked(time.Now())
+	return store
+}
+
+func (store *incidentAcks) pruneLocked(now time.Time) {
+	for id, at := range store.times {
+		if now.Sub(at) > incidentAckRetention {
+			delete(store.times, id)
+		}
+	}
+	for len(store.times) >= maxIncidentAcks {
+		oldest, oldestAt := "", time.Time{}
+		for id, at := range store.times {
+			if oldest == "" || at.Before(oldestAt) {
+				oldest, oldestAt = id, at
+			}
+		}
+		delete(store.times, oldest)
+	}
+}
+
+func (store *incidentAcks) saveLocked() error {
+	if store.path == "" {
+		return nil
+	}
+	content, err := json.Marshal(store.times)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(store.path), 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(store.path, content, 0o600)
 }
 
 func (store *incidentAcks) apply(items []platform.Incident) {
@@ -193,17 +249,16 @@ func (store *incidentAcks) apply(items []platform.Incident) {
 	}
 }
 
-func (store *incidentAcks) set(id string, acknowledged bool, now time.Time) {
+func (store *incidentAcks) set(id string, acknowledged bool, now time.Time) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if !acknowledged {
+	if acknowledged {
+		store.pruneLocked(now)
+		store.times[id] = now
+	} else {
 		delete(store.times, id)
-		return
 	}
-	if len(store.times) >= 4096 {
-		clear(store.times)
-	}
-	store.times[id] = now
+	return store.saveLocked()
 }
 
 func (server *Server) incidentTimeline(writer http.ResponseWriter, request *http.Request) {
@@ -244,6 +299,9 @@ func (server *Server) incidentTransition(writer http.ResponseWriter, request *ht
 		problem(writer, http.StatusBadRequest, "invalid-incident-state", "Unsupported incident state")
 		return
 	}
-	server.incidents.set(id, state == "acknowledged", time.Now())
+	if err := server.incidents.set(id, state == "acknowledged", time.Now()); err != nil {
+		// The change holds in memory; only its persistence failed.
+		server.logger.Warn("incident acknowledgement not saved", zap.Error(err))
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{"id": id, "state": state})
 }

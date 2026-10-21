@@ -101,7 +101,7 @@ func New(cfg config.Config) (*Server, error) {
 		cancel:        cancel,
 		cleanupQueue:  make(chan auth.Identity, 64),
 		pruneDone:     make(chan struct{}),
-		incidents:     newIncidentAcks(),
+		incidents:     newIncidentAcks(filepath.Join(cfg.DataDir, "incident-acknowledgements.json")),
 		idle:          idle.New(cfg.ServiceIdleTimeout),
 		previews:      newPreviewGrants(),
 	}
@@ -803,7 +803,13 @@ func (server *Server) ensureCertificate() (string, string, error) {
 
 // writePEM writes atomically so a crash never leaves a truncated key behind.
 func writePEM(path, kind string, der []byte, mode os.FileMode) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".tako-pem-*")
+	return writeFileAtomic(path, pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: der}), mode)
+}
+
+// writeFileAtomic replaces path with content in one rename, so readers and
+// crashes only ever see the old or the new file.
+func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".tako-*")
 	if err != nil {
 		return err
 	}
@@ -812,7 +818,11 @@ func writePEM(path, kind string, der []byte, mode os.FileMode) error {
 		temporary.Close()
 		return err
 	}
-	if err := pem.Encode(temporary, &pem.Block{Type: kind, Bytes: der}); err != nil {
+	if _, err := temporary.Write(content); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
 		temporary.Close()
 		return err
 	}
