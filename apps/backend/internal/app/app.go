@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -51,6 +52,8 @@ type Server struct {
 	jobs          *jobManager
 	loginAttempts *loginLimiter
 	logger        *zap.Logger
+	certificates  *certificateStore
+	lifetime      context.Context
 	cancel        context.CancelFunc
 	cleanupQueue  chan auth.Identity
 	pruneDone     chan struct{}
@@ -88,6 +91,7 @@ func New(cfg config.Config) (*Server, error) {
 		broker:        broker,
 		loginAttempts: newLoginLimiter(5, time.Minute),
 		logger:        zap.L().Named("gateway"),
+		lifetime:      ctx,
 		cancel:        cancel,
 		cleanupQueue:  make(chan auth.Identity, 64),
 		pruneDone:     make(chan struct{}),
@@ -96,6 +100,7 @@ func New(cfg config.Config) (*Server, error) {
 		previews:      newPreviewGrants(),
 	}
 	server.jobs = newJobManager(ctx)
+	server.certificates = &certificateStore{load: server.loadCertificate}
 	sessions.SetDeleteHook(server.enqueueUserSessionClose)
 	sessions.SetCountHook(func(count int) { server.idle.SetBusy("sessions", count > 0) })
 	server.jobs.SetBusyHook(func(busy bool) { server.idle.SetBusy("jobs", busy) })
@@ -216,11 +221,16 @@ func (server *Server) Serve(listener net.Listener) error {
 	if server.config.Development {
 		return server.http.Serve(listener)
 	}
-	certificate, key, err := server.ensureCertificate()
+	ctx, cancel := context.WithTimeout(server.lifetime, 30*time.Second)
+	certificate, err := server.certificates.Reload(ctx)
+	cancel()
 	if err != nil {
 		return err
 	}
-	return server.http.ServeTLS(listener, certificate, key)
+	server.logCertificate("certificate loaded", certificate)
+	go server.renewCertificates()
+	server.http.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: server.certificates.get}
+	return server.http.ServeTLS(listener, "", "")
 }
 
 func (server *Server) Shutdown(ctx context.Context) error {
@@ -658,24 +668,17 @@ func contentSecurityPolicy(path string) string {
 	return prodContentSecurityPolicy
 }
 
+// ensureCertificate returns the generated self-signed pair in the data
+// directory, creating it, or replacing it when it is unreadable or close to
+// expiry.
 func (server *Server) ensureCertificate() (string, string, error) {
-	certificate := server.config.Certificate
-	key := server.config.CertificateKey
-	if certificate != "" || key != "" {
-		if certificate == "" || key == "" {
-			return "", "", errors.New("certificate and certificate_key must be configured together")
-		}
-		return certificate, key, nil
-	}
 	if err := os.MkdirAll(server.config.DataDir, 0o700); err != nil {
 		return "", "", err
 	}
-	certificate = filepath.Join(server.config.DataDir, "tako.crt")
-	key = filepath.Join(server.config.DataDir, "tako.key")
-	if _, err := os.Stat(certificate); err == nil {
-		if _, err := os.Stat(key); err == nil {
-			return certificate, key, nil
-		}
+	certificate := filepath.Join(server.config.DataDir, "tako.crt")
+	key := filepath.Join(server.config.DataDir, "tako.key")
+	if generatedCertificateUsable(certificate, key, time.Now()) {
+		return certificate, key, nil
 	}
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

@@ -17,8 +17,12 @@ screen. User-scoped services require a PAM-created
 `XDG_RUNTIME_DIR`, a reachable user D-Bus socket, and a running systemd user
 manager; Tako reports `user-manager-unavailable` when those prerequisites are
 missing. Sessiond does not enable linger, start a missing manager, or
-impersonate another user. External certificate paths are read by sessiond;
-certificates in Tako's own state directory remain gateway-owned.
+impersonate another user. External certificate paths are read by sessiond
+(`tls.certificate`) and handed to the gateway, which keeps the pair only in
+memory; certificates in Tako's own state directory remain gateway-owned. The
+gateway reloads its certificate every 6 hours and on SIGHUP
+(`systemctl reload tako`), and replaces a generated self-signed certificate 30
+days before it expires.
 
 Set `server.service_idle_timeout` to a Go duration such as `10m`; `0` disables automatic service exit. Idle exit stops sessiond's in-memory metric sampler, so metric history contains gaps while Tako is stopped.
 

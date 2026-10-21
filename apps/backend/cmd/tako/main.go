@@ -97,6 +97,14 @@ func serve(args []string) error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe() }()
+	reload := make(chan os.Signal, 1)
+	signal.Notify(reload, syscall.SIGHUP)
+	defer signal.Stop(reload)
+	go func() {
+		for range reload {
+			server.ReloadCertificate()
+		}
+	}()
 	zap.L().Info("gateway configured",
 		zap.String("address", cfg.Address),
 		zap.Bool("development", cfg.Development),

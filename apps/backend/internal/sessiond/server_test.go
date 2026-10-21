@@ -2,12 +2,22 @@ package sessiond
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/velopulent/tako/internal/auth"
 	"github.com/velopulent/tako/internal/platform"
@@ -406,6 +416,53 @@ func TestConversationSessionFailureIsReportedOnTheWire(t *testing.T) {
 	})
 	defer f.handler.conversations.closeAll()
 	expectError(t, f.call("session.conversation", auth.Credentials{}, auth.ConversationRequest{Username: "operator", Password: "secret"}), "session-failed")
+}
+
+func TestCertificateIsServedOnlyWhenConfigured(t *testing.T) {
+	f := newFixture(t)
+	expectError(t, f.call("tls.certificate", auth.Credentials{}, nil), "certificate-unavailable")
+	expectError(t, f.call("tls.certificate", f.user(), nil), "invalid-request")
+
+	directory := t.TempDir()
+	certificatePEM, keyPEM := testCertificatePEM(t)
+	f.handler.certificate = filepath.Join(directory, "tls.crt")
+	f.handler.certificateKey = filepath.Join(directory, "tls.key")
+	if err := os.WriteFile(f.handler.certificate, certificatePEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.handler.certificateKey, []byte("not a key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expectError(t, f.call("tls.certificate", auth.Credentials{}, nil), "certificate-invalid")
+	if err := os.WriteFile(f.handler.certificateKey, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := f.call("tls.certificate", auth.Credentials{}, nil)
+	var material auth.CertificateMaterial
+	if response.Error != "" || json.Unmarshal(response.Result, &material) != nil {
+		t.Fatalf("certificate read failed: %+v", response)
+	}
+	if material.Certificate != string(certificatePEM) || material.Key != string(keyPEM) {
+		t.Fatal("served material does not match the configured files")
+	}
+}
+
+func testCertificatePEM(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "host"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 }
 
 func TestEveryOperationDeclaresAHandler(t *testing.T) {

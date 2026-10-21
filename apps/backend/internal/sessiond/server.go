@@ -63,6 +63,11 @@ type handler struct {
 	logger        *zap.Logger
 	runtime       *hostRuntime
 
+	// certificate and certificateKey are the configured TLS paths that
+	// tls.certificate serves to the gateway.
+	certificate    string
+	certificateKey string
+
 	hostConfig hostConfigBackend
 	power      powerBackend
 	timers     timerBackend

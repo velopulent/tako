@@ -9,6 +9,8 @@ DynamicUser=yes
 User=tako-gateway
 Group=tako-session
 ExecStart=/usr/bin/tako serve --config /etc/tako/config.toml
+# Reloads the TLS certificate in place; sessions stay signed in.
+ExecReload=/usr/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=true

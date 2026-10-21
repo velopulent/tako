@@ -90,6 +90,12 @@ type (
 		Status   platform.KpatchStatus         `json:"status"`
 		Settings platform.KpatchSettingsStatus `json:"settings"`
 	}
+	// CertificateMaterial is the configured TLS pair in PEM form. Sessiond
+	// reads it as root; the gateway holds it only in memory.
+	CertificateMaterial struct {
+		Certificate string `json:"certificate"`
+		Key         string `json:"key"`
+	}
 )
 
 type UpdateObservation = platform.UpdateObservation

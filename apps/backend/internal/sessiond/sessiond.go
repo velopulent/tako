@@ -143,6 +143,7 @@ func Run(args []string, updates *platform.UpdateService) error {
 	conversations.activity = activity
 	defer conversations.closeAll()
 	requests := newHandler(service, conversations, grants, policy, logger, hostRuntime)
+	requests.certificate, requests.certificateKey = runtimeConfig.Certificate, runtimeConfig.CertificateKey
 	defer grants.closeAll()
 	for {
 		conn, err := listener.Accept()

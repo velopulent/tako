@@ -2,8 +2,11 @@ package sessiond
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"io"
+	"os"
 	"os/user"
 	"strconv"
 	"strings"
@@ -31,6 +34,7 @@ func init() {
 		"admin.revoke":         {lane: laneAdminToken, fallback: "invalid-admin-token", run: runRevokeAdmin},
 		"terminal.open":        {lane: laneSession, takeover: openTerminal},
 		"terminal.resize":      {lane: laneSession, fallback: "terminal-resize-failed", run: runResizeTerminal},
+		"tls.certificate":      {lane: laneNone, fallback: "certificate-unavailable", run: runCertificate},
 
 		"services.list":          {lane: laneEither, fallback: "system-backend-unavailable", run: runServicesList},
 		"services.detail":        {lane: laneEither, fallback: "system-backend-unavailable", run: runServiceDetail},
@@ -175,6 +179,47 @@ func runRevokeAdmin(_ context.Context, c *call) (any, error) {
 		return nil, auth.Code("invalid-admin-token")
 	}
 	return nil, nil
+}
+
+const maxCertificateBytes = 1 << 20
+
+// runCertificate returns the configured TLS pair. Only the gateway can reach
+// the session socket; reading the files here keeps private keys in root-only
+// locations instead of granting the sandboxed gateway file access.
+func runCertificate(_ context.Context, c *call) (any, error) {
+	certificatePath, keyPath := c.handler.certificate, c.handler.certificateKey
+	if certificatePath == "" || keyPath == "" {
+		return nil, auth.Code("certificate-unavailable")
+	}
+	certificate, err := readBoundedFile(certificatePath, maxCertificateBytes)
+	if err != nil {
+		return nil, err
+	}
+	key, err := readBoundedFile(keyPath, maxCertificateBytes)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	if _, err := tls.X509KeyPair(certificate, key); err != nil {
+		return nil, auth.Code("certificate-invalid")
+	}
+	return auth.CertificateMaterial{Certificate: string(certificate), Key: string(key)}, nil
+}
+
+func readBoundedFile(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > limit {
+		return nil, auth.Code("certificate-invalid")
+	}
+	return content, nil
 }
 
 func runResizeTerminal(_ context.Context, c *call) (any, error) {
