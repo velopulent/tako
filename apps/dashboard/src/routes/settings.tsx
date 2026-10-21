@@ -22,6 +22,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { UserSessionsCard } from "@/components/user-sessions-card"
 import {
   useMonitoringPreference,
   useSetMonitoringPreference,
@@ -130,6 +131,7 @@ function SettingsPage() {
             </FieldGroup>
           </CardContent>
         </Card>
+        <UserSessionsCard />
         <Card>
           <CardHeader>
             <CardTitle>Host support</CardTitle>

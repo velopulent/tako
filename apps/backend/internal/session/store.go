@@ -2,7 +2,10 @@ package session
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"sort"
 	"sync"
 	"time"
 
@@ -11,6 +14,10 @@ import (
 
 const CookieName = "tako_session"
 
+// MaxPerUser bounds concurrent sessions for one account. Each session owns a
+// user bridge process, so the oldest one is signed out to make room.
+const MaxPerUser = 8
+
 type Session struct {
 	ID         string
 	CSRF       string
@@ -18,6 +25,63 @@ type Session struct {
 	CreatedAt  time.Time
 	SeenAt     time.Time
 	AdminUntil time.Time
+	// RemoteAddress and UserAgent describe where the sign-in came from, for
+	// the user's own list of sessions.
+	RemoteAddress string
+	UserAgent     string
+}
+
+// PublicID names a session in listings without revealing its cookie value.
+func (current Session) PublicID() string {
+	sum := sha256.Sum256([]byte(current.ID))
+	return hex.EncodeToString(sum[:12])
+}
+
+// SetClient records where a session was created.
+func (store *Store) SetClient(id, address, userAgent string) {
+	if len(userAgent) > 256 {
+		userAgent = userAgent[:256]
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if current, ok := store.sessions[id]; ok {
+		current.RemoteAddress, current.UserAgent = address, userAgent
+		store.sessions[id] = current
+	}
+}
+
+// ForUser lists uid's live sessions, oldest first.
+func (store *Store) ForUser(uid int) []Session {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	now := store.now()
+	var sessions []Session
+	for _, current := range store.sessions {
+		if current.Identity.UID == uid && now.Sub(current.SeenAt) <= store.idle && now.Sub(current.CreatedAt) <= store.absolute {
+			sessions = append(sessions, current)
+		}
+	}
+	sort.Slice(sessions, func(left, right int) bool { return sessions[left].CreatedAt.Before(sessions[right].CreatedAt) })
+	return sessions
+}
+
+// RevokeForUser signs out uid's session named by publicID and closes its
+// user bridge. It never touches another account's sessions.
+func (store *Store) RevokeForUser(uid int, publicID string) bool {
+	store.mu.Lock()
+	var target string
+	for id, current := range store.sessions {
+		if current.Identity.UID == uid && current.PublicID() == publicID {
+			target = id
+			break
+		}
+	}
+	store.mu.Unlock()
+	if target == "" {
+		return false
+	}
+	store.Delete(target)
+	return true
 }
 
 func (store *Store) SetAdministrative(id, token string, until time.Time) bool {
@@ -87,12 +151,36 @@ func (store *Store) Create(identity auth.Identity) (Session, error) {
 	session := Session{ID: id, CSRF: csrf, Identity: identity, CreatedAt: now, SeenAt: now}
 	store.mu.Lock()
 	removed := store.prune(now)
+	removed = append(removed, store.evictForUserLocked(identity.UID)...)
 	store.sessions[id] = session
 	hook := store.onDelete
 	store.notifyCountLocked()
 	store.mu.Unlock()
 	notifyDeleted(hook, removed)
 	return session, nil
+}
+
+// evictForUserLocked removes uid's oldest sessions until one more fits.
+func (store *Store) evictForUserLocked(uid int) []auth.Identity {
+	var removed []auth.Identity
+	for {
+		count, oldest := 0, ""
+		var oldestAt time.Time
+		for id, current := range store.sessions {
+			if current.Identity.UID != uid {
+				continue
+			}
+			count++
+			if oldest == "" || current.CreatedAt.Before(oldestAt) {
+				oldest, oldestAt = id, current.CreatedAt
+			}
+		}
+		if count < MaxPerUser {
+			return removed
+		}
+		removed = append(removed, store.sessions[oldest].Identity)
+		delete(store.sessions, oldest)
+	}
 }
 
 func (store *Store) prune(now time.Time) []auth.Identity {

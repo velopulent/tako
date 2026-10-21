@@ -57,6 +57,41 @@ paths:
       description: Ends the session, revokes administrative access, and closes the user bridge.
       responses:
         '204': { description: Signed out }
+  /auth/sessions:
+    get:
+      operationId: listUserSessions
+      description: Lists the signed-in account's own live sessions. Session IDs here are opaque and never equal a cookie value.
+      responses:
+        '200':
+          description: The account's sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, createdAt, seenAt, current, administrative]
+                      properties:
+                        id: { type: string }
+                        createdAt: { type: string, format: date-time }
+                        seenAt: { type: string, format: date-time }
+                        current: { type: boolean }
+                        administrative: { type: boolean }
+                        remoteAddress: { type: string }
+                        userAgent: { type: string }
+  /auth/sessions/{id}/revoke:
+    post:
+      operationId: revokeUserSession
+      description: Signs out one of the account's own sessions and closes its user bridge. Revoking the current session also clears its cookie.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Session signed out }
+        '404': { description: No such session for this account }
   /auth/activity:
     post:
       operationId: recordActivity

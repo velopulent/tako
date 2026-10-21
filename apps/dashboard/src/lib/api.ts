@@ -1136,3 +1136,13 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return response.json() as Promise<T>
 }
+
+export type UserSession = {
+  id: string
+  createdAt: string
+  seenAt: string
+  current: boolean
+  administrative: boolean
+  remoteAddress?: string
+  userAgent?: string
+}

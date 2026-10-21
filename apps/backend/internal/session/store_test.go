@@ -155,3 +155,61 @@ func TestBackgroundPollingDoesNotKeepASessionAlive(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreSignsOutTheOldestSessionPastThePerUserCap(t *testing.T) {
+	store := NewStore(time.Hour, time.Hour)
+	now := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	var closed []string
+	store.SetDeleteHook(func(identity auth.Identity) { closed = append(closed, identity.BridgeToken) })
+	var first Session
+	for index := range MaxPerUser {
+		now = now.Add(time.Second)
+		created, err := store.Create(auth.Identity{Username: "operator", UID: 1000, BridgeToken: "bridge-" + string(rune('a'+index))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			first = created
+		}
+	}
+	if _, err := store.Create(auth.Identity{Username: "other", UID: 1001}); err != nil {
+		t.Fatal(err)
+	}
+	if len(closed) != 0 {
+		t.Fatalf("another user's sign-in evicted sessions: %v", closed)
+	}
+	now = now.Add(time.Second)
+	if _, err := store.Create(auth.Identity{Username: "operator", UID: 1000, BridgeToken: "bridge-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Peek(first.ID); ok || len(closed) != 1 || closed[0] != "bridge-a" {
+		t.Fatalf("oldest session was not signed out: closed=%v", closed)
+	}
+}
+
+func TestUsersListAndRevokeOnlyTheirOwnSessions(t *testing.T) {
+	store := NewStore(time.Hour, time.Hour)
+	var closed []string
+	store.SetDeleteHook(func(identity auth.Identity) { closed = append(closed, identity.BridgeToken) })
+	mine, _ := store.Create(auth.Identity{Username: "operator", UID: 1000, BridgeToken: "mine"})
+	store.SetClient(mine.ID, "192.0.2.4", "Firefox")
+	theirs, _ := store.Create(auth.Identity{Username: "other", UID: 1001, BridgeToken: "theirs"})
+
+	listed := store.ForUser(1000)
+	if len(listed) != 1 || listed[0].RemoteAddress != "192.0.2.4" || listed[0].UserAgent != "Firefox" {
+		t.Fatalf("unexpected listing: %#v", listed)
+	}
+	if mine.PublicID() == mine.ID || len(mine.PublicID()) != 24 {
+		t.Fatal("public ID exposes or mirrors the cookie value")
+	}
+	if store.RevokeForUser(1000, theirs.PublicID()) {
+		t.Fatal("revoked another account's session")
+	}
+	if !store.RevokeForUser(1000, mine.PublicID()) || len(closed) != 1 || closed[0] != "mine" {
+		t.Fatalf("own session was not revoked: %v", closed)
+	}
+	if _, ok := store.Peek(theirs.ID); !ok {
+		t.Fatal("other account's session ended")
+	}
+}

@@ -278,6 +278,8 @@ func (server *Server) routes() http.Handler {
 			router.Get("/auth/session", server.currentSession)
 			router.Post("/auth/logout", server.logout)
 			router.Post("/auth/activity", server.activity)
+			router.Get("/auth/sessions", server.userSessions)
+			router.Post("/auth/sessions/{id}/revoke", server.revokeUserSession)
 			router.Post("/admin/elevate", server.adminElevate)
 			router.Post("/admin/drop", server.adminDrop)
 
@@ -468,6 +470,7 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 	}
+	server.sessions.SetClient(created.ID, client, request.UserAgent())
 	http.SetCookie(writer, server.sessionCookie(created.ID, int(server.config.SessionLifetime.Seconds())))
 	server.logger.Info("login succeeded", zap.String("username", identity.Username), zap.Int("uid", identity.UID), zap.String("remote_ip", client))
 	writeJSON(writer, http.StatusOK, server.sessionPayload(created))
@@ -569,6 +572,40 @@ func (server *Server) logout(writer http.ResponseWriter, request *http.Request) 
 	}
 	server.logger.Info("logout succeeded", zap.String("username", current.Identity.Username))
 	http.SetCookie(writer, server.sessionCookie("", -1))
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+// userSessions lists the signed-in account's own sessions.
+func (server *Server) userSessions(writer http.ResponseWriter, request *http.Request) {
+	current := currentSession(request)
+	items := make([]map[string]any, 0)
+	for _, item := range server.sessions.ForUser(current.Identity.UID) {
+		items = append(items, map[string]any{
+			"id":             item.PublicID(),
+			"createdAt":      item.CreatedAt,
+			"seenAt":         item.SeenAt,
+			"current":        item.ID == current.ID,
+			"administrative": hasAdministrativeAccess(item),
+			"remoteAddress":  item.RemoteAddress,
+			"userAgent":      item.UserAgent,
+		})
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"sessions": items})
+}
+
+// revokeUserSession signs out one of the account's own sessions, such as a
+// browser left signed in elsewhere.
+func (server *Server) revokeUserSession(writer http.ResponseWriter, request *http.Request) {
+	current := currentSession(request)
+	id := chi.URLParam(request, "id")
+	if !server.sessions.RevokeForUser(current.Identity.UID, id) {
+		problem(writer, http.StatusNotFound, "session-not-found", "That session already ended")
+		return
+	}
+	server.logger.Info("session revoked", zap.String("username", current.Identity.Username), zap.Bool("current", id == current.PublicID()), zap.String("remote_ip", server.clientAddress(request)))
+	if id == current.PublicID() {
+		http.SetCookie(writer, server.sessionCookie("", -1))
+	}
 	writer.WriteHeader(http.StatusNoContent)
 }
 

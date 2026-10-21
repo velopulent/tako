@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -148,5 +149,59 @@ func TestBackgroundRequestsDoNotCountAsActivity(t *testing.T) {
 	}
 	if after, _ := server.sessions.Peek(current.ID); !after.SeenAt.After(before.SeenAt) {
 		t.Fatal("activity did not extend the session")
+	}
+}
+
+func TestUsersSeeAndRevokeOnlyTheirOwnSessions(t *testing.T) {
+	server, _ := newTestServer(t)
+	current := signIn(t, server, false)
+	other, err := server.sessions.Create(auth.Identity{Username: "operator", UID: 1000, GID: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := server.sessions.Create(auth.Identity{Username: "stranger", UID: 1001, GID: 1001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(method, path string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, nil)
+		request.Host = "tako.test"
+		request.AddCookie(&http.Cookie{Name: session.CookieName, Value: current.ID})
+		request.Header.Set("X-CSRF-Token", current.CSRF)
+		request.Header.Set("Origin", "http://tako.test")
+		recorder := httptest.NewRecorder()
+		server.routes().ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	listing := send(http.MethodGet, "/api/v1/auth/sessions")
+	var body struct {
+		Sessions []struct {
+			ID      string `json:"id"`
+			Current bool   `json:"current"`
+		} `json:"sessions"`
+	}
+	if listing.Code != http.StatusOK || json.Unmarshal(listing.Body.Bytes(), &body) != nil || len(body.Sessions) != 2 {
+		t.Fatalf("listing = %d %s", listing.Code, listing.Body.String())
+	}
+	for _, item := range body.Sessions {
+		if item.ID == current.ID || item.ID == other.ID {
+			t.Fatal("listing exposed a cookie value")
+		}
+		if item.Current != (item.ID == current.PublicID()) {
+			t.Fatalf("current flag wrong for %s", item.ID)
+		}
+	}
+	if code := send(http.MethodPost, "/api/v1/auth/sessions/"+stranger.PublicID()+"/revoke").Code; code != http.StatusNotFound {
+		t.Fatalf("revoking another account's session returned %d", code)
+	}
+	if code := send(http.MethodPost, "/api/v1/auth/sessions/"+other.PublicID()+"/revoke").Code; code != http.StatusNoContent {
+		t.Fatalf("revoking own session returned %d", code)
+	}
+	if _, ok := server.sessions.Peek(other.ID); ok {
+		t.Fatal("revoked session still works")
+	}
+	if _, ok := server.sessions.Peek(stranger.ID); !ok {
+		t.Fatal("another account's session ended")
 	}
 }
