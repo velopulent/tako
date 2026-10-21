@@ -10,6 +10,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/velopulent/tako/internal/audit"
 	"github.com/velopulent/tako/internal/auth"
 	"go.uber.org/zap"
 )
@@ -131,7 +132,11 @@ func (h *handler) serve(conn net.Conn) {
 		_ = encoder.Encode(auth.Response{Error: code})
 		return
 	}
+	plan, audited := planAudit(request.Operation, request.Payload)
 	if spec.takeover != nil {
+		if audited {
+			c.emitAudit(audit.Record{Actor: c.identity.Username, UID: c.identity.UID, Administrative: c.administrative, Operation: plan.operation, Action: plan.action, Target: plan.target, Result: "started"})
+		}
 		spec.takeover(c)
 		return
 	}
@@ -144,8 +149,14 @@ func (h *handler) serve(conn net.Conn) {
 	result, err := spec.run(ctx, c)
 	cancel()
 	clear(request.Payload)
+	code := ""
 	if err != nil {
-		code := auth.ErrorCode(err, spec.fallback)
+		code = auth.ErrorCode(err, spec.fallback)
+	}
+	if audited {
+		c.recordAudit(plan, result, err, code)
+	}
+	if err != nil {
 		h.logger.Info("operation failed", zap.String("operation", request.Operation), zap.String("username", c.identity.Username), zap.Bool("administrative", c.administrative), zap.String("error_code", code), zap.Error(err))
 		_ = encoder.Encode(auth.Response{Error: code})
 		return

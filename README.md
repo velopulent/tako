@@ -92,6 +92,13 @@ journalctl -u tako.service -u tako-sessiond.service -f
 
 Set `TAKO_LOG_LEVEL=debug` for caller locations and extra detail.
 
+Every operation that changes the host or a sign-in (logins, elevation, service actions, updates, file changes, and so on) is also recorded by sessiond as a structured audit entry. Reads and previews are not recorded, and the entries name only allowlisted fields, never passwords, keys, or file content:
+
+```bash
+journalctl MESSAGE_ID=6f2a9c4e1b7d4f0a8e3c5b2d9a1f7e60
+journalctl MESSAGE_ID=6f2a9c4e1b7d4f0a8e3c5b2d9a1f7e60 TAKO_AUDIT_ACTOR=alice -o json
+```
+
 ## How it works
 
 One binary, three modes:
