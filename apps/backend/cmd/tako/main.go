@@ -142,5 +142,9 @@ func runUpdateWorker(args []string, updates *platform.UpdateService) error {
 	if err != nil {
 		return err
 	}
+	// Progress goes to sessiond over a pipe. If sessiond stops mid-transaction
+	// the pipe breaks; ignoring SIGPIPE turns that into ignored write errors so
+	// the package manager is never killed halfway through.
+	signal.Ignore(syscall.SIGPIPE)
 	return updates.RunWorker(context.Background(), operation, os.Stdout)
 }

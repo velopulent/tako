@@ -446,7 +446,10 @@ func (service *UpdateService) applyWithWorker(ctx context.Context, operation Upd
 	if strings.HasSuffix(unit, "-") {
 		unit += strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
-	arguments := []string{"--quiet", "--pipe", "--wait", "--collect", "--service-type=exec", "--unit=" + unit, "--property=User=root", "--property=PrivateTmp=true", "--property=ProtectHome=true", "--property=ProtectKernelTunables=true", "--property=ProtectKernelModules=true", service.workerExecutable, "update-worker", "--job-file", jobFile}
+	// The worker runs the distro package manager, which needs the unrestricted
+	// host: kernel packages write /usr/lib/modules and scriptlets touch /root,
+	// /proc/sys, and /tmp. Sandbox properties here break real transactions.
+	arguments := []string{"--quiet", "--pipe", "--wait", "--collect", "--service-type=exec", "--unit=" + unit, "--property=User=root", service.workerExecutable, "update-worker", "--job-file", jobFile}
 	command := exec.CommandContext(context.WithoutCancel(ctx), "systemd-run", arguments...)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
