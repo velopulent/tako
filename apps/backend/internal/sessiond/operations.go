@@ -533,15 +533,20 @@ func runCapabilities(ctx context.Context, c *call) (any, error) {
 	return platform.Detect(ctx, runtime.updates), nil
 }
 
-// Processes. Inventory and inspection come from the shared root collector; a
-// valid session is enough to observe them. Signals run in the caller's lane.
+// Processes. Inventory and inspection come from the shared root collector.
+// Without administrative access the result is cut down to what the caller
+// could read in /proc themselves. Signals run in the caller's lane.
 
 func runProcessList(_ context.Context, c *call) (any, error) {
 	runtime, err := c.requireRuntime()
 	if err != nil {
 		return nil, err
 	}
-	return runtime.processTracker.Snapshot()
+	items, err := runtime.processTracker.Snapshot()
+	if err != nil || c.administrative {
+		return items, err
+	}
+	return c.processView().Processes(items), nil
 }
 
 func runProcessDetail(ctx context.Context, c *call) (any, error) {
@@ -553,7 +558,25 @@ func runProcessDetail(ctx context.Context, c *call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return runtime.processTracker.Inspect(ctx, operation.PID, operation.Started)
+	details, err := runtime.processTracker.Inspect(ctx, operation.PID, operation.Started)
+	if err != nil || c.administrative {
+		return details, err
+	}
+	return c.processView().Details(details)
+}
+
+// processView describes the caller's /proc visibility. Group lookup failures
+// fall back to the primary group, which only ever narrows the view.
+func (c *call) processView() platform.ProcessView {
+	groups := []int{c.identity.GID}
+	if account, err := user.LookupId(strconv.Itoa(c.identity.UID)); err == nil {
+		if credential, err := userCredential(account, c.identity); err == nil {
+			for _, group := range credential.Groups {
+				groups = append(groups, int(group))
+			}
+		}
+	}
+	return platform.NewProcessView(c.identity.UID, groups)
 }
 
 func runSignalPreview(ctx context.Context, c *call) (any, error) {

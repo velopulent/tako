@@ -418,6 +418,20 @@ func TestConversationSessionFailureIsReportedOnTheWire(t *testing.T) {
 	expectError(t, f.call("session.conversation", auth.Credentials{}, auth.ConversationRequest{Username: "operator", Password: "secret"}), "session-failed")
 }
 
+func TestUserLaneProcessInventoryHidesOtherUsersIO(t *testing.T) {
+	f := newFixture(t)
+	response := f.call("processes.list", f.user(), nil)
+	var items []platform.Process
+	if response.Error != "" || json.Unmarshal(response.Result, &items) != nil || len(items) == 0 {
+		t.Fatalf("process list failed: %+v", response)
+	}
+	for _, item := range items {
+		if item.UID != operator.UID && (!item.IODenied || item.DiskRead != 0 || item.DiskWrite != 0) {
+			t.Fatalf("user lane exposed I/O of uid %d process %d", item.UID, item.PID)
+		}
+	}
+}
+
 func TestCertificateIsServedOnlyWhenConfigured(t *testing.T) {
 	f := newFixture(t)
 	expectError(t, f.call("tls.certificate", auth.Credentials{}, nil), "certificate-unavailable")
