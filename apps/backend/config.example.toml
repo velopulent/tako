@@ -6,6 +6,8 @@ service_idle_timeout = "10m"
 # Omit to allow same-origin access at the current URL, including a server IP or hostname.
 # Set exact scheme/host/port values for alternate origins or a reverse proxy.
 # allowed_origin = "https://console.example.com"
+# Peers allowed to name the client in X-Forwarded-For (a local reverse proxy).
+# trusted_proxies = "127.0.0.1, ::1"
 # Read by sessiond as root; reloaded every 6h and on `systemctl reload tako`.
 # certificate = "/etc/tako/tako.crt"
 # certificate_key = "/etc/tako/tako.key"

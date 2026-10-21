@@ -352,6 +352,6 @@ func (server *Server) audit(request *http.Request, target string, err error, adm
 		zap.String("result", result),
 		zap.String("error_code", code),
 		zap.Bool("administrative", administrative),
-		zap.String("remote_ip", request.RemoteAddr),
+		zap.String("remote_ip", server.clientAddress(request)),
 	)
 }

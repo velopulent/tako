@@ -55,6 +55,7 @@ type Server struct {
 	broker        HostBroker
 	jobs          *jobManager
 	loginAttempts *loginLimiter
+	signIns       *signInConversations
 	logger        *zap.Logger
 	certificates  *certificateStore
 	lifetime      context.Context
@@ -94,6 +95,7 @@ func New(cfg config.Config) (*Server, error) {
 		authenticator: authenticator,
 		broker:        broker,
 		loginAttempts: newLoginLimiter(5, time.Minute),
+		signIns:       newSignInConversations(),
 		logger:        zap.L().Named("gateway"),
 		lifetime:      ctx,
 		cancel:        cancel,
@@ -264,8 +266,8 @@ func (server *Server) Shutdown(ctx context.Context) error {
 
 func (server *Server) routes() http.Handler {
 	router := chi.NewRouter()
-	// Forwarding headers are not trusted: RemoteAddr feeds the sign-in rate
-	// limit and audit logs.
+	// Forwarding headers are trusted only from configured proxies; see
+	// clientAddress. The client address feeds sign-in limits and audit logs.
 	router.Use(middleware.RequestID, middleware.Recoverer, server.logRequest, server.securityHeaders)
 
 	router.Route("/api/v1", func(router chi.Router) {
@@ -385,7 +387,10 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 		reject(writer, "invalid-request")
 		return
 	}
+	client := server.clientAddress(request)
+	limitKey := clientLimitKey(client)
 	if credentials.Cancel {
+		server.signIns.Done(credentials.ConversationID)
 		if err := server.authenticator.CancelConversation(request.Context(), credentials.ConversationID); err != nil {
 			problem(writer, http.StatusServiceUnavailable, "authentication-unavailable", "Authentication service is unavailable")
 			return
@@ -393,13 +398,24 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if credentials.ConversationID == "" && !server.loginAttempts.Allow(request.RemoteAddr) {
-		server.logger.Warn("login rejected", zap.String("reason", "rate-limited"), zap.String("remote_ip", request.RemoteAddr))
-		problem(writer, http.StatusTooManyRequests, "rate-limited", "Too many sign-in attempts; wait a minute and try again")
-		return
+	if credentials.ConversationID == "" {
+		if !server.loginAttempts.Allow(limitKey) {
+			server.logger.Warn("login rejected", zap.String("reason", "rate-limited"), zap.String("remote_ip", client))
+			problem(writer, http.StatusTooManyRequests, "rate-limited", "Too many sign-in attempts; wait a minute and try again")
+			return
+		}
+		if !server.signIns.Allow(limitKey) {
+			server.logger.Warn("login rejected", zap.String("reason", "too-many-open-sign-ins"), zap.String("remote_ip", client))
+			problem(writer, http.StatusTooManyRequests, "rate-limited", "Too many sign-in attempts in progress; finish or cancel one first")
+			return
+		}
 	}
 	username := credentials.Username
+	continuing := credentials.ConversationID
 	result, err := server.authenticator.AdvanceConversation(request.Context(), &credentials)
+	if err != nil || len(result.Prompts) == 0 {
+		server.signIns.Done(continuing)
+	}
 	if err != nil {
 		switch code := auth.ErrorCode(err, ""); {
 		case code == "invalid-conversation":
@@ -415,12 +431,13 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 		default:
 			// A uniform delay keeps failed and unknown accounts indistinguishable.
 			time.Sleep(300 * time.Millisecond)
-			server.logger.Warn("authentication failed", zap.String("username", username), zap.String("remote_ip", request.RemoteAddr))
+			server.logger.Warn("authentication failed", zap.String("username", username), zap.String("remote_ip", client))
 			problem(writer, http.StatusUnauthorized, "authentication-failed", "Incorrect username or password")
 		}
 		return
 	}
 	if len(result.Prompts) > 0 {
+		server.signIns.Track(result.ConversationID, limitKey)
 		writeJSON(writer, http.StatusAccepted, map[string]any{"conversationId": result.ConversationID, "prompts": result.Prompts})
 		return
 	}
@@ -430,7 +447,7 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 	}
 	identity := *result.Identity
 	identity.BridgeToken = result.BridgeToken
-	server.loginAttempts.Reset(request.RemoteAddr)
+	server.loginAttempts.Reset(limitKey)
 	created, err := server.sessions.Create(identity)
 	if err != nil {
 		server.closeUserSession(identity)
@@ -452,7 +469,7 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 		}
 	}
 	http.SetCookie(writer, server.sessionCookie(created.ID, int(server.config.SessionLifetime.Seconds())))
-	server.logger.Info("login succeeded", zap.String("username", identity.Username), zap.Int("uid", identity.UID), zap.String("remote_ip", request.RemoteAddr))
+	server.logger.Info("login succeeded", zap.String("username", identity.Username), zap.Int("uid", identity.UID), zap.String("remote_ip", client))
 	writeJSON(writer, http.StatusOK, server.sessionPayload(created))
 }
 
@@ -573,7 +590,7 @@ func (server *Server) logRequest(next http.Handler) http.Handler {
 			zap.String("path", request.URL.Path),
 			zap.Int("status", wrapped.Status()),
 			zap.Int("bytes", wrapped.BytesWritten()),
-			zap.String("remote_ip", request.RemoteAddr),
+			zap.String("remote_ip", server.clientAddress(request)),
 			zap.Duration("duration", time.Since(started)),
 		)
 	})
@@ -855,30 +872,34 @@ func newLoginLimiter(limit int, window time.Duration) *loginLimiter {
 	return &loginLimiter{limit: limit, window: window, attempts: make(map[string]loginAttempt)}
 }
 
-func clientHost(address string) string {
-	if host, _, err := net.SplitHostPort(address); err == nil {
-		return host
-	}
-	return address
-}
+// maxTrackedClients bounds limiter memory. When it is reached the entry
+// closest to expiry is dropped; refusing every new client instead would let
+// one attacker with many addresses lock everyone out.
+const maxTrackedClients = 8192
 
-func (limiter *loginLimiter) Allow(address string) bool {
-	host := clientHost(address)
+// Allow counts a new sign-in attempt for key, a clientLimitKey.
+func (limiter *loginLimiter) Allow(key string) bool {
 	now := time.Now()
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	if now.After(limiter.nextSweep) {
-		for key, value := range limiter.attempts {
+		for tracked, value := range limiter.attempts {
 			if now.After(value.until) {
-				delete(limiter.attempts, key)
+				delete(limiter.attempts, tracked)
 			}
 		}
 		limiter.nextSweep = now.Add(time.Minute)
 	}
-	if _, exists := limiter.attempts[host]; !exists && len(limiter.attempts) >= 8192 {
-		return false
+	if _, exists := limiter.attempts[key]; !exists && len(limiter.attempts) >= maxTrackedClients {
+		oldest, oldestUntil := "", time.Time{}
+		for tracked, value := range limiter.attempts {
+			if oldest == "" || value.until.Before(oldestUntil) {
+				oldest, oldestUntil = tracked, value.until
+			}
+		}
+		delete(limiter.attempts, oldest)
 	}
-	attempt := limiter.attempts[host]
+	attempt := limiter.attempts[key]
 	if now.After(attempt.until) {
 		attempt = loginAttempt{until: now.Add(limiter.window)}
 	}
@@ -886,13 +907,13 @@ func (limiter *loginLimiter) Allow(address string) bool {
 		return false
 	}
 	attempt.count++
-	limiter.attempts[host] = attempt
+	limiter.attempts[key] = attempt
 	return true
 }
 
-func (limiter *loginLimiter) Reset(address string) {
+func (limiter *loginLimiter) Reset(key string) {
 	limiter.mu.Lock()
-	delete(limiter.attempts, clientHost(address))
+	delete(limiter.attempts, key)
 	limiter.mu.Unlock()
 }
 

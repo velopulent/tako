@@ -310,16 +310,32 @@ func TestConversationEnforcesRoundLimit(t *testing.T) {
 	}
 }
 
-func TestConversationCapsConcurrentAttemptsPerUser(t *testing.T) {
+func TestParkedConversationsCannotLockAUserOut(t *testing.T) {
 	store := newConversationStore(&multiRoundOpener{}, func(auth.UserSession) (string, error) { return "", nil })
 	defer store.closeAll()
+	var parked []string
 	for attempt := 0; attempt < maxConversationsPerUser; attempt++ {
-		if _, err := store.advance(context.Background(), auth.ConversationRequest{Username: "octopus"}); err != nil {
+		response, err := store.advance(context.Background(), auth.ConversationRequest{Username: "octopus"})
+		if err != nil {
 			t.Fatalf("attempt %d rejected early: %v", attempt, err)
 		}
+		parked = append(parked, response.ConversationID)
 	}
-	if _, err := store.advance(context.Background(), auth.ConversationRequest{Username: "octopus"}); !errors.Is(err, errConversationBusy) {
-		t.Fatalf("expected busy response, got %v", err)
+	// Both slots wait on prompts nobody answers. A new sign-in replaces the
+	// oldest instead of being refused.
+	response, err := store.advance(context.Background(), auth.ConversationRequest{Username: "octopus"})
+	if err != nil || response.ConversationID == "" {
+		t.Fatalf("new sign-in was locked out: %v", err)
+	}
+	store.mu.Lock()
+	_, oldestOpen := store.values[parked[0]]
+	_, newerOpen := store.values[parked[1]]
+	store.mu.Unlock()
+	if oldestOpen || !newerOpen {
+		t.Fatalf("eviction picked the wrong conversation: oldest=%v newer=%v", oldestOpen, newerOpen)
+	}
+	if _, err := store.advance(context.Background(), auth.ConversationRequest{ConversationID: parked[0], Responses: []auth.PromptResponse{{ID: "x", Value: "secret"}}}); !errors.Is(err, errConversationInvalid) {
+		t.Fatalf("evicted conversation still accepted answers: %v", err)
 	}
 }
 

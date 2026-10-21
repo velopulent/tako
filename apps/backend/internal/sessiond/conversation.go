@@ -47,6 +47,7 @@ type conversationState struct {
 	rounds   int
 	expires  *time.Timer
 	username string
+	created  time.Time
 }
 
 type conversationStore struct {
@@ -148,8 +149,13 @@ func (store *conversationStore) advance(ctx context.Context, request auth.Conver
 func (store *conversationStore) state(request auth.ConversationRequest) (*conversationState, error) {
 	store.mu.Lock()
 	created := false
+	var evicted *conversationState
 	defer func() {
 		store.mu.Unlock()
+		if evicted != nil {
+			evicted.expires.Stop()
+			evicted.cancel()
+		}
 		if created {
 			store.notifyActivity()
 		}
@@ -164,11 +170,18 @@ func (store *conversationStore) state(request auth.ConversationRequest) (*conver
 	if request.Username == "" || len(request.Username) > 256 || !utf8.ValidString(request.Username) {
 		return nil, errConversationInvalid
 	}
-	if store.workers >= maxConcurrentConversations {
-		return nil, errConversationBusy
-	}
-	if store.byUser[request.Username] >= maxConversationsPerUser {
-		return nil, errConversationBusy
+	perUser := store.byUser[request.Username] >= maxConversationsPerUser
+	if perUser || store.workers >= maxConcurrentConversations {
+		// A conversation parked on an unanswered prompt holds its slot for
+		// its whole lifetime, so a client that never answers could lock one
+		// user, or everyone, out. Replacing the oldest parked conversation
+		// keeps the slot usable. Workers busy inside PAM are never evicted,
+		// which keeps the cap on concurrent PAM transactions.
+		evicted = store.oldestParkedLocked(request.Username, perUser)
+		if evicted == nil {
+			return nil, errConversationBusy
+		}
+		delete(store.values, evicted.id)
 	}
 	id, err := randomToken(24)
 	if err != nil {
@@ -183,6 +196,7 @@ func (store *conversationStore) state(request auth.ConversationRequest) (*conver
 		answers:  make(chan auth.PromptResponse),
 		result:   make(chan conversationResult),
 		username: request.Username,
+		created:  time.Now(),
 	}
 	state.expires = time.AfterFunc(conversationLifetime, func() { store.cancel(id) })
 	store.values[id] = state
@@ -191,6 +205,27 @@ func (store *conversationStore) state(request auth.ConversationRequest) (*conver
 	created = true
 	go store.run(conversationCtx, state)
 	return state, nil
+}
+
+// oldestParkedLocked returns the oldest conversation waiting on the client to
+// answer a prompt, limited to username when sameUser is set. A conversation
+// whose step lock is held is mid-request and is skipped.
+func (store *conversationStore) oldestParkedLocked(username string, sameUser bool) *conversationState {
+	var oldest *conversationState
+	for _, state := range store.values {
+		if sameUser && state.username != username {
+			continue
+		}
+		if !state.step.TryLock() {
+			continue
+		}
+		parked := state.current != nil
+		state.step.Unlock()
+		if parked && (oldest == nil || state.created.Before(oldest.created)) {
+			oldest = state
+		}
+	}
+	return oldest
 }
 
 func (store *conversationStore) run(ctx context.Context, state *conversationState) {

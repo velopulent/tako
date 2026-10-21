@@ -165,3 +165,26 @@ func TestSessionTimeouts(t *testing.T) {
 		}
 	}
 }
+
+func TestTrustedProxies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[server]\ntrusted_proxies = \"127.0.0.1, ::1, 10.0.0.0/8\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TrustedProxies) != 3 || cfg.TrustedProxies[0].Bits() != 32 || cfg.TrustedProxies[1].Bits() != 128 || cfg.TrustedProxies[2].String() != "10.0.0.0/8" {
+		t.Fatalf("unexpected proxies: %v", cfg.TrustedProxies)
+	}
+	if err := os.WriteFile(path, []byte("[server]\ntrusted_proxies = \"proxy.local\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, false); err == nil {
+		t.Fatal("hostname accepted as a trusted proxy")
+	}
+	if cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"), false); err != nil || cfg.TrustedProxies != nil {
+		t.Fatalf("default trusts proxies: %v %v", cfg.TrustedProxies, err)
+	}
+}

@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,7 +19,10 @@ type Config struct {
 	SessionSocket  string
 	// A nil list derives the allowed origin from each request's scheme and host.
 	// A non-nil list is an explicit origin allowlist.
-	AllowedOrigins     []string
+	AllowedOrigins []string
+	// TrustedProxies are peers whose X-Forwarded-For header names the real
+	// client. Empty means forwarding headers are never trusted.
+	TrustedProxies     []netip.Prefix
 	Development        bool
 	MonitoringInterval time.Duration
 	HistoryRetention   time.Duration
@@ -107,6 +111,8 @@ func Load(path string, development bool) (Config, error) {
 			cfg.ServiceIdleTimeout, err = parseOptionalDuration(value, 30*time.Second, 24*time.Hour)
 		case "server.allowed_origin":
 			cfg.AllowedOrigins = splitOrigins(value)
+		case "server.trusted_proxies":
+			cfg.TrustedProxies, err = parsePrefixes(value)
 		case "monitoring.default_interval":
 			cfg.MonitoringInterval, err = parseDuration(value, time.Second, 5*time.Minute)
 		case "monitoring.history_retention":
@@ -143,6 +149,27 @@ func splitOrigins(value string) []string {
 		}
 	}
 	return origins
+}
+
+// parsePrefixes reads a comma-separated list of addresses or CIDR prefixes.
+func parsePrefixes(value string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(part); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+		address, err := netip.ParseAddr(part)
+		if err != nil {
+			return nil, errors.New("invalid trusted proxy address: " + part)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(address.Unmap(), address.Unmap().BitLen()))
+	}
+	return prefixes, nil
 }
 
 func parseDuration(value string, minimum, maximum time.Duration) (time.Duration, error) {
