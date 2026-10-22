@@ -32,6 +32,7 @@ fixture_uid=""
 pam_backup_dir=$(mktemp -d)
 pam_had_file=false
 user_created=false
+test_binary_dir=""
 
 mkdir -p "$evidence_dir"
 
@@ -75,6 +76,9 @@ cleanup() {
   fi
   if [[ "$user_created" == true ]]; then
     userdel --remove "$fixture_user" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$test_binary_dir" ]]; then
+    rm -rf "$test_binary_dir"
   fi
   rm -rf "$pam_backup_dir"
   exit "$exit_code"
@@ -132,6 +136,17 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
 systemctl --user is-system-running >/dev/null
 
 [[ -x "$TAKO_TEST_BINARY" ]] || { echo "integration binary is not executable: $TAKO_TEST_BINARY" >&2; exit 1; }
+# systemd starts the sign-in helper and the administrative bridge itself, so
+# run a copy from where the service manager may execute it, labeled bin_t
+# like the binary tools/tako-host installs.
+install -d -m 0755 /usr/local/libexec
+test_binary_dir=$(mktemp -d /usr/local/libexec/tako-integration.XXXXXX)
+chmod 0755 "$test_binary_dir"
+install -m 0755 "$TAKO_TEST_BINARY" "$test_binary_dir/tako"
+if command -v selinuxenabled >/dev/null && selinuxenabled; then
+  chcon -t bin_t "$test_binary_dir/tako"
+fi
+export TAKO_TEST_BINARY="$test_binary_dir/tako"
 
 expected_tests=(
   TestPAMUserSessionLifecycle
@@ -148,6 +163,8 @@ expected_tests=(
   TestStructuredTimerPairLoadsInDisposableVM
   TestUpdatesAgainstHost
   TestPAMBackedUserBridge
+  TestSignInThroughSystemd
+  TestAdministrativeBridgeThroughSystemd
 )
 
 export TAKO_TEST_ACCOUNT_VM=1

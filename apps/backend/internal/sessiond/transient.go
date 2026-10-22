@@ -43,22 +43,30 @@ func startTransientServiceOn(ctx context.Context, connect func(...dbus.ConnOptio
 		return err
 	}
 	defer conn.Close()
+	var job dbus.ObjectPath
+	return conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").
+		CallWithContext(ctx, "org.freedesktop.systemd1.Manager.StartTransientUnit", 0, unit, "fail", transientServiceProperties(description, argv, stdio), []transientAuxiliary{}).
+		Store(&job)
+}
+
+func transientServiceProperties(description string, argv []string, stdio *os.File) []transientProperty {
 	var environment []string
 	if level := os.Getenv("TAKO_LOG_LEVEL"); level != "" {
 		environment = append(environment, "TAKO_LOG_LEVEL="+level)
 	}
-	properties := []transientProperty{
+	return []transientProperty{
 		{"Description", dbus.MakeVariant(description)},
 		{"Type", dbus.MakeVariant("exec")},
 		{"ExecStart", dbus.MakeVariant([]transientExec{{Path: argv[0], Arguments: argv}})},
 		{"StandardInputFileDescriptor", dbus.MakeVariant(dbus.UnixFD(stdio.Fd()))},
 		{"StandardOutputFileDescriptor", dbus.MakeVariant(dbus.UnixFD(stdio.Fd()))},
+		// The descriptor overrides StandardOutput=, but systemd still compares
+		// it with StandardError=: when both name the journal (the default), it
+		// copies stdout, the socket, onto stderr, and every log line lands in
+		// the protocol. "null" keeps them apart.
+		{"StandardOutput", dbus.MakeVariant("null")},
 		{"StandardError", dbus.MakeVariant("journal")},
 		{"Environment", dbus.MakeVariant(append([]string{}, environment...))},
 		{"CollectMode", dbus.MakeVariant("inactive-or-failed")},
 	}
-	var job dbus.ObjectPath
-	return conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").
-		CallWithContext(ctx, "org.freedesktop.systemd1.Manager.StartTransientUnit", 0, unit, "fail", properties, []transientAuxiliary{}).
-		Store(&job)
 }

@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -21,33 +22,16 @@ import (
 // propagation, bridge readiness, real process credentials, and termination.
 func TestPAMBackedUserBridge(t *testing.T) {
 	username := os.Getenv("TAKO_TEST_PAM_USER")
-	encodedResponses := os.Getenv("TAKO_TEST_PAM_RESPONSES")
+	encodedResponses := takePAMResponses()
 	binary := os.Getenv("TAKO_TEST_BINARY")
 	if username == "" || encodedResponses == "" || binary == "" {
 		t.Skip("set TAKO_TEST_PAM_USER, TAKO_TEST_PAM_RESPONSES, and TAKO_TEST_BINARY in a disposable VM")
 	}
-	var responses []string
-	if err := json.Unmarshal([]byte(encodedResponses), &responses); err != nil {
-		t.Fatal("TAKO_TEST_PAM_RESPONSES must be a JSON string array")
-	}
-	os.Unsetenv("TAKO_TEST_PAM_RESPONSES")
 	service := os.Getenv("TAKO_TEST_PAM_SERVICE")
 	if service == "" {
 		service = "tako"
 	}
-	index := 0
-	session, err := (auth.PAMAuthenticator{Service: service}).OpenSessionWithConversation(username, "", func(style auth.PromptStyle, _ string) (string, error) {
-		if style == auth.PromptInfo || style == auth.PromptError {
-			return "", nil
-		}
-		if index >= len(responses) {
-			return "", errors.New("PAM requested more responses than supplied")
-		}
-		response := responses[index]
-		responses[index] = ""
-		index++
-		return response, nil
-	})
+	session, err := (auth.PAMAuthenticator{Service: service}).OpenSessionWithConversation(username, "", scriptedPAMConversation(t, encodedResponses))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,5 +92,36 @@ func TestPAMBackedUserBridge(t *testing.T) {
 	bridge.stop()
 	if err := syscall.Kill(pid, 0); err == nil {
 		t.Fatal("user bridge remained alive after close")
+	}
+}
+
+// takePAMResponses returns TAKO_TEST_PAM_RESPONSES, removing it from the
+// environment on first use so no child process inherits the passwords.
+var takePAMResponses = sync.OnceValue(func() string {
+	encoded := os.Getenv("TAKO_TEST_PAM_RESPONSES")
+	os.Unsetenv("TAKO_TEST_PAM_RESPONSES")
+	return encoded
+})
+
+// scriptedPAMConversation answers PAM's prompts, in order, with the JSON
+// string array encoded.
+func scriptedPAMConversation(t *testing.T, encoded string) auth.Conversation {
+	t.Helper()
+	var responses []string
+	if err := json.Unmarshal([]byte(encoded), &responses); err != nil {
+		t.Fatal("TAKO_TEST_PAM_RESPONSES must be a JSON string array")
+	}
+	index := 0
+	return func(style auth.PromptStyle, _ string) (string, error) {
+		if style == auth.PromptInfo || style == auth.PromptError {
+			return "", nil
+		}
+		if index >= len(responses) {
+			return "", errors.New("PAM requested more responses than supplied")
+		}
+		response := responses[index]
+		responses[index] = ""
+		index++
+		return response, nil
 	}
 }
