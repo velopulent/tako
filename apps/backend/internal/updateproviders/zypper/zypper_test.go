@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/velopulent/tako/internal/platform"
+	"github.com/velopulent/tako/internal/updateproviders/rpmmd"
 )
 
 func TestParseXMLAndHistory(t *testing.T) {
@@ -64,15 +65,15 @@ const sampleUpdateinfo = `<?xml version="1.0" encoding="UTF-8"?>
 func TestUpdateinfoClassifiesPendingPackages(t *testing.T) {
 	items := []platform.UpdatePackage{
 		{Name: "openssl-3", Architecture: "x86_64", CurrentVersion: "3.1.4-150600.5.3.1", CandidateVersion: "3.1.4-150600.5.7.1"},
-		{Name: "libopenssl3", Architecture: "x86_64", CandidateVersion: "3.1.4-150600.5.7.1"},
+		{Name: "libopenssl3", Architecture: "x86_64", CurrentVersion: "3.1.4-150600.5.3.1", CandidateVersion: "3.1.4-150600.5.7.1"},
 		{Name: "vim", Architecture: "x86_64", CandidateVersion: "9.1-1"},
 	}
 	pending := map[string]bool{}
 	for _, item := range items {
 		pending[platform.UpdatePackageKey(item.Name, item.Architecture)] = true
 	}
-	advisories := parseUpdateinfo(strings.NewReader(sampleUpdateinfo), pending)
-	if len(advisories) != 1 {
+	advisories, err := rpmmd.Parse(strings.NewReader(sampleUpdateinfo), pending)
+	if err != nil || len(advisories) != 1 {
 		t.Fatalf("expected only the relevant advisory, got %#v", advisories)
 	}
 	platform.ApplyUpdateAdvisories(items, advisories)
@@ -92,14 +93,24 @@ func TestUpdateinfoClassifiesPendingPackages(t *testing.T) {
 }
 
 func TestUpdateinfoMapsRecommendedToBugfixAndParsesDates(t *testing.T) {
-	advisories := parseUpdateinfo(strings.NewReader(sampleUpdateinfo), nil)
-	if len(advisories) != 2 || platform.NormalizeAdvisoryType(advisories[1].Type) != "bugfix" || advisories[1].Issued.IsZero() {
+	advisories, err := rpmmd.Parse(strings.NewReader(sampleUpdateinfo), nil)
+	if err != nil || len(advisories) != 2 || platform.NormalizeAdvisoryType(advisories[1].Type) != "bugfix" || advisories[1].Issued.IsZero() {
 		t.Fatalf("unexpected advisories: %#v", advisories)
 	}
 }
 
 func TestUpdateinfoToleratesTruncatedInput(t *testing.T) {
-	if got := parseUpdateinfo(strings.NewReader(sampleUpdateinfo[:400]), nil); len(got) != 0 {
+	if got, err := rpmmd.Parse(strings.NewReader(sampleUpdateinfo[:400]), nil); len(got) != 0 || err == nil {
 		t.Fatalf("truncated document produced advisories: %#v", got)
+	}
+}
+
+func TestAdvisoriesExcludeDisabledRepositories(t *testing.T) {
+	repos, err := enabledRepositories(strings.NewReader("[updates]\nname=Update repository\nenabled=1\n[old-release]\nname=Old packages\nenabled=0\n[default-enabled]\nname=Default repository\n"))
+	if err != nil || len(repos) != 2 || repos["updates"] != "Update repository" {
+		t.Fatalf("bad repository selection: %#v %v", repos, err)
+	}
+	if _, ok := repos["old-release"]; ok {
+		t.Fatal("disabled repository retained")
 	}
 }

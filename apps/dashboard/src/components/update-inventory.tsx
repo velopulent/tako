@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  ArrowRight,
   CircleCheck,
+  Info,
   Lock,
   PackageCheck,
   RefreshCw,
@@ -539,7 +541,14 @@ export function UpdateInventory() {
   const status = query.data
   const activeJob = job.data?.job
   const packageCount = status.packages.length
-  const counts = summarizeSeverity(status.packages)
+  const advisories = status.advisoryState
+    ? (status.advisories ?? [])
+    : undefined
+  const counts = summarizeSeverity(status.packages, advisories)
+  const advisoryIncomplete =
+    status.advisoryState === "partial" || status.advisoryState === "unavailable"
+  const noAdvisoryData =
+    counts.cves === 0 && status.advisoryState !== "available"
   const trackedJob = Boolean(jobID)
   const updateRunning =
     trackedJob ||
@@ -571,7 +580,7 @@ export function UpdateInventory() {
     : status.externalLock
       ? "Package manager busy"
       : packageCount === 0
-        ? "System is up to date"
+        ? "No updates available"
         : `${plural(packageCount, "update")} available`
   const statusMessage = !status.available
     ? status.reason ||
@@ -580,7 +589,7 @@ export function UpdateInventory() {
     : status.externalLock
       ? "Updates are paused until the other package operation finishes."
       : packageCount === 0
-        ? "Every installed package is on its latest available version."
+        ? "No newer packages were reported by your enabled repositories. Check again to refresh the metadata."
         : severitySentence(counts)
   const StatusIcon =
     tone === "blocked"
@@ -614,7 +623,7 @@ export function UpdateInventory() {
   const changeGroups = preview ? groupChanges(preview.changes) : []
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
+    <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-6 pb-28 xl:pb-0">
       {pageError && (
         <Alert variant="destructive">
           <TriangleAlert />
@@ -681,20 +690,43 @@ export function UpdateInventory() {
               )}
               {refresh.isPending ? "Checking…" : "Check for updates"}
             </Button>
-            {status.available && packageCount > 0 && !updateRunning && (
-              <Button
-                className="flex-1 sm:flex-none"
-                disabled={!canUpdate}
-                onClick={requestPreview}
-              >
-                {previewRequest.isPending && (
-                  <Spinner data-icon="inline-start" aria-hidden="true" />
-                )}
-                Review and install
-              </Button>
-            )}
           </div>
         </CardHeader>
+
+        {status.available && packageCount > 0 && (
+          <CardContent>
+            <dl className="grid grid-cols-3 gap-3 border-t pt-5 sm:gap-6">
+              <div className="flex min-w-0 flex-col-reverse gap-1 border-r pr-3">
+                <dt className="text-xs text-muted-foreground">
+                  Packages available
+                </dt>
+                <dd className="text-2xl font-medium tracking-tight tabular-nums sm:text-3xl">
+                  {packageCount.toLocaleString()}
+                </dd>
+              </div>
+              <div className="flex min-w-0 flex-col-reverse gap-1 border-r pr-3">
+                <dt className="text-xs text-muted-foreground">
+                  Security updates
+                </dt>
+                <dd className="text-2xl font-medium tracking-tight tabular-nums sm:text-3xl">
+                  {counts.security.toLocaleString()}
+                </dd>
+              </div>
+              <div className="flex min-w-0 flex-col-reverse gap-1">
+                <dt className="text-xs text-muted-foreground">
+                  CVEs addressed
+                </dt>
+                <dd className="text-2xl font-medium tracking-tight tabular-nums sm:text-3xl">
+                  {noAdvisoryData ? "—" : counts.cves.toLocaleString()}
+                </dd>
+              </div>
+            </dl>
+            <p className="mt-4 text-xs text-muted-foreground">
+              Known fixes in the available updates. CVEs are counted once across
+              packages.
+            </p>
+          </CardContent>
+        )}
 
         {(status.externalLock ||
           recovery?.rebootRequired ||
@@ -751,6 +783,22 @@ export function UpdateInventory() {
         )}
       </Card>
 
+      {packageCount > 0 && advisoryIncomplete && (
+        <Alert>
+          <Info />
+          <AlertTitle>
+            {status.advisoryState === "unavailable"
+              ? "Advisory details unavailable"
+              : "Some advisory details are missing"}
+          </AlertTitle>
+          <AlertDescription>
+            Package updates are available, but some security metadata could not
+            be read or matched. The counts include only reported fixes; you can
+            still review and install updates.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <UpdateLivePanel
         observation={observation}
         job={activeJob}
@@ -780,18 +828,66 @@ export function UpdateInventory() {
                 id="pending-updates-heading"
                 className="text-base font-semibold"
               >
-                Pending updates
+                What these updates fix
               </h3>
               <span className="text-xs text-muted-foreground tabular-nums">
                 {plural(packageCount, "package")}
               </span>
             </div>
-            <UpdateAdvisoryList packages={status.packages} />
+            <p className="text-sm text-muted-foreground">
+              {counts.advisories > 0
+                ? `${plural(counts.advisories, "advisory", "advisories")} · Details for ${counts.coveredPackages} of ${plural(packageCount, "package")}. Expand for fixes and references.`
+                : "Review package versions below. Advisory details are not available for these updates."}
+            </p>
+            <UpdateAdvisoryList
+              packages={status.packages}
+              advisories={advisories}
+            />
           </section>
           <aside
             className="flex min-w-0 flex-col gap-4 xl:sticky xl:top-4"
             aria-label="Update tools"
           >
+            {!updateRunning && (
+              <Card className="fixed inset-x-0 bottom-0 z-20 rounded-none border-t pb-[max(1rem,env(safe-area-inset-bottom))] xl:static xl:rounded-xl xl:border-t-0 xl:pb-4">
+                <CardHeader className="hidden xl:grid">
+                  <CardTitle>Ready when you are</CardTitle>
+                  <CardDescription>
+                    Review the full transaction before making changes to this
+                    host.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between gap-4 xl:flex-col xl:items-stretch">
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <p className="text-sm font-medium">
+                      All {plural(packageCount, "package")}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {status.externalLock
+                        ? "Waiting for the package manager"
+                        : "One reviewed transaction"}
+                    </p>
+                  </div>
+                  <Button
+                    disabled={!canUpdate}
+                    onClick={requestPreview}
+                    className="shrink-0"
+                  >
+                    {previewRequest.isPending ? (
+                      <Spinner data-icon="inline-start" aria-hidden="true" />
+                    ) : null}
+                    Review updates
+                    {!previewRequest.isPending && (
+                      <ArrowRight data-icon="inline-end" />
+                    )}
+                  </Button>
+                  <p className="hidden text-xs text-muted-foreground xl:block">
+                    Filters help you review. All available packages are included
+                    in the installation plan.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
             {sideCards}
           </aside>
         </div>
@@ -811,7 +907,7 @@ export function UpdateInventory() {
             </DialogTitle>
             <DialogDescription>
               {preview?.allowed && !preview.stale
-                ? "The package manager resolved this exact transaction. Nothing changes until you install it."
+                ? "Review the package changes below. Nothing changes until you install the updates."
                 : preview?.reason ||
                   (preview
                     ? "Review the details below."
@@ -920,7 +1016,7 @@ export function UpdateInventory() {
                               key={`${change.action}:${change.name}:${change.architecture ?? ""}`}
                               className="flex flex-col gap-0.5 px-3 py-2 text-sm not-last:border-b sm:flex-row sm:items-center sm:justify-between sm:gap-4"
                             >
-                              <span className="min-w-0 truncate">
+                              <span className="min-w-0 [overflow-wrap:anywhere]">
                                 {change.name}
                                 {change.architecture && (
                                   <span className="text-muted-foreground">
@@ -941,7 +1037,7 @@ export function UpdateInventory() {
                                 <VersionDiff
                                   from={change.currentVersion}
                                   to={change.candidateVersion}
-                                  className="min-w-0 truncate sm:text-right"
+                                  className="min-w-0 break-all sm:text-right"
                                 />
                               ) : (
                                 <span className="font-mono text-xs text-muted-foreground">

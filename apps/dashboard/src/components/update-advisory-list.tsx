@@ -33,11 +33,10 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import type { UpdatePackage } from "@/lib/api"
+import type { UpdateAdvisory, UpdatePackage } from "@/lib/api"
 import {
   type AdvisoryGroup,
   buildAdvisoryGroups,
-  firstLine,
   formatAbsolute,
   formatRelative,
   groupMatches,
@@ -90,12 +89,37 @@ export function VersionDiff({
   from,
   to,
   className,
+  stacked = false,
 }: {
   from?: string
   to: string
   className?: string
+  stacked?: boolean
 }) {
   const diff = versionDiff(from, to)
+  if (stacked) {
+    return (
+      <span
+        className={cn(
+          "flex flex-col items-end gap-1 font-mono text-xs tabular-nums",
+          className
+        )}
+        title={from ? `${from} → ${to}` : to}
+      >
+        {from && (
+          <span className="text-muted-foreground">
+            <span className="sr-only">Installed: </span>
+            {from}
+          </span>
+        )}
+        <span>
+          <span aria-hidden="true">→ </span>
+          <span className="sr-only">Available: </span>
+          {to}
+        </span>
+      </span>
+    )
+  }
   return (
     <span
       className={cn("font-mono text-xs tabular-nums", className)}
@@ -148,48 +172,55 @@ function SeverityMedia({ group }: { group: AdvisoryGroup }) {
 
 function GroupRow({ group }: { group: AdvisoryGroup }) {
   const version = groupVersion(group)
-  const summary = firstLine(group.description)
-  const meta = [
-    group.advisoryId,
-    group.issued ? formatRelative(group.issued) : "",
-    summary,
-  ].filter(Boolean)
-
+  const packages = group.packages.map((pkg) => pkg.name).join(", ")
   return (
     <>
       <SeverityMedia group={group} />
-      <span className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium" title={group.title}>
+      <span className="flex min-w-0 flex-1 flex-col gap-2">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <span className="min-w-0 font-medium break-words [overflow-wrap:anywhere]">
             {group.title}
           </span>
-          {group.packages.length > 1 && (
-            <Badge variant="secondary" className="tabular-nums">
-              {plural(group.packages.length, "package")}
-            </Badge>
-          )}
+          <SeverityBadge
+            severity={group.severity}
+            secSeverity={group.secSeverity}
+          />
         </span>
-        {meta.length > 0 && (
-          <span className="truncate text-xs text-muted-foreground">
-            {meta.join(" · ")}
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          {group.advisoryId && (
+            <span className="break-all">{group.advisoryId}</span>
+          )}
+          {group.packages.length > 1 && (
+            <span>{plural(group.packages.length, "package")}</span>
+          )}
+          {group.cveIds.length > 0 && (
+            <span className="font-medium text-foreground">
+              {plural(group.cveIds.length, "CVE")}
+            </span>
+          )}
+          {group.issued && <span>{formatRelative(group.issued)}</span>}
+        </span>
+        {group.packages.length > 1 && (
+          <span
+            className="line-clamp-2 text-xs text-muted-foreground [overflow-wrap:anywhere]"
+            title={packages}
+          >
+            {packages}
           </span>
         )}
-        {version && <VersionDiff {...version} className="truncate sm:hidden" />}
+        {version && (
+          <VersionDiff {...version} className="min-w-0 break-all md:hidden" />
+        )}
       </span>
       {version && (
         <VersionDiff
           {...version}
-          className="hidden max-w-64 shrink-0 truncate text-right sm:block"
+          stacked
+          className="hidden w-44 shrink-0 break-all text-right md:flex"
         />
       )}
-      <span className="hidden w-28 shrink-0 justify-end md:flex">
-        <SeverityBadge
-          severity={group.severity}
-          secSeverity={group.secSeverity}
-        />
-      </span>
       <ChevronDown
-        className="size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[panel-open]/row:rotate-180 motion-reduce:transition-none"
+        className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-data-[panel-open]/row:rotate-180 motion-reduce:transition-none"
         aria-hidden="true"
       />
     </>
@@ -199,13 +230,14 @@ function GroupRow({ group }: { group: AdvisoryGroup }) {
 function ReferenceLinks({ label, urls }: { label: string; urls: string[] }) {
   if (urls.length === 0) return null
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex min-w-0 max-w-full flex-col gap-1.5">
       <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
       <dd className="flex flex-wrap gap-1.5">
         {urls.map((url) => (
           <Badge
             key={url}
             variant="outline"
+            className="max-w-full"
             render={
               <a
                 href={url}
@@ -214,7 +246,9 @@ function ReferenceLinks({ label, urls }: { label: string; urls: string[] }) {
               />
             }
           >
-            {referenceLabel(url)}
+            <span className="min-w-0 break-all whitespace-normal">
+              {referenceLabel(url)}
+            </span>
             <ExternalLink data-icon="inline-end" aria-hidden="true" />
           </Badge>
         ))}
@@ -225,17 +259,20 @@ function ReferenceLinks({ label, urls }: { label: string; urls: string[] }) {
 
 function GroupDetails({ group }: { group: AdvisoryGroup }) {
   return (
-    <div className="flex flex-col gap-4 border-t bg-muted/30 px-4 py-4 sm:pl-15">
-      <div className="flex flex-col gap-3 md:hidden">
-        <SeverityBadge
-          severity={group.severity}
-          secSeverity={group.secSeverity}
-        />
-      </div>
-
+    <div className="flex min-w-0 flex-col gap-5 border-t bg-muted/20 px-4 py-5 sm:pl-15">
+      {group.source && (
+        <p className="text-xs text-muted-foreground">
+          {group.source === "rpm-md"
+            ? "Repository advisory"
+            : "Native package-manager advisory"}
+          {group.vendorSeverity &&
+            group.severity === "security" &&
+            ` · Vendor severity: ${group.vendorSeverity}`}
+        </p>
+      )}
       {group.description &&
         (group.markdown ? (
-          <div className="max-w-prose">
+          <div className="min-w-0 max-w-prose">
             <AdvisoryMarkdown text={group.description} />
           </div>
         ) : (
@@ -255,7 +292,9 @@ function GroupDetails({ group }: { group: AdvisoryGroup }) {
               <dt className="text-xs font-medium text-muted-foreground">
                 Advisory
               </dt>
-              <dd className="font-mono text-xs">{group.advisoryId}</dd>
+              <dd className="break-all font-mono text-xs">
+                {group.advisoryId}
+              </dd>
             </div>
           )}
           {group.issued && (
@@ -280,7 +319,7 @@ function GroupDetails({ group }: { group: AdvisoryGroup }) {
         <h4 className="text-xs font-medium text-muted-foreground">
           {plural(group.packages.length, "package")}
         </h4>
-        <ul className="flex max-h-80 flex-col overflow-y-auto overscroll-contain rounded-lg border bg-card">
+        <ul className="flex max-h-80 min-w-0 flex-col overflow-y-auto overscroll-contain rounded-lg border bg-card">
           {group.packages.map((pkg) => (
             <PackageLine key={pkg.name + (pkg.architecture ?? "")} pkg={pkg} />
           ))}
@@ -293,7 +332,7 @@ function GroupDetails({ group }: { group: AdvisoryGroup }) {
 function PackageLine({ pkg }: { pkg: UpdatePackage }) {
   return (
     <li className="flex flex-col gap-0.5 px-3 py-2 not-last:border-b sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-      <span className="min-w-0 truncate text-sm">
+      <span className="min-w-0 text-sm [overflow-wrap:anywhere]">
         {pkg.name}
         {pkg.architecture && (
           <span className="text-muted-foreground">.{pkg.architecture}</span>
@@ -302,7 +341,7 @@ function PackageLine({ pkg }: { pkg: UpdatePackage }) {
       <VersionDiff
         from={pkg.currentVersion}
         to={pkg.candidateVersion}
-        className="min-w-0 truncate sm:text-right"
+        className="min-w-0 break-all sm:text-right"
       />
       {pkg.dependencies && pkg.dependencies.length > 0 && (
         <span className="text-xs text-muted-foreground sm:basis-full">
@@ -317,10 +356,15 @@ type Filter = "all" | UpdateSeverity
 
 export function UpdateAdvisoryList({
   packages,
+  advisories,
 }: {
   packages: UpdatePackage[]
+  advisories?: UpdateAdvisory[]
 }) {
-  const groups = React.useMemo(() => buildAdvisoryGroups(packages), [packages])
+  const groups = React.useMemo(
+    () => buildAdvisoryGroups(packages, advisories),
+    [packages, advisories]
+  )
   const [search, setSearch] = React.useState("")
   const [filter, setFilter] = React.useState<Filter>("all")
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
@@ -366,8 +410,8 @@ export function UpdateAdvisoryList({
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <InputGroup className="min-w-0 flex-1 basis-56">
+      <div className="flex flex-col items-stretch gap-3">
+        <InputGroup className="min-w-0">
           <InputGroupAddon>
             <SearchIcon aria-hidden="true" />
           </InputGroupAddon>
@@ -406,7 +450,7 @@ export function UpdateAdvisoryList({
             variant="outline"
             size="sm"
             spacing={0}
-            className="max-w-full shrink-0 overflow-x-auto p-px"
+            className="max-w-full self-start overflow-x-auto p-px"
             value={[filter]}
             onValueChange={(values: string[]) => {
               setFilter((values[values.length - 1] as Filter) ?? "all")
@@ -431,9 +475,13 @@ export function UpdateAdvisoryList({
         )}
       </div>
 
-      <p className="sr-only" role="status" aria-live="polite">
+      <p
+        className="text-xs text-muted-foreground"
+        role="status"
+        aria-live="polite"
+      >
         {filtered
-          ? `${plural(visible.length, "update")} match the current filters.`
+          ? `${plural(visible.length, "result")} match your filters. Installation includes all available packages.`
           : ""}
       </p>
 
@@ -468,9 +516,7 @@ export function UpdateAdvisoryList({
                 >
                   <CollapsibleTrigger
                     className={cn(
-                      "group/row flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                      group.severity === "security" &&
-                        "bg-destructive/[0.03] hover:bg-destructive/[0.06]"
+                      "group/row flex w-full min-w-0 items-start gap-3 px-4 py-4 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     )}
                   >
                     <GroupRow group={group} />

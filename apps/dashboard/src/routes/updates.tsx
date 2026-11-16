@@ -5,7 +5,7 @@ import { Page } from "@/lib/page"
 
 function UpdatesPage() {
   return (
-    <Page description="Review pending packages, preview system changes, and apply updates safely.">
+    <Page description="See what available updates fix, review the changes, and install when you’re ready.">
       <UpdateInventory />
     </Page>
   )

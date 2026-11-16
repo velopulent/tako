@@ -112,7 +112,7 @@ describe("UpdateInventory", () => {
     expect(screen.getByText(/APT lock is held/)).toBeTruthy()
     expect(
       screen
-        .getByRole("button", { name: "Review and install" })
+        .getByRole("button", { name: "Review updates" })
         .hasAttribute("disabled")
     ).toBe(true)
   })
@@ -188,7 +188,7 @@ describe("UpdateInventory", () => {
     const user = userEvent.setup()
     renderInventory()
     await user.click(
-      await screen.findByRole("button", { name: "Review and install" })
+      await screen.findByRole("button", { name: "Review updates" })
     )
     expect(await screen.findByText("Confirm full-system update")).toBeTruthy()
     await user.click(screen.getByRole("button", { name: /^Install/ }))
@@ -268,7 +268,7 @@ describe("UpdateInventory", () => {
     const user = userEvent.setup()
     renderInventory()
     await user.click(
-      await screen.findByRole("button", { name: "Review and install" })
+      await screen.findByRole("button", { name: "Review updates" })
     )
     expect(await screen.findByText("Inventory changed")).toBeTruthy()
     expect(screen.getByRole("checkbox")).toBeTruthy()
@@ -485,7 +485,7 @@ describe("UpdateInventory", () => {
     const user = userEvent.setup()
     renderInventory()
     await user.click(
-      await screen.findByRole("button", { name: "Review and install" })
+      await screen.findByRole("button", { name: "Review updates" })
     )
     await user.click(await screen.findByRole("button", { name: /^Install/ }))
     await vi.waitFor(() =>
@@ -524,7 +524,7 @@ describe("UpdateInventory", () => {
       expect(inventoryCalls).toBeGreaterThan(1)
       expect(historyCalls).toBeGreaterThan(1)
     })
-    expect(await screen.findByText("System is up to date")).toBeTruthy()
+    expect(await screen.findByText("No updates available")).toBeTruthy()
     expect(screen.queryByText("Update activity")).toBeNull()
     expect(screen.queryByText("stale terminal replay")).toBeNull()
   })
@@ -725,7 +725,7 @@ describe("UpdateInventory", () => {
     )
 
     renderInventory()
-    expect(await screen.findByText("System is up to date")).toBeTruthy()
+    expect(await screen.findByText("No updates available")).toBeTruthy()
     await vi.waitFor(() =>
       expect(sessionStorage.getItem("tako-update-job:v2")).toBeNull()
     )

@@ -861,12 +861,29 @@ export type SavedLogView = {
   createdAt: string
   updatedAt: string
 }
+export type UpdateAdvisory = {
+  id: string
+  title: string
+  type: string
+  severity?: "critical" | "important" | "moderate" | "low"
+  vendorSeverity?: string
+  description?: string
+  source: string
+  issued?: string
+  cveIds: string[]
+  cveUrls: string[]
+  bugUrls: string[]
+  vendorUrls: string[]
+  packageKeys: string[]
+}
 export type UpdateStatus = {
   available: boolean
   backend: string
   version?: string
   contract: string
   packages: UpdatePackage[]
+  advisories?: UpdateAdvisory[]
+  advisoryState?: "available" | "partial" | "unavailable" | "unsupported"
   fingerprint: string
   externalLock: boolean
   lockReason?: string
@@ -924,6 +941,7 @@ export type UpdateResult = {
 }
 export type UpdatePackage = {
   name: string
+  repository?: string
   architecture?: string
   currentVersion?: string
   candidateVersion: string

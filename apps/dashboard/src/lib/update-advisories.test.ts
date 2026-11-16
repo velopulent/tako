@@ -69,3 +69,63 @@ describe("update advisories", () => {
     expect(formatRelative("", now)).toBe("")
   })
 })
+
+describe("available-update advisory coverage", () => {
+  const packages = [
+    {
+      name: "openssl",
+      architecture: "x86_64",
+      currentVersion: "1",
+      candidateVersion: "3",
+    },
+    {
+      name: "openssl-libs",
+      architecture: "x86_64",
+      currentVersion: "1",
+      candidateVersion: "3",
+    },
+    { name: "unclassified", candidateVersion: "2" },
+  ]
+  const advisories = [
+    {
+      id: "SEC-1",
+      title: "TLS security fixes",
+      type: "security",
+      source: "dnf",
+      cveIds: ["CVE-2026-12345"],
+      cveUrls: ["https://www.cve.org/CVERecord?id=CVE-2026-12345"],
+      bugUrls: [],
+      vendorUrls: [],
+      packageKeys: ["openssl.x86_64", "openssl-libs.x86_64"],
+    },
+    {
+      id: "SEC-2",
+      title: "Additional TLS fixes",
+      type: "security",
+      source: "dnf",
+      cveIds: ["CVE-2026-12345", "CVE-2026-12346"],
+      cveUrls: [],
+      bugUrls: [],
+      vendorUrls: [],
+      packageKeys: ["openssl.x86_64"],
+    },
+  ]
+  it("retains multiple fixes per package and counts unique CVEs", () => {
+    const groups = buildAdvisoryGroups(packages, advisories)
+    expect(groups).toHaveLength(3)
+    expect(groups.filter((group) => group.advisoryId)).toHaveLength(2)
+    const summary = summarizeSeverity(packages, advisories)
+    expect(summary.cves).toBe(2)
+    expect(summary.coveredPackages).toBe(2)
+    expect(summary.security).toBe(2)
+    expect(summary.advisories).toBe(2)
+    expect(summary.other).toBe(1)
+  })
+  it("ignores advisory package references outside the available inventory", () => {
+    expect(
+      buildAdvisoryGroups(packages, [
+        { ...advisories[0], packageKeys: ["missing.x86_64"] },
+      ]).some((group) => group.advisoryId)
+    ).toBe(false)
+  })
+})

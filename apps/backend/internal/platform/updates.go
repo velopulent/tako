@@ -44,24 +44,27 @@ var (
 )
 
 type UpdatePackage struct {
-	Name             string   `json:"name"`
-	Architecture     string   `json:"architecture,omitempty"`
-	CurrentVersion   string   `json:"currentVersion,omitempty"`
-	CandidateVersion string   `json:"candidateVersion"`
-	Severity         string   `json:"severity,omitempty"`
-	SecSeverity      string   `json:"secSeverity,omitempty"`
-	Size             uint64   `json:"size,omitempty"`
-	Summary          string   `json:"summary,omitempty"`
-	Details          string   `json:"details,omitempty"`
-	AdvisoryID       string   `json:"advisoryId,omitempty"`
-	Issued           string   `json:"issued,omitempty"`
-	CVEUrls          []string `json:"cveUrls,omitempty"`
-	BugUrls          []string `json:"bugUrls,omitempty"`
-	VendorUrls       []string `json:"vendorUrls,omitempty"`
-	Description      string   `json:"description,omitempty"`
-	Markdown         bool     `json:"markdown,omitempty"`
-	GroupKey         string   `json:"groupKey,omitempty"`
-	Dependencies     []string `json:"dependencies,omitempty"`
+	Name             string                 `json:"name"`
+	Architecture     string                 `json:"architecture,omitempty"`
+	CurrentVersion   string                 `json:"currentVersion,omitempty"`
+	CandidateVersion string                 `json:"candidateVersion"`
+	Severity         string                 `json:"severity,omitempty"`
+	SecSeverity      string                 `json:"secSeverity,omitempty"`
+	Size             uint64                 `json:"size,omitempty"`
+	Summary          string                 `json:"summary,omitempty"`
+	Details          string                 `json:"details,omitempty"`
+	AdvisoryID       string                 `json:"advisoryId,omitempty"`
+	Issued           string                 `json:"issued,omitempty"`
+	CVEUrls          []string               `json:"cveUrls,omitempty"`
+	BugUrls          []string               `json:"bugUrls,omitempty"`
+	VendorUrls       []string               `json:"vendorUrls,omitempty"`
+	Description      string                 `json:"description,omitempty"`
+	Markdown         bool                   `json:"markdown,omitempty"`
+	GroupKey         string                 `json:"groupKey,omitempty"`
+	Dependencies     []string               `json:"dependencies,omitempty"`
+	Repository       string                 `json:"repository,omitempty"`
+	Advisories       []UpdateAdvisoryDetail `json:"-"`
+	AdvisoryState    string                 `json:"-"`
 }
 
 type UpdateRecovery struct {
@@ -76,20 +79,22 @@ type UpdateRecovery struct {
 }
 
 type UpdateStatus struct {
-	Available        bool            `json:"available"`
-	Backend          string          `json:"backend"`
-	Version          string          `json:"version,omitempty"`
-	Contract         string          `json:"contract"`
-	Packages         []UpdatePackage `json:"packages"`
-	Fingerprint      string          `json:"fingerprint"`
-	ExternalLock     bool            `json:"externalLock"`
-	LockReason       string          `json:"lockReason,omitempty"`
-	Message          string          `json:"message"`
-	Reason           string          `json:"reason,omitempty"`
-	Recovery         UpdateRecovery  `json:"recovery"`
-	LastChecked      string          `json:"lastChecked,omitempty"`
-	MetadataUpdated  string          `json:"metadataUpdated,omitempty"`
-	TimeSinceRefresh *int64          `json:"timeSinceRefresh,omitempty"`
+	Available        bool                   `json:"available"`
+	Backend          string                 `json:"backend"`
+	Version          string                 `json:"version,omitempty"`
+	Contract         string                 `json:"contract"`
+	Packages         []UpdatePackage        `json:"packages"`
+	Fingerprint      string                 `json:"fingerprint"`
+	ExternalLock     bool                   `json:"externalLock"`
+	LockReason       string                 `json:"lockReason,omitempty"`
+	Message          string                 `json:"message"`
+	Reason           string                 `json:"reason,omitempty"`
+	Recovery         UpdateRecovery         `json:"recovery"`
+	LastChecked      string                 `json:"lastChecked,omitempty"`
+	MetadataUpdated  string                 `json:"metadataUpdated,omitempty"`
+	TimeSinceRefresh *int64                 `json:"timeSinceRefresh,omitempty"`
+	Advisories       []UpdateAdvisoryDetail `json:"advisories,omitempty"`
+	AdvisoryState    string                 `json:"advisoryState,omitempty"`
 }
 
 type UpdateChange struct {
@@ -226,6 +231,12 @@ type updateWorkerJob struct {
 
 type UpdateService struct {
 	provider         UpdateProvider
+	cacheMu          sync.Mutex
+	cacheJSON        []byte
+	cacheKey         string
+	cacheUntil       time.Time
+	cacheLoading     chan struct{}
+	cacheGeneration  uint64
 	operationMu      sync.Mutex
 	mu               sync.Mutex
 	sequence         uint64
@@ -267,7 +278,7 @@ func ValidateUpdateOperation(operation UpdateOperation, applying bool) error {
 	return nil
 }
 
-func (service *UpdateService) Status(ctx context.Context) UpdateStatus {
+func (service *UpdateService) readStatus(ctx context.Context) UpdateStatus {
 	if service == nil || service.provider == nil {
 		return unavailableUpdateStatus("No distro update provider was configured")
 	}
@@ -291,6 +302,7 @@ func (service *UpdateService) Status(ctx context.Context) UpdateStatus {
 			status.MetadataUpdated = updated.UTC().Format(time.RFC3339)
 		}
 	}
+	collectUpdateAdvisories(&status)
 	status.Message = updateMessage(len(packages))
 	status.Fingerprint = UpdateFingerprint(status)
 	normalizeUpdateStatus(&status)
@@ -322,6 +334,8 @@ func (service *UpdateService) Refresh(ctx context.Context, force bool) error {
 	}
 	service.operationMu.Lock()
 	defer service.operationMu.Unlock()
+	service.invalidateUpdateCache()
+	defer service.invalidateUpdateCache()
 	service.beginJob("refresh-" + strconv.FormatInt(time.Now().UnixNano(), 36))
 	service.emitProgress(UpdateProgress{Active: true, Phase: "refreshing", Percent: -1, Message: "Refreshing package metadata.", Cancelable: true})
 	err := service.provider.Refresh(ctx, force, service.publish)
@@ -339,7 +353,8 @@ func (service *UpdateService) Preview(ctx context.Context, operation UpdateOpera
 	}
 	service.operationMu.Lock()
 	defer service.operationMu.Unlock()
-	status := service.Status(ctx)
+	service.invalidateUpdateCache()
+	status := service.readStatus(ctx)
 	preview := UpdatePreview{Current: status, Changes: []UpdateChange{}, Warnings: []string{}}
 	if operation.ExpectedFingerprint != "" && operation.ExpectedFingerprint != status.Fingerprint {
 		preview.Stale, preview.Reason = true, "Available update inventory changed; refresh before applying."
@@ -386,6 +401,8 @@ func (service *UpdateService) Apply(ctx context.Context, operation UpdateOperati
 	}
 	service.operationMu.Lock()
 	defer service.operationMu.Unlock()
+	service.invalidateUpdateCache()
+	defer service.invalidateUpdateCache()
 	if service.workerExecutable != "" {
 		return service.applyWithWorker(ctx, operation)
 	}
@@ -422,7 +439,7 @@ func (service *UpdateService) applyDirect(ctx context.Context, operation UpdateO
 		return UpdateResult{}, fmt.Errorf("%w: %s", ErrUpdateApply, boundedUpdateError(err, ""))
 	}
 	service.emitProgress(UpdateProgress{JobID: jobID, Active: true, Phase: "verifying", Total: len(changes), Percent: -1, Message: "Verifying update result."})
-	final := service.Status(applyCtx)
+	final := service.readStatus(applyCtx)
 	if !final.Available {
 		return UpdateResult{}, ErrUpdateVerification
 	}
@@ -792,13 +809,20 @@ func UpdateLockHeld(path string) bool {
 	return false
 }
 
+// Advisory enrichment is informational; a feed change must not invalidate a
+// package approval. Preview/apply separately fingerprint the resolved plan.
 func UpdateFingerprint(status UpdateStatus) string {
+	type identity struct{ Name, Architecture, CurrentVersion, CandidateVersion, Repository string }
 	packages := SortUpdatePackages(append([]UpdatePackage(nil), status.Packages...))
+	identities := make([]identity, 0, len(packages))
+	for _, pkg := range packages {
+		identities = append(identities, identity{pkg.Name, pkg.Architecture, pkg.CurrentVersion, pkg.CandidateVersion, pkg.Repository})
+	}
 	payload, _ := json.Marshal(struct {
 		Backend      string
-		Packages     []UpdatePackage
+		Packages     []identity
 		ExternalLock bool
-	}{status.Backend, packages, status.ExternalLock})
+	}{status.Backend, identities, status.ExternalLock})
 	hash := sha256.Sum256(payload)
 	return hex.EncodeToString(hash[:])
 }

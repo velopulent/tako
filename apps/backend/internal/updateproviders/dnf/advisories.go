@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velopulent/tako/internal/platform"
+	"github.com/velopulent/tako/internal/updateproviders/rpmmd"
 )
 
 // advisory is the subset of `dnf5 advisory info --json` that the inventory uses.
@@ -41,18 +42,52 @@ func enrich(ctx context.Context, dnf5 bool, items []platform.UpdatePackage) []pl
 		}
 	}
 	var values []advisory
+	available := false
+	var cached []platform.UpdateAdvisory
 	if dnf5 {
 		r := platform.RunUpdateCommand(ctx, "dnf", []string{"--cacheonly", "--quiet", "advisory", "info", "--updates", "--json"}, nil, nil)
 		if r.ExitCode == 0 {
 			values = parseAdvisoryInfo(r.Output)
+			available = values != nil
 		}
 	} else {
 		r := platform.RunUpdateCommand(ctx, "dnf", []string{"--cacheonly", "--quiet", "updateinfo", "list", "--updates"}, nil, nil)
 		if r.ExitCode == 0 {
 			values = parseUpdateinfoList(r.Output)
+			var err error
+			cached, err = rpmmd.ReadCached([]string{"/var/cache/dnf/*/repodata/*updateinfo.xml*"}, items)
+			available = err == nil
 		}
 	}
-	platform.ApplyUpdateAdvisories(items, normalizeAdvisories(values))
+	normalized := normalizeAdvisories(values)
+	// Only native --updates results establish applicability. Cache files may
+	// belong to disabled repositories or previous distro releases; use them
+	// solely to enrich the advisory IDs selected by DNF.
+	for i := range normalized {
+		enriched := false
+		for _, detail := range cached {
+			if detail.ID != normalized[i].ID {
+				continue
+			}
+			enriched = true
+			normalized[i].Title = detail.Title
+			normalized[i].Description = detail.Description
+			normalized[i].Issued = detail.Issued
+			normalized[i].References = append(normalized[i].References, detail.References...)
+		}
+		if !dnf5 && !enriched {
+			available = false
+		}
+	}
+	platform.ApplyUpdateAdvisories(items, normalized)
+	if !available {
+		for i := range items {
+			items[i].AdvisoryState = "partial"
+			if len(normalized) == 0 {
+				items[i].AdvisoryState = "unavailable"
+			}
+		}
+	}
 	return items
 }
 
@@ -84,8 +119,11 @@ func parseInstalled(output string) map[string]string {
 		if epoch, rest, ok := strings.Cut(evr, ":"); ok && (epoch == "(none)" || epoch == "0") {
 			evr = rest
 		}
-		// Multi-version packages such as kernel list oldest first; keep the newest.
-		versions[packageKey(fields[0], fields[1])] = evr
+		// rpm does not guarantee the order of multiversion packages.
+		key := packageKey(fields[0], fields[1])
+		if current, ok := versions[key]; !ok || platform.CompareRPMVersions(evr, current) > 0 {
+			versions[key] = evr
+		}
 	}
 	return versions
 }
@@ -127,8 +165,7 @@ func parseUpdateinfoList(output string) []advisory {
 	return values
 }
 
-// splitNEVRA returns name, version-release, and arch. Epochs are dropped so the
-// version compares against candidate versions that may or may not carry one.
+// splitNEVRA retains epochs for correct RPM version comparisons.
 func splitNEVRA(nevra string) (string, string, string) {
 	dot := strings.LastIndexByte(nevra, '.')
 	if dot <= 0 {
@@ -143,7 +180,7 @@ func splitNEVRA(nevra string) (string, string, string) {
 	if version <= 0 {
 		return "", "", ""
 	}
-	return rest[:version], platform.StripEpoch(rest[version+1:]), arch
+	return rest[:version], rest[version+1:], arch
 }
 
 // normalizeAdvisories converts dnf advisories into the shared form and adds
@@ -151,12 +188,12 @@ func splitNEVRA(nevra string) (string, string, string) {
 func normalizeAdvisories(values []advisory) []platform.UpdateAdvisory {
 	result := make([]platform.UpdateAdvisory, 0, len(values))
 	for _, value := range values {
-		normalized := platform.UpdateAdvisory{ID: value.Name, Title: value.Title, Type: value.Type, Severity: value.Severity, Description: value.Description}
+		normalized := platform.UpdateAdvisory{ID: value.Name, Title: value.Title, Type: value.Type, Severity: value.Severity, Description: value.Description, Source: "dnf"}
 		if value.Issued > 0 {
 			normalized.Issued = time.Unix(value.Issued, 0)
 		}
 		for _, reference := range value.References {
-			normalized.References = append(normalized.References, platform.UpdateReference{Type: reference.Type, URL: reference.URL})
+			normalized.References = append(normalized.References, platform.UpdateReference{ID: reference.ID, Type: reference.Type, URL: reference.URL})
 		}
 		if strings.HasPrefix(value.Name, "FEDORA-") {
 			normalized.References = append(normalized.References, platform.UpdateReference{Type: "vendor", URL: "https://bodhi.fedoraproject.org/updates/" + value.Name})

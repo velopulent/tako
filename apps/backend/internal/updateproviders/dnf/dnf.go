@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,13 +128,32 @@ func parseJSON(output string) []platform.UpdatePackage {
 			}
 		case map[string]any:
 			name, _ := typed["name"].(string)
-			version, _ := typed["version"].(string)
+			version, _ := typed["evr"].(string)
 			if version == "" {
-				version, _ = typed["evr"].(string)
+				version, _ = typed["version"].(string)
+				if release, _ := typed["release"].(string); release != "" {
+					version += "-" + release
+				}
+				epoch := ""
+				switch v := typed["epoch"].(type) {
+				case string:
+					epoch = v
+				case float64:
+					if v > 0 {
+						epoch = strconv.FormatInt(int64(v), 10)
+					}
+				}
+				if epoch != "" && epoch != "0" {
+					version = epoch + ":" + version
+				}
+			}
+			repo, _ := typed["repo_id"].(string)
+			if repo == "" {
+				repo, _ = typed["repo"].(string)
 			}
 			arch, _ := typed["arch"].(string)
 			if name != "" && version != "" {
-				items = append(items, platform.UpdatePackage{Name: name, CandidateVersion: version, Architecture: arch})
+				items = append(items, platform.UpdatePackage{Name: name, CandidateVersion: version, Architecture: arch, Repository: repo})
 				return
 			}
 			for _, child := range typed {
@@ -153,7 +173,7 @@ func parseTable(output string) []platform.UpdatePackage {
 	for scanner.Scan() && len(items) < platform.MaxUpdatePackages {
 		match := dnfRow.FindStringSubmatch(strings.TrimSpace(scanner.Text()))
 		if len(match) == 5 && match[1] != "Package" && match[1] != "Last" {
-			items = append(items, platform.UpdatePackage{Name: match[1], Architecture: match[2], CandidateVersion: match[3], Summary: match[4]})
+			items = append(items, platform.UpdatePackage{Name: match[1], Architecture: match[2], CandidateVersion: match[3], Summary: match[4], Repository: match[4]})
 		}
 	}
 	return platform.SortUpdatePackages(items)
@@ -209,4 +229,8 @@ func parseHistory(content string) []platform.UpdateHistoryEntry {
 
 func (Provider) MetadataUpdated(context.Context) time.Time {
 	return platform.NewestModTime("/var/cache/libdnf5/*/repodata/repomd.xml", "/var/cache/dnf/*/repodata/repomd.xml")
+}
+
+func (Provider) UpdateCacheKey() string {
+	return platform.UpdateFilesFingerprint("/var/cache/dnf/*/repodata/*", "/var/cache/libdnf5/*/repodata/*", "/var/lib/rpm/*", "/usr/lib/sysimage/rpm/*", "/etc/yum.repos.d/*", "/etc/dnf/dnf.conf", "/etc/dnf/plugins/*")
 }

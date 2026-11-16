@@ -1387,11 +1387,20 @@ components:
         available: { type: boolean }
         backend: { type: string, maxLength: 64 }
         version: { type: string, maxLength: 128 }
-        contract: { type: string, enum: [dbus-read-only, bounded-command-read-only, unavailable] }
+        contract: { type: string, enum: [native-distro-provider, dbus-read-only, bounded-command-read-only, unavailable] }
         packages:
           type: array
           maxItems: 500
           items: { $ref: '#/components/schemas/UpdatePackage' }
+        advisories:
+          type: array
+          maxItems: 512
+          description: Unique applicable advisories, bounded to 1 MiB; omitted entries make advisoryState partial
+          items: { $ref: '#/components/schemas/UpdateAdvisory' }
+        advisoryState:
+          type: string
+          enum: [available, partial, unavailable, unsupported]
+          description: Advisory metadata availability; never a claim that the host has no vulnerabilities
         fingerprint: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         externalLock: { type: boolean }
         lockReason: { type: string, maxLength: 512 }
@@ -1677,11 +1686,33 @@ components:
           type: array
           maxItems: 256
           items: { $ref: '#/components/schemas/UploadInfo' }
+    UpdateAdvisory:
+      type: object
+      required: [id, title, type, source, cveIds, cveUrls, bugUrls, vendorUrls, packageKeys]
+      properties:
+        id: { type: string, maxLength: 128 }
+        title: { type: string, maxLength: 1024 }
+        type: { type: string, maxLength: 64 }
+        severity: { type: string, enum: [critical, important, moderate, low] }
+        vendorSeverity: { type: string, maxLength: 64 }
+        description: { type: string, maxLength: 4096 }
+        source: { type: string, maxLength: 64 }
+        issued: { type: string, format: date-time }
+        cveIds: { type: array, maxItems: 64, items: { type: string, maxLength: 64, pattern: '^CVE-[0-9]{4}-[0-9]{4,}$' } }
+        cveUrls: { type: array, maxItems: 64, items: { type: string, maxLength: 512 } }
+        bugUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        vendorUrls: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } }
+        packageKeys:
+          type: array
+          maxItems: 500
+          description: Keys of available packages delivering this fix, in name.architecture form
+          items: { type: string, maxLength: 289 }
     UpdatePackage:
       type: object
       required: [name, candidateVersion]
       properties:
         name: { type: string, maxLength: 256 }
+        repository: { type: string, maxLength: 256 }
         architecture: { type: string, maxLength: 32 }
         currentVersion: { type: string, maxLength: 256 }
         candidateVersion: { type: string, maxLength: 256 }

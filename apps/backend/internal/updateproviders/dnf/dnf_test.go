@@ -34,7 +34,7 @@ func TestParseHistory(t *testing.T) {
 func TestSplitNEVRA(t *testing.T) {
 	cases := map[string][3]string{
 		"kernel-core-7.2.8-200.fc44.x86_64":                {"kernel-core", "7.2.8-200.fc44", "x86_64"},
-		"kdesu-1:6.7.5-1.fc44.x86_64":                      {"kdesu", "6.7.5-1.fc44", "x86_64"},
+		"kdesu-1:6.7.5-1.fc44.x86_64":                      {"kdesu", "1:6.7.5-1.fc44", "x86_64"},
 		"python3-boto3-1.43.90-1.fc44.noarch":              {"python3-boto3", "1.43.90-1.fc44", "noarch"},
 		"libibverbs-61.1^20260812git975bdaf-1.fc44.x86_64": {"libibverbs", "61.1^20260812git975bdaf-1.fc44", "x86_64"},
 		"broken": {"", "", ""},
@@ -54,16 +54,16 @@ func TestParseInstalledDropsEmptyEpochAndKeepsNewest(t *testing.T) {
 	}
 }
 
-func TestEnrichmentPrefersAdvisoryForCandidateVersion(t *testing.T) {
+func TestEnrichmentMatchesOnlyFixesAfterInstalledVersion(t *testing.T) {
 	advisories := parseAdvisoryInfo(`[
 	 {"Name":"FEDORA-2026-old","Title":"openssl-3.1","Severity":"Important","Type":"security","Issued":1790000000,"Description":"Old fix","references":[],"collections":{"packages":["openssl-3.1-1.fc44.x86_64"]}},
 	 {"Name":"FEDORA-2026-new","Title":"openssl-3.2","Severity":"None","Type":"bugfix","Issued":1790817084,"Description":"New fix","references":[
-	  {"Id":"CVE-2026-1","Type":"cve","Url":"https://www.cve.org/CVERecord?id=CVE-2026-1"},
+	  {"Id":"CVE-2026-1234","Type":"cve","Url":"https://www.cve.org/CVERecord?id=CVE-2026-1234"},
 	  {"Id":"1","Type":"bugzilla","Url":"https://bugzilla.redhat.com/show_bug.cgi?id=1"},
 	  {"Id":"x","Type":"bugzilla","Url":"javascript:alert(1)"}],
 	  "collections":{"packages":["openssl-1:3.2-1.fc44.x86_64","openssl-3.2-1.fc44.src"]}}
 	]`)
-	items := []platform.UpdatePackage{{Name: "openssl", Architecture: "x86_64", CandidateVersion: "1:3.2-1.fc44"}, {Name: "zlib", Architecture: "x86_64", CandidateVersion: "1.3"}}
+	items := []platform.UpdatePackage{{Name: "openssl", Architecture: "x86_64", CurrentVersion: "1:3.1-1.fc44", CandidateVersion: "1:3.2-1.fc44"}, {Name: "zlib", Architecture: "x86_64", CandidateVersion: "1.3"}}
 	platform.ApplyUpdateAdvisories(items, normalizeAdvisories(advisories))
 	got := items[0]
 	if got.AdvisoryID != "FEDORA-2026-new" || got.Severity != "bugfix" || got.SecSeverity != "" || got.Description != "New fix" {

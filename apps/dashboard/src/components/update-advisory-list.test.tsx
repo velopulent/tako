@@ -106,3 +106,48 @@ describe("UpdateAdvisoryList", () => {
     expect(rows[0].textContent).toContain("openssl")
   })
 })
+
+it("opens native advisory details by keyboard and searches all fixes for a package", async () => {
+  const user = userEvent.setup()
+  const common = {
+    type: "security",
+    source: "dnf",
+    cveIds: ["CVE-2026-56789"],
+    cveUrls: ["https://www.cve.org/CVERecord?id=CVE-2026-56789"],
+    bugUrls: [],
+    vendorUrls: [],
+    packageKeys: ["openssl.x86_64"],
+  }
+  render(
+    <UpdateAdvisoryList
+      packages={packages.slice(0, 1)}
+      advisories={[
+        {
+          ...common,
+          id: "SEC-ONE",
+          title: "First TLS fix",
+          description: "First applicable security fix.",
+        },
+        {
+          ...common,
+          id: "SEC-TWO",
+          title: "Second TLS fix",
+          description: "Second applicable security fix.",
+        },
+      ]}
+    />
+  )
+  const first = screen.getByRole("button", { name: /First TLS fix/ })
+  first.focus()
+  await user.keyboard("{Enter}")
+  expect(screen.getByText("First applicable security fix.")).toBeTruthy()
+  expect(
+    screen.getByRole("link", { name: "CVE-2026-56789" }).getAttribute("href")
+  ).toBe("https://www.cve.org/CVERecord?id=CVE-2026-56789")
+  await user.type(screen.getByRole("searchbox"), "CVE-2026-56789")
+  expect(screen.getByRole("button", { name: /First TLS fix/ })).toBeTruthy()
+  expect(screen.getByRole("button", { name: /Second TLS fix/ })).toBeTruthy()
+  expect(
+    screen.getByText(/Installation includes all available packages/)
+  ).toBeTruthy()
+})

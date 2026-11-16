@@ -37,7 +37,16 @@ func (Provider) Inventory(ctx context.Context) ([]platform.UpdatePackage, error)
 	items := parseXML(r.Output)
 	// Errata come from the cached repository metadata; packages without one
 	// stay unclassified.
-	platform.ApplyUpdateAdvisories(items, cachedAdvisories(items))
+	advisories, err := cachedAdvisories(items)
+	platform.ApplyUpdateAdvisories(items, advisories)
+	if err != nil {
+		for i := range items {
+			items[i].AdvisoryState = "partial"
+			if len(advisories) == 0 {
+				items[i].AdvisoryState = "unavailable"
+			}
+		}
+	}
 	return items, nil
 }
 func (Provider) Refresh(ctx context.Context, force bool, emit func(platform.UpdateStreamEvent)) error {
@@ -117,6 +126,7 @@ func (Provider) History(_ context.Context, limit int) ([]platform.UpdateHistoryE
 
 type stream struct {
 	Updates []struct {
+		Repository string `xml:"repository,attr"`
 		Name       string `xml:"name,attr"`
 		Edition    string `xml:"edition,attr"`
 		EditionOld string `xml:"edition-old,attr"`
@@ -131,7 +141,7 @@ func parseXML(output string) []platform.UpdatePackage {
 	}
 	items := make([]platform.UpdatePackage, 0, len(value.Updates))
 	for _, item := range value.Updates {
-		items = append(items, platform.UpdatePackage{Name: item.Name, Architecture: item.Arch, CurrentVersion: item.EditionOld, CandidateVersion: item.Edition})
+		items = append(items, platform.UpdatePackage{Name: item.Name, Architecture: item.Arch, CurrentVersion: item.EditionOld, CandidateVersion: item.Edition, Repository: item.Repository})
 	}
 	return platform.SortUpdatePackages(items)
 }
@@ -179,4 +189,8 @@ func parseHistory(content string) []platform.UpdateHistoryEntry {
 
 func (Provider) MetadataUpdated(context.Context) time.Time {
 	return platform.NewestModTime("/var/cache/zypp/raw/*/repodata/repomd.xml")
+}
+
+func (Provider) UpdateCacheKey() string {
+	return platform.UpdateFilesFingerprint("/var/cache/zypp/raw/*/repodata/*", "/var/lib/rpm/*", "/usr/lib/sysimage/rpm/*", "/etc/zypp/repos.d/*", "/etc/zypp/zypp.conf", "/etc/zypp/locks")
 }
